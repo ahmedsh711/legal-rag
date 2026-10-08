@@ -1,0 +1,962 @@
+arXiv:2506.06339v1  [cs.IR]  1 Jun 2025
+Springer Nature 2021 LATEX template
+Optimizing RAG Pipelines for Arabic: A Systematic Analysis
+of Core Components
+Jumana Alsubhi 1, Mohammad D. Alahmadi 2, Ahmed Alhusayni 1, Ibrahim
+Aldailami1, Israa Hamdine 1, Ahmad Shabana 1, Yazeed Iskandar 1 and Suhayb
+Khayyat1
+1Naseej Innovation Lab, Naseej for Technology, Riyadh, Saudi Arabia.
+2Department of Software Engineering, College of Computer Science and Engineering,
+University of Jeddah, Jeddah, 23890, Saudi Arabia.
+Contributing authors: jumana.alsubhi@naseej.com; mdalahmadi@uj.edu.sa;
+ahmed.alhusainy@naseej.com; ebrahim.aldailami@naseej.com ; israa.hamdin@naseej.com ;
+ashabana@naseej.com; yazeed.iskandar@naseej.com ; souheib.khayyat@naseej.com ;
+Abstract
+Retrieval-Augmented Generation (RAG) has emerged as a powerful architecture for combining the
+precision of retrieval systems with the fluency of large language models. While several studies
+have investigated RAG pipelines for high-resource languages, the optimization of RAG compo-
+nents for Arabic remains underexplored. This study presents a comprehensive empirical evaluation
+of state-of-the-art RAG components—including chunking strategies, embedding models, rerankers,
+and language models—across a diverse set of Arabic datasets. Using the RAGAS framework, we
+systematically compare performance across four core metrics: context precision, context recall,
+answer faithfulness, and answer relevancy. Our experiments demonstrate that sentence-aware chunk-
+ing outperforms all other segmentation methods, while BGE-M3 and Multilingual-E5-large emerge
+as the most effective embedding models. The inclusion of a reranker (bge-reranker-v2-m3) sig-
+nificantly boosts faithfulness in complex datasets, and Aya-8B surpasses StableLM in generation
+quality. These findings provide critical insights for building high-quality Arabic RAG pipelines
+and offer practical guidelines for selecting optimal components across different document types
+Keywords: Large language models, retrieval-augmented generation, Arabic NLP, multilingual embeddings,
+chunking strategies, embedding models, and reranking.
+1 Introduction
+The rise of Retrieval-Augmented Generation
+(RAG) systems has significantly transformed how
+large language models (LLMs) access and uti-
+lize external knowledge sources [1]. By retrieving
+relevant information from large corpora before
+generating responses, RAG pipelines can produce
+more accurate, factual, and context-aware out-
+puts [2]. RAG is particularly valuable for Arabic,
+where challenges such as morphological richness
+and limited domain-specific resources can hinder
+the performance of standalone language models
+[3].
+1
+
+=====PAGE=====
+Springer Nature 2021 LATEX template
+2 Article Title
+Although recent advancements in RAG frame-
+works have led to significant progress in mul-
+tilingual applications [4], the systematic eval-
+uation and optimization of RAG components
+for Arabic remain underexplored. Arabic’s syn-
+tactic diversity, semantic density, and vari-
+able orthographic conventions introduce addi-
+tional complexity across all stages of the RAG
+pipeline—from document chunking and represen-
+tation to retrieval, reranking, and answer gen-
+eration [5, 6]. Consequently, there is a need to
+investigate how Arabic-specific and multilingual
+models perform across these stages and how dif-
+ferent pipeline configurations affect the quality of
+generated answers in Arabic.
+This paper addresses this gap by presenting
+a comprehensive empirical evaluation of the key
+components in Arabic RAG pipelines. Our work
+involves controlled experimentation across six
+diverse Arabic datasets, evaluating four chunking
+strategies, six embedding models, one reranking
+model, and two large language models. We adopt
+the RAGAS framework to assess retrieval and
+generation quality along four dimensions: context
+precision, context recall, answer faithfulness, and
+answer relevancy. Our methodology is designed
+to reflect real-world applications of Arabic RAG
+systems in domains such as question answering,
+summarization, and knowledge-intensive dialogue.
+To sum up, we make the following key contri-
+butions:
+• We conduct a comprehensive empirical study of
+Retrieval-Augmented Generation (RAG) compo-
+nents—chunking strategies, embedding models,
+rerankers, and large language models—targeted
+specifically at Arabic language processing.
+• We provide the first detailed comparison of
+chunking strategies in Arabic RAG pipelines,
+identifying when sentence-aware, semantic, recur-
+sive, or fixed-size chunking is most effective across
+diverse text types.
+• We evaluate and benchmark six multilingual
+and Arabic-specific embedding models, offering
+insights into their effectiveness across different
+Arabic datasets and document structures.
+• We analyze the impact of reranking on response
+accuracy and faithfulness, highlighting its bene-
+fits in complex and ambiguous retrieval scenarios.
+• We assess the generation capabilities of two
+leading language models—Aya-8B and Sta-
+bleLM—demonstrating the superior performance
+of Aya-8B in Arabic answer generation within the
+RAG framework.
+• We release a modular pipeline design and eval-
+uation framework based on RAGAS, facilitating
+reproducible experimentation and future research
+in Arabic retrieval-augmented NLP systems.
+Our experimental results show that sentence-
+aware chunking consistently outperforms other
+strategies in both context recall and answer rel-
+evancy, particularly in structured and semanti-
+cally dense datasets. Among embedding models,
+bge-m3 and multilingual-e5-large achieve the
+highest retrieval and generation scores across
+diverse domains. Moreover, applying a reranker
+substantially enhances faithfulness in complex
+retrieval settings, while Aya-8B demonstrates
+superior generation performance compared to Sta-
+bleLM in all evaluation scenarios.
+The rest of the paper is organized as follows. In
+Section 2, we discuss related work. This is followed
+by Section 3, where we provide an overview of
+our empirical study. Section 4 is dedicated to pre-
+senting our results and key findings. The potential
+threats to the validity of our study are addressed
+in Section 5. Finally, we conclude our work in
+Section 6.
+2 Related Work
+Several studies have explored various aspects of
+RAG systems, though most focus on high-resource
+languages like English. Our work builds upon this
+foundation while addressing the specific challenges
+of Arabic language processing.
+2.1 Chunking Strategies
+Chunking strategies play a crucial role in deter-
+mining retrieval effectiveness. Previous work by
+[2] explored the interplay between chunking tech-
+niques and retrieval precision, demonstrating that
+
+=====PAGE=====
+Springer Nature 2021 LATEX template
+Article Title 3
+fine-tuned chunking significantly improves perfor-
+mance. [1] investigated trade-offs between seman-
+tic chunking’s computational complexity and its
+ability to maintain context integrity, emphasiz-
+ing the importance of balancing computation and
+relevance. Additionally, [7] highlighted domain-
+specific chunking strategies, particularly for e-
+learning contexts, showing how retrieval strategies
+can be adapted to application-specific needs.
+2.2 Embedding Models
+Recent advances in multilingual embeddings have
+expanded the capabilities of RAG systems for
+non-English languages. The mGTE framework [8]
+proposed a multilingual text retrieval approach
+supporting long-context understanding. BGE M3-
+Embedding [9] introduced a model designed
+to handle multiple languages, granularities, and
+tasks simultaneously. For Arabic specifically, [10]
+focused on improving Arabic NLP through nested
+embeddings that capture deeper semantic similar-
+ities. Moreover, [3] described efforts to create a
+RAG pipeline optimized for Arabic, covering all
+stages from document retrieval to generation.
+2.3 Language Models and Reranking
+The effectiveness of different language models in
+RAG pipelines has been examined by [4], with par-
+ticular attention to performance variations across
+languages and domains. Reranking mechanisms,
+which refine initial retrieval results before gener-
+ation, have been shown to significantly improve
+RAG performance [11], though their impact varies
+depending on the dataset and domain. For Ara-
+bic language models, [12] introduced AraBERT,
+a transformer-based model for Arabic language
+understanding that has been widely adopted in
+various NLP tasks. More recently, [13] presented
+Aya, a family of multilingual language models
+with strong performance on Arabic and other
+languages from the cohereforAI.
+2.4 Multilingual RAG Evaluation
+Evaluating RAG systems across languages
+presents unique challenges. [14] introduced
+NoMIRACL, a multilingual information retrieval
+benchmark covering 18 languages including
+Arabic. Similarly, [4] proposed Futurepedia, a
+benchmark for multilingual RAG that revealed
+significant performance disparities between high-
+resource and low-resource languages. The RAGAS
+framework 1 has emerged as a standard for eval-
+uating RAG systems, though its application to
+non-English languages requires careful consid-
+eration of language-specific factors. Our work
+extends these evaluation approaches by focusing
+specifically on Arabic, providing a comprehensive
+assessment of RAG components across diverse
+Arabic datasets.
+2.5 Arabic NLP Challenges
+Arabic presents unique challenges for NLP sys-
+tems due to its morphological complexity and
+dialectal variations. [5] provided a panoramic
+survey of NLP in the Arab world, highlighting
+resource limitations and technical challenges. [6]
+detailed the linguistic properties that make Ara-
+bic processing particularly challenging, including
+its rich morphology and orthographic variations.
+These challenges extend to retrieval tasks, as
+demonstrated by [10], who showed that stan-
+dard tokenization and embedding approaches
+often underperform on Arabic text. Our work
+addresses these challenges by systematically eval-
+uating RAG components optimized for Arabic
+language processing.
+3 Methodology
+In this section, we describe the datasets,
+pipeline design, and methodology used to evalu-
+ate the components of an end-to-end Retrieval-
+Augmented Generation (RAG) system for Arabic
+language tasks. Our goal is to empirically assess
+the effectiveness of various chunking strategies,
+embedding models, rerankers, and large language
+models (LLMs) across multiple Arabic datasets
+using the RAGAS evaluation framework.
+RQ1 What is the most effective chunking strategy
+for improving retrieval and generation quality in
+Arabic?
+RQ2 How do multilingual and Arabic-specific
+embedding models compare in real-world RAG
+settings?
+RQ3 What is the role of reranking in enhanc-
+ing the faithfulness and relevance of generated
+answers?
+1https://docs.ragas.io/en/stable/
+
+=====PAGE=====
+Springer Nature 2021 LATEX template
+4 Article Title
+Original ArabicDocument(s)Chunking (LangChain) Chunks
+Chunk n
+EmbeddingModels
+Embedding
+VectorDatabaseEmbeddingModelsQueryUser
+Top k Retrieved DocumentsRerankedDocuments
+Re-rank
+LLM
+Response
+Fig. 1 : Overview of the RAG pipeline used in this study, including chunking, embedding, retrieval,
+reranking, and answer generation.
+RQ4 Which language models offer the best perfor-
+mance for Arabic generation in a RAG context?
+Figure 1 provides a high-level summary of our
+experimental design. In the subsequent sections,
+we explain each component of the pipeline in
+detail as outlined in the figure.
+3.1 Datasets
+To ensure a comprehensive evaluation across a
+wide range of Arabic content types, linguistic com-
+plexities, and domain-specific characteristics, we
+selected six publicly available Arabic datasets.
+These datasets vary in terms of structure, seman-
+tic density, and intended task, providing a robust
+foundation for analyzing RAG pipeline behavior
+under different conditions.
+ARCD [15] is a high-quality Arabic read-
+ing comprehension dataset that contains fac-
+tual passages paired with corresponding question-
+answer pairs, designed to evaluate machine com-
+prehension in MSA (Modern Standard Arabic).
+ArSQUAD [16] is an Arabic adaptation of
+the popular English SQuAD dataset, featuring
+extractive QA tasks that enable benchmarking in
+information-seeking contexts. SaudiWiki [17] is a
+large-scale Arabic corpus derived from Wikipedia
+articles specific to Saudi Arabia, offering a rich
+source of factual, encyclopedic content with varied
+topical coverage.
+To evaluate inference and reasoning abili-
+ties, we included QA4MRE [18], a multilingual
+benchmark dataset containing complex, multi-
+paragraph texts and challenging reading com-
+prehension questions. We also utilized Quran
+Tafseer [19], which comprises semantically rich
+religious texts and interpretive explanations that
+require deep contextual understanding. Lastly, the
+Hindawi Books collection [20] provides liter-
+ary Arabic content with diverse writing styles
+and unstructured narrative formats, allowing us
+to assess RAG component behavior on long-form,
+less formalized text.
+
+=====PAGE=====
+Springer Nature 2021 LATEX template
+Article Title 5
+Together, these datasets facilitate a rigorous
+and multifaceted evaluation of chunking, retrieval,
+reranking, and generation strategies in Arabic
+RAG pipelines.
+3.2 Chunking Strategies
+Chunking is a critical preprocessing step in
+Retrieval-Augmented Generation (RAG) systems,
+as it directly impacts the granularity and coher-
+ence of retrievable information. In this study,
+we evaluate four distinct chunking strategies to
+determine their effect on retrieval precision, con-
+text relevance, and downstream generation quality
+in Arabic-language pipelines. Each strategy was
+implemented using the LangChain 2 framework to
+ensure consistency and modularity across experi-
+mental runs.
+Fixed-size chunking segments the input text
+into equal-length chunks based on a predefined
+character or token limit. While this approach
+is computationally efficient and simple to imple-
+ment, it often disregards semantic boundaries,
+potentially splitting coherent sentences or logical
+units across chunks.
+Recursive chunking employs a hierarchical
+splitting mechanism that recursively applies a set
+of fallback delimiters—such as paragraph breaks,
+sentence boundaries, and word-level tokens—to
+ensure that each chunk respects natural textual
+boundaries while remaining within the specified
+size constraints. This method seeks to balance
+structure preservation and chunk uniformity.
+Sentence-aware chunking prioritizes
+semantic integrity by aligning chunk boundaries
+with sentence delimiters. By preserving com-
+plete sentences within each chunk, this strategy
+is designed to minimize context fragmentation,
+which is particularly valuable in tasks requiring
+deep linguistic understanding or reasoning.
+Semantic chunking utilizes embedding-
+based similarity measures to group semantically
+related sentences into cohesive units. While this
+method offers the potential to maximize context
+relevance, it is the most computationally intensive
+due to the need for pairwise sentence compar-
+isons and clustering. Moreover, its performance
+may vary significantly depending on the quality of
+the underlying embedding model.
+2https://www.langchain.com/
+Through systematic experimentation across
+six Arabic datasets, we evaluate the impact of
+these chunking strategies on RAG pipeline per-
+formance using RAGAS metrics. This analysis
+provides insights into the trade-offs between com-
+putational efficiency and semantic coherence when
+selecting chunking methods for Arabic text pro-
+cessing.
+3.3 Embedding Models
+Embedding models play a central role in Retrieval-
+Augmented Generation (RAG) systems by con-
+verting textual chunks and user queries into dense
+vector representations that facilitate similarity-
+based retrieval. The quality of these embeddings
+directly influences the relevance of retrieved con-
+texts, which in turn affects the overall accu-
+racy and faithfulness of the generated responses.
+Given the unique linguistic characteristics of Ara-
+bic—including rich morphology, script variability,
+and limited high-resource training data—we eval-
+uate both Arabic-specific and multilingual embed-
+ding models.
+Our study includes six models selected for
+their relevance to Arabic NLP tasks and prior
+performance in multilingual retrieval benchmarks.
+These are: bge-m3 by BAAI, multilingual-e5-
+large by Microsoft, snowflake-arctic-embed-l-v2.0
+by Snowflake, gte-multilingual-base by Alibaba,
+Arabic-Triplet-Matryoshka-V2, and Arabic-
+mpnet-base-all-nli-triplet by Omartificial
+Intelligence. The selected models vary in size,
+training objectives, and support for Arabic,
+providing a diverse comparison set.
+BGE-m3 and multilingual-e5-large are both
+high-capacity multilingual embedding models
+trained on cross-lingual retrieval tasks using
+advanced contrastive learning techniques. These
+models are designed for general-purpose seman-
+tic search and have demonstrated strong per-
+formance across diverse languages. Snowflake-
+arctic-embed-l-v2.0 and GTE-multilingual-base
+offer efficient alternatives with competitive per-
+formance, particularly in low-latency scenar-
+ios. The two Arabic-specific models—Arabic-
+Triplet-Matryoshka-V2 and Arabic-mpnet-base-
+all-nli-triplet— are optimized for Arabic lan-
+guage understanding and were included to assess
+whether specialized training leads to improved
+performance in Arabic-only contexts.
+
+=====PAGE=====
+Springer Nature 2021 LATEX template
+6 Article Title
+For consistency, all embeddings were generated
+using sentence-aware chunking, as this strategy
+demonstrated superior performance in our ear-
+lier experiments. Embedding vectors were indexed
+using FAISS and retrieved based on cosine simi-
+larity. The performance of each embedding model
+was evaluated using the RAGAS framework across
+six Arabic datasets, focusing on context preci-
+sion, recall, and their impact on answer generation
+quality.
+3.4 Reranking Component
+While initial retrieval based on embedding simi-
+larity often yields contextually relevant passages,
+it may not always prioritize the most factu-
+ally aligned or semantically coherent chunks with
+respect to the input query. To address this, rerank-
+ing modules are commonly introduced to refine
+the order of retrieved results prior to generation.
+In Retrieval-Augmented Generation (RAG) sys-
+tems, rerankers can significantly enhance down-
+stream faithfulness and precision by promoting
+more relevant contexts and demoting spurious or
+ambiguous ones.
+In our study, we incorporate the
+bge-reranker-v2-m3 model, a multilingual
+reranker optimized for pairwise relevance scor-
+ing using dense representations. This model has
+demonstrated strong performance across various
+reranking benchmarks and supports Arabic input
+natively. After retrieving the top- k candidate
+contexts via cosine similarity from the embedding
+index, the reranker is applied to reorder them
+based on their alignment with the user query.
+To isolate the impact of reranking, we con-
+ducted paired experiments with and without
+the reranker across all datasets while keeping
+other pipeline components constant. The effect
+of reranking was assessed using RAGAS met-
+rics, particularly focusing on improvements in
+answer faithfulness and overall generation quality.
+Our analysis also explores dataset-level variations,
+where reranking tends to yield greater bene-
+fits in complex, ambiguous, or loosely structured
+domains such as QA4MRE and Hindawi Books,
+while having marginal effect in highly structured
+sources like SaudiWiki.
+3.5 Language Models
+The final component in the Retrieval-Augmented
+Generation (RAG) pipeline is the language model
+responsible for synthesizing an answer based on
+the retrieved context. The performance of the lan-
+guage model is crucial, as it determines not only
+the fluency and coherence of the response but
+also its factual alignment with the retrieved evi-
+dence. This is particularly important in Arabic,
+where morphological richness and syntactic flexi-
+bility increase the challenge of generating precise
+and contextually appropriate text.
+We evaluate two open-source generative mod-
+els in this study: Aya-8B and StableLM-1.6B.
+Aya-8B is a large-scale Arabic-focused language
+model developed to support high-quality text gen-
+eration in Modern Standard Arabic and dialectal
+variants. Its training data includes a mixture of
+Arabic web content, Wikipedia, and curated ques-
+tion answering corpora, making it well-suited for
+Arabic NLP tasks. In contrast, StableLM-1.6B is
+a general-purpose multilingual model with smaller
+capacity, designed for efficient deployment across
+a wide range of languages.
+Both models were evaluated under identi-
+cal conditions using the same retrieved contexts
+(with and without reranking), chunking strategy
+(sentence-aware), and embedding model (bge-m3).
+We measured performance using RAGAS metrics,
+with particular attention to answer faithfulness
+and relevancy. Our analysis highlights the compar-
+ative advantages of Aya-8B in capturing semantic
+nuance and maintaining factual consistency, espe-
+cially in datasets with high linguistic complexity
+such as Quran Tafseer and QA4MRE.
+3.6 Evaluation Metrics
+To evaluate the performance of the Retrieval-
+Augmented Generation (RAG) pipeline and
+its components, we adopt the RAGAS frame-
+work [21], a standardized metric suite specifically
+designed to assess retrieval-augmented systems
+in a unified and interpretable manner. RAGAS
+provides a modular evaluation approach that
+decomposes performance into retrieval quality,
+generation quality, and their interplay.
+We use four core metrics from RAGAS in this
+study:
+Context Precision measures the proportion
+of retrieved context that is relevant to the query.
+
+=====PAGE=====
+Springer Nature 2021 LATEX template
+Article Title 7
+High precision indicates that the retriever effec-
+tively filters out irrelevant or noisy passages.
+Context Recall evaluates whether all neces-
+sary information required to generate a correct
+response has been retrieved. It captures the sys-
+tem’s ability to cover all supporting evidence,
+which is particularly important in reasoning-
+intensive tasks.
+Faithfulness assesses whether the generated
+answer is factually supported by the retrieved
+context. This metric is critical for minimizing hal-
+lucinations and ensuring that the language model
+does not generate content inconsistent with the
+source material.
+Answer Relevancy measures the degree to
+which the generated answer aligns with the intent
+of the user query. It reflects both topical alignment
+and linguistic appropriateness.
+All evaluations were conducted using manually
+curated ground-truth answers where available.
+For datasets without explicit answer labels, we
+employed semi-automated evaluation scripts with
+expert validation to ensure quality. The use of
+these metrics enables a fine-grained understanding
+of how each RAG component contributes to over-
+all system performance, facilitating component-
+wise analysis and cross-dataset comparisons.
+3.7 Results
+3.8 RQ 1: Chunking Strategy
+Motivation: Chunking is a foundational prepro-
+cessing step in Retrieval-Augmented Generation
+(RAG) systems. The way documents are seg-
+mented can significantly affect the quality of
+retrieval and the contextual integrity of gener-
+ated answers. Given the structural and syntactic
+diversity across Arabic texts, we aim to identify
+which chunking strategy best balances semantic
+coherence and retrieval efficiency across different
+datasets and task types.
+Findings and Analysis: Our results show
+that sentence-aware chunking achieves the high-
+est average overall score across all datasets
+(74.78), outperforming fixed-size ( 69.41), recur-
+sive ( 69.13), and semantic chunking ( 66.92).
+Sentence-aware chunking leads in four out of six
+datasets: ARCD (75.12), QA4MRE (80.50),
+Hindawi Books (76.49), and shows competi-
+tive performance in Quran Tafseer (81.63), only
+slightly behind semantic chunking (82.45). Fixed-
+size chunking performs best on the SaudiWiki
+dataset (86.69), likely due to the structured and
+uniform nature of Wikipedia articles. Recursive
+chunking performs comparably in ArSQUAD,
+leading slightly with a score of 52.35 compared
+to sentence-aware’s 52.21, but both approaches
+remain significantly higher than semantic chunk-
+ing for that dataset. Interestingly,semantic chunk-
+ing, while theoretically advantageous due to its
+embedding-based grouping of related sentences,
+consistently underperforms across all datasets,
+with particularly poor results on ARCD (74.59),
+QA4MRE (50.98), and SaudiWiki (72.06).
+This suggests that current semantic chunking
+implementations may introduce noise or disrupt
+coherence, especially in morphologically com-
+plex Arabic text. Overall, sentence-aware chunk-
+ing appears to offer the best trade-off between
+semantic integrity and chunk length control, con-
+tributing to higher faithfulness and answer rele-
+vancy scores in both structured and unstructured
+domains.
+Summary Answer to RQ1: Sentence-aware
+chunking outperformed all other strategies in
+overall RAG performance, providing the most
+effective balance between semantic integrity and
+retrieval precision. Its consistency across diverse
+datasets—especially those requiring reasoning or
+narrative comprehension—highlights its suitabil-
+ity for Arabic text segmentation in RAG pipelines.
+3.9 RQ 2: Embedding Model
+Motivation: Embedding models are critical to
+the RAG pipeline, as they encode both queries and
+document chunks into dense vector representa-
+tions used for retrieval. In Arabic, where semantic
+similarity can be obfuscated by rich morphology
+and syntactic variance, the choice of embedding
+model significantly impacts retrieval effectiveness
+and downstream generation quality.
+Findings and Analysis: Our results indi-
+cate that bge-m3 achieved the highest overall
+score ( 70.99) across the six datasets, closely
+followed by multilingual-e5-large (70.31).
+These two models consistently outperformed
+others in both retrieval precision and answer
+generation metrics. Notably, bge-m3 excelled in
+datasets requiring complex reasoning such as
+ARCD (80.29) and Quran Tafseer (82.72),
+
+=====PAGE=====
+Springer Nature 2021 LATEX template
+8 Article Title
+Table 1: Comparison of chunking strategies across six Arabic datasets based on overall mean scores. The
+best-performing score per dataset is shown in bold.
+Dataset Fixed-size Recursive Sentence-aware Semantic
+ARCD 74.74 72.82 75.12 74.59
+ArSQUAD 51.12 52.35 52.21 49.64
+SaudiWiki 86.69 85.27 82.76 72.06
+QA4MRE 50.25 47.89 80.50 50.98
+Quran Tafseer 80.20 81.43 81.63 82.45
+Hindawi Books 73.46 75.04 76.49 71.79
+Average 69.41 69.13 74.78 66.92
+while multilingual-e5-large performed
+strongly in structured corpora like SaudiWiki
+(88.74). Among the Arabic-specific mod-
+els, Arabic-Triplet-Matryoshka-V2 showed
+promising results with an overall average of
+66.46, especially in Quran Tafseer and Hin-
+dawi Books , where the dataset language
+closely matched its training domain. However,
+both Arabic-mpnet-base-all-nli-triplet
+and snowflake-arctic-embed-l-v2.0 under-
+performed, with average scores of 45.92 and
+69.48, respectively, reflecting limited gener-
+alizability or weaker adaptation to complex
+retrieval tasks. Multilingual models showed more
+balanced performance across datasets, with
+gte-multilingual-base achieving a respectable
+average (68.48), particularly effective in mid-
+scale structured domains like Hindawi Books .
+The performance gap between the top two
+models and others highlights the importance of
+strong cross-lingual training and large model
+capacity for high-recall retrieval in Arabic.
+Overall, our analysis suggests that multilingual,
+contrastively trained models such as bge-m3
+and multilingual-e5-large provide superior
+retrieval performance in Arabic RAG pipelines,
+even compared to Arabic-specialized models.
+Summary Answer to RQ 2: Among
+the evaluated models, bge-m3 and
+multilingual-e5-large delivered the strongest
+and most consistent performance across all
+datasets. Their multilingual, contrastively trained
+embeddings outperformed Arabic-specific mod-
+els, confirming the effectiveness of large-scale,
+general-purpose embeddings for Arabic retrieval
+tasks in RAG pipelines.
+3.10 RQ 3: Reranking Impact
+Motivation: Reranking aims to improve retrieval
+quality by refining the ordering of the top- k
+retrieved chunks based on their semantic align-
+ment with the query. In RAG systems, especially
+for Arabic where lexical variance is high, reranking
+can help prioritize the most contextually relevant
+passages, thus enhancing the factual consistency
+and relevance of the generated answers.
+Findings and Analysis: Integrating the
+bge-reranker-v2-m3 module led to noticeable
+improvements across most datasets, increasing the
+overall average RAG score from 70.99 (without
+reranker) to 74.15. The reranker was particularly
+impactful in datasets requiring deeper seman-
+tic matching or complex reasoning. The largest
+improvement was observed in ARCD, where the
+score rose from 80.29 to 86.31, driven by signif-
+icant gains in context precision and faithfulness
+(the latter improving by over 15 points). Similarly,
+QA4MRE saw a 4.6-point increase in overall
+score, highlighting the reranker’s ability to pro-
+mote more useful chunks in inference-heavy tasks.
+ArSQUAD and Hindawi Books also benefited,
+showing gains of 4.49 and 4.04 points respectively,
+particularly in faithfulness and answer relevancy.
+In contrast, the impact was mixed in structured
+datasets. For instance, SaudiWiki saw a slight
+drop in overall score despite improvements in
+precision, suggesting that reranking may offer
+limited benefits when the initial retrieval qual-
+ity is already high. Similarly, Quran Tafseer
+saw only a modest improvement of 0.73 points.
+Overall, reranking is most beneficial in settings
+where retrieved chunks are noisy or semantically
+ambiguous. Its effectiveness is particularly evi-
+dent in datasets that require contextual inference,
+
+=====PAGE=====
+Springer Nature 2021 LATEX template
+Article Title 9
+Table 2: Overall RAG performance scores across datasets using different embedding models. The highest
+score per dataset is highlighted in bold.
+Dataset Arctic-Embed Arabic-MPNet Matryoshka GTE-Base BGE-M3 E5-Large
+ARCD 78.99 55.49 79.09 76.94 80.29 78.43
+ArSQUAD 48.39 28.66 45.55 49.54 51.97 56.55
+SaudiWiki 85.21 58.21 83.96 86.87 88.31 88.74
+QA4MRE 50.57 34.20 46.54 49.64 48.97 49.16
+Quran Tafseer 79.40 53.86 75.53 77.68 82.72 81.16
+Hindawi 74.34 45.11 68.15 70.25 73.70 67.84
+Average 69.48 45.92 66.46 68.48 70.99 70.31
+making it a valuable addition to Arabic RAG
+pipelines where document structure varies widely.
+Summary Answer to RQ 3: The inclu-
+sion of the bge-reranker-v2-m3 significantly
+improved overall RAG scores—particularly in
+complex or ambiguous datasets like ARCD and
+QA4MRE—by enhancing faithfulness and answer
+relevancy. Its impact was less pronounced in
+highly structured datasets, suggesting reranking is
+most beneficial when initial retrieval lacks seman-
+tic precision.
+Table 3: Comparison of RAG performance with
+and without the bge-reranker-v2-m3 reranker.
+Values represent overall mean scores across
+RAGAS metrics.
+Dataset Without Reranker With Reranker
+ARCD 80.29 86.31
+ArSQUAD 51.97 56.47
+SaudiWiki 88.31 87.39
+QA4MRE 48.97 53.57
+Quran Tafseer 82.72 83.45
+Hindawi Books 73.70 77.74
+Average 70.99 74.15
+3.11 RQ 4: Language Model
+Performance
+Motivation: In Retrieval-Augmented Generation
+(RAG) pipelines, the language model is responsi-
+ble for synthesizing answers based on the retrieved
+context. The effectiveness of this stage hinges not
+only on fluency and coherence, but also on the
+model’s ability to generate answers that are faith-
+ful, relevant, and semantically aligned with both
+the query and supporting evidence. For Arabic,
+evaluating the generation capabilities of large lan-
+guage models (LLMs) is especially important due
+to syntactic variability and limited high-quality
+generation resources.
+Findings and Analysis: We compared the
+performance of two models— Aya-8B and
+StableLM-1.6B—using consistent chunking
+(sentence-aware), embeddings ( bge-m3), and
+retrieval configurations. The results show that
+Aya-8B consistently outperforms StableLM across
+all datasets, achieving a higher overall average
+score ( 72.06 vs. 67.08). The performance gap
+is most notable in inference-heavy datasets such
+as QA4MRE, where Aya-8B achieved a score
+of 61.8, compared to only 55.07 with StableLM.
+Similarly, in Quran Tafseer , where semantic
+precision is crucial, Aya-8B reached 78.38 versus
+71.24 for StableLM. In SaudiWiki, a structured
+factual dataset, Aya-8B achieved the highest
+overall score of 88.81. These results highlight the
+benefit of domain-tuned, Arabic-capable mod-
+els for accurate and relevant answer generation.
+While StableLM demonstrates reasonable perfor-
+mance in simpler tasks, it struggles with deep
+contextual inference, often resulting in less faith-
+ful or semantically off-target responses. Overall,
+Aya-8B proves to be a more robust choice for
+Arabic RAG pipelines, especially in high-stakes
+or complex reasoning scenarios.
+Summary Answer to RQ 4: Aya-8B con-
+sistently outperformed StableLM-1.6B across all
+datasets, demonstrating superior capabilities in
+generating relevant and faithful answers. Its
+strength was most evident in reasoning-heavy and
+semantically dense texts, confirming its suitability
+for Arabic generation tasks within RAG pipelines.
+
+=====PAGE=====
+Springer Nature 2021 LATEX template
+10 Article Title
+Table 4: Overall RAG performance scores forStableLM and Aya-8B across datasets. The best-performing
+score per dataset is shown in bold.
+Dataset StableLM (Overall) Aya-8B (Overall)
+ARCD 74 76.79
+ArSQUAD 53.08 53.88
+SaudiWiki 81.77 88.81
+QA4MRE 55.07 61.8
+Quran Tafseer 71.24 78.39
+Hindawi Books 67.3 75.95
+Average 67.08 72.06
+4 Threats to Validity
+Internal Validity: Potential internal threats
+arise from pipeline implementation and met-
+ric computation. While we used standardized
+tools (LangChain, RAGAS, FAISS) and verified
+component behavior through controlled experi-
+ments, minor discrepancies in chunking bound-
+aries or embedding normalization may have
+affected retrieval outcomes. We mitigated this by
+using fixed random seeds and consistent configu-
+rations across all experiments.
+Construct Validity: Our evaluation depends on
+automated metrics provided by RAGAS, which
+may not fully capture the nuanced quality of nat-
+ural language generation in Arabic. In particular,
+faithfulness and answer relevancy are estimated
+without human judgment. Although RAGAS is
+a widely accepted evaluation framework, future
+work should incorporate manual verification to
+complement automated scores.
+External Validity: The generalizability of our
+findings may be limited by the datasets and mod-
+els selected. While we evaluated six diverse Arabic
+datasets and tested both multilingual and Arabic-
+specific models, these corpora may not represent
+all domains or dialects. Additionally, the perfor-
+mance of the pipeline may vary in real-world
+applications involving noisy or low-resource data.
+5 Conclusion
+In this study, we conducted a comprehen-
+sive empirical evaluation of core components in
+Retrieval-Augmented Generation (RAG) pipelines
+tailored for Arabic language tasks. Through sys-
+tematic experimentation across six diverse Arabic
+datasets, we assessed the impact of chunking
+strategies, embedding models, reranking mech-
+anisms, and large language models on overall
+RAG performance using the RAGAS evaluation
+framework.
+Our findings show that sentence-aware chunk-
+ing provides the most consistent improvements in
+both retrieval quality and generation outcomes,
+particularly in reasoning-heavy and unstructured
+datasets. Among the embedding models, BGE-
+m3 and multilingual-e5-large outperformed both
+Arabic-specific and other multilingual alterna-
+tives, highlighting the benefits of large, con-
+trastively trained models. The integration of the
+BGE reranker (v2-m3) significantly boosted faith-
+fulness and relevancy in complex tasks, while Aya-
+8B demonstrated superior generation performance
+over StableLM-1.6B, especially in semantically
+dense domains.
+These results offer practical guidance for build-
+ing robust Arabic RAG systems and emphasize
+the importance of carefully selecting and tun-
+ing each pipeline component for optimal perfor-
+mance. The insights presented here also highlight
+the maturity of current multilingual technolo-
+gies in supporting Arabic NLP, while pointing
+to opportunities for improvement in embedding
+and generation models specifically optimized for
+Arabic.
+Future work will explore hybrid chunking
+strategies that combine sentence boundaries with
+semantic cohesion, as well as domain-specific
+rerankers tailored for legal, medical, or religious
+content. Additionally, human evaluation of gen-
+erated answers and broader coverage of Arabic
+dialects will further strengthen the generalizabil-
+ity and reliability of RAG systems in real-world
+applications.
+
+=====PAGE=====
+Springer Nature 2021 LATEX template
+Article Title 11
+Declarations
+Conflict of Interest. The author declares no
+conflicts of interest.
+Acknoweldgment. The author declares no
+conflicts of interest.
+References
+[1] Gao, Y., Xiong, Y., Gao, X., Jia, K., Pan,
+J., Bi, Y., Dai, Y., Sun, J., Wang, H., Wang,
+H.: Retrieval-augmented generation for large
+language models: A survey. arXiv preprint
+arXiv:2312.10997 2, 1 (2023)
+[2] Lewis, P., Perez, E., Piktus, A., Petroni,
+F., Karpukhin, V., Goyal, N., K¨ uttler, H.,
+Lewis, M., Yih, W.-t., Rockt¨ aschel, T.,
+et al. : Retrieval-augmented generation for
+knowledge-intensive nlp tasks. Advances in
+neural information processing systems 33,
+9459–9474 (2020)
+[3] El-Beltagy, S.R., Abdallah, M.A.: Explor-
+ing retrieval augmented generation in arabic.
+Procedia Computer Science 244, 296–307
+(2024)
+[4] Wu, S., Tang, J., Yang, B., Wang, A.,
+Jia, K., Yu, J., Yao, J., Su, J.: Not all
+languages are equal: Insights into multilin-
+gual retrieval-augmented generation. arXiv
+preprint arXiv:2410.21970 (2024)
+[5] Darwish, K., Habash, N., Abbas, M., Al-
+Khalifa, H., Al-Natsheh, H.T., Bouamor,
+H., Bouzoubaa, K., Cavalli-Sforza, V., El-
+Beltagy, S.R., El-Hajj, W., et al. : A
+panoramic survey of natural language pro-
+cessing in the arab world. Communications of
+the ACM 64(4), 72–81 (2021)
+[6] Habash, N.Y.: Introduction to Arabic Natu-
+ral Language Processing. Morgan & Claypool
+Publishers, ??? (2010)
+[7] Chen, J., Wang, Z., Zhao, T., Yin, H.:
+Retrieval-based question answering for e-
+learning. IEEE Transactions on Learning
+Technologies 16(1), 112–125 (2023)
+[8] Ni, J., Bian, Y., Qu, W., Cheng, H.: Large
+dual encoders are generalizable retrievers.
+arXiv preprint arXiv:2112.07899 (2022)
+[9] Chen, X., Zheng, S., Jiang, S., Huang, P.,
+Chen, J., Zhang, Z., Gong, Y., Liu, Z., Sun,
+M.: Bge m3-embedding: Multi-lingual, multi-
+functionality, multi-granularity text embed-
+dings through self-knowledge distillation.
+arXiv preprint arXiv:2402.03216 (2024)
+[10] Abdelali, A., Hassan, S., Mubarak, H., Dar-
+wish, K., Samih, Y.: Pre-training bert on
+arabic tweets: Practical considerations. arXiv
+preprint arXiv:2102.10684 (2021)
+[11] Ma, Z., Ren, X., Zhao, X., Zhao, T.,
+Liu, Z., Sun, M.: Fine-grained reranking
+for retrieval-augmented generation. arXiv
+preprint arXiv:2310.11511 (2023)
+[12] Antoun, W., Baly, F., Hajj, H.: Arabert:
+Transformer-based model for arabic lan-
+guage understanding. arXiv preprint
+arXiv:2003.00104 (2020)
+[13] Ousidhoum, N., Abdulhai, H., Abdulhai,
+O., Aguila, A., Aliyu, I., Alkhamissi, B.,
+Altakrori, M., Bari, M.S., Basyal, D.,
+Chakraborty, B., et al.: Aya model: An open
+science approach to align language models
+with human values across cultures. arXiv
+preprint arXiv:2402.07827 (2024)
+[14] Thakur, N., Reimers, N., R¨ uckl´ e, A., Srivas-
+tava, A., Gurevych, I.: Nomiracl: Multilingual
+information retrieval across 18 languages.
+Transactions of the Association for Compu-
+tational Linguistics (2024)
+[15] Mozannar, H., Maamary, E., El Hajal, K.,
+Hajj, H.: Neural arabic question answering.
+In: Proceedings of the Fourth Arabic Natural
+Language Processing Workshop, pp. 108–118
+(2019)
+[16] Arkady, A., Bernal, B., Rajpurkar, P., Zhang,
+J., Lopyrev, K., Liang, P.: Squad: 100,000+
+questions for machine comprehension of text.
+arXiv preprint arXiv:1606.05250 (2019)
+[17] Alqahtani, S., Alotaibi, F., Abdelali,
+
+=====PAGE=====
+Springer Nature 2021 LATEX template
+12 Article Title
+A., Sajjad, H.: Saudiwiki: A large-scale
+arabic wikipedia dataset for knowledge
+extraction and retrieval. arXiv preprint
+arXiv:2211.15147 (2022)
+[18] Pe˜ nas, A., Hovy, E., Forner, P., Rodrigo,
+´A., Sutcliffe, R., Sporleder, C., Forascu, C.,
+Benajiba, Y., Osenova, P.: Qa4mre 2011-
+2013: Overview of question answering for
+machine reading evaluation. In: International
+Conference of the Cross-Language Evaluation
+Forum for European Languages, pp. 303–320
+(2013). Springer
+[19] Altammami, S., Atwell, E., Alsalka, A.: Auto-
+matic extraction of quranic knowledge. In:
+Proceedings of the 12th Language Resources
+and Evaluation Conference, pp. 4318–4324
+(2020)
+[20] Zerrouki, T., Balla, A.: Hindawi: An open
+source corpus framework for arabic. arXiv
+preprint arXiv:1204.4327 (2012)
+[21] Es, S., Subramanian, N., Konda, S., Agar-
+wal, S., Ganesan, V., Gupta, I., Gupta,
+A., Narayanan, V., Khapra, M.M.: Ragas:
+Automated evaluation of retrieval augmented
+generation. arXiv preprint arXiv:2309.15217
+(2023)

@@ -1,0 +1,32 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+*.egg-info/
+# secrets & local
+.env
+*.pem
+# data handled by DVC (pointer files are committed)
+/data/raw/*
+!/data/raw/*.dvc
+!/data/raw/.gitignore
+/data/processed/*
+!/data/processed/*.dvc
+!/data/processed/.gitignore
+# course copyright material (local reference only)
+/docs/research/course_materials/
+/docs/research/handbook.pdf
+/docs/research/handbook.txt
+# tooling
+.terraform/
+*.tfstate*
+mlruns/
+.dvc/cache/
+.dvc/tmp/
+node_modules/
+.prometheus-multiproc/
