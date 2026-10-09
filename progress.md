@@ -63,6 +63,14 @@
 | Phase 1 pytest | `uv run pytest` | all pass, cov >= 80% | 84 passed, 97.20% | pass |
 | dvc repro | real PDF | 0 errors | 1149 total / 1093 live / 56 repealed / 0 errors / 5 warnings | pass |
 | dvc pull after wiping cache | MinIO | same hashes | pdf 5086ef5f…, articles 2 files fetched | pass |
+| Phase 2 pytest | `uv run pytest` | all pass, cov >= 80% | 162 passed, 92.12% | pass |
+| index build | `dvc repro` on empty Qdrant 1.19.2 | 2,241 points, deterministic name | articles_fb16830c7f, 2,241 points (same name as the build on 1.16) | pass |
+| index reuse | `dvc repro` with nothing changed | seconds, no model load | 29 s total, `index_reused` | pass |
+| bge-m3 parity | `uv run --with FlagEmbedding python scripts/parity_bge_m3.py` | dense < 1e-4, sparse equal | 1.0e-6 / 0 / 0 mismatches | pass |
+| retrieval spot check | 10 concepts × AR/EN + 2 refs | baseline numbers | AR 7/10 @1, 9/10 @5, MRR 0.775; EN 7/10, 10/10, 0.833; refs 2/2 | recorded |
+| alias rollback | swap to previous and back | no downtime | 213 ms / 70 ms, 2,241 points served | pass |
+| API container | compose core, /live /health /metadata /feedback /ask | 200s, 422 readable | all as expected; runs as uid 1000; healthy in 22 s (warm volume) | pass |
+| /ask end to end | 9 questions, prompt v3 | gold cited, refusals | 8/9 (Arabic 147 = retrieval miss), $0.00126 total, p50 2.9 s, TTFT 1.5 s | pass |
 
 ## Error Log
 

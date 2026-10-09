@@ -12,10 +12,14 @@ Prerequisites: Docker Desktop, [uv](https://docs.astral.sh/uv/), `cp .env.exampl
 ```bash
 docker compose --env-file .env -f docker/compose.yaml --profile core up -d   # 1. qdrant + redis + api
 uv run dvc repro                                                             # 2. PDF -> articles.json -> validate -> Qdrant index
-curl -s 127.0.0.1:8000/ask -H 'content-type: application/json'      -d '{"question":"ما هي مدة تقادم الالتزام؟"}'                             # 3. ask (add ?stream=true for SSE)
+curl -s 127.0.0.1:8000/ask -H 'content-type: application/json' -d '{"question":"ما هي مدة تقادم الالتزام؟"}'   # 3. ask
 ```
 
-Step 2 embeds 2,241 texts with bge-m3 on CPU (~17 min on a laptop, once; DVC skips it when nothing changed). The API container waits for the index: until the alias exists it exits and Docker restarts it. Check with `curl 127.0.0.1:8000/health` (`"status": "ok"` once ready) and see what is serving with `curl 127.0.0.1:8000/metadata`.
+- **Step 2** embeds 2,241 texts with bge-m3 on CPU, once (10–30 min on a laptop). The `index` stage always runs because its real output lives in Qdrant, which DVC cannot see; when the index is already there it is reused in seconds.
+- **The API container** downloads bge-m3 (2.3 GB) into the `hf_cache` volume on its first start, and waits for the index: until the alias exists it exits and Docker restarts it. `curl 127.0.0.1:8000/health` returns `"status": "healthy"` once it is ready; `curl 127.0.0.1:8000/metadata` shows what is serving.
+- **Streaming:** add `?stream=true` to `/ask` for Server-Sent Events (`token` events, then one `done` event with sources and timings).
+- **Port 8000 taken** on your machine? Set `API_HOST_PORT=8010` in `.env` and use that port.
+- Use `127.0.0.1`, not `localhost`: ports are published on IPv4 loopback only, and on Windows `localhost` tries IPv6 first (each Python call to Qdrant waited ~2 s).
 
 | Endpoint | Purpose |
 |---|---|

@@ -6,7 +6,7 @@ Ship a production-style, fully observable RAG service over the Egyptian Civil Co
 
 ## Next Step
 
-Phase 2: after `dvc repro` (LF outputs, sorted batching) finishes → parity check, retrieval spot check, alias rollback demo, rebuild image, fix reviewer findings, real /ask once the key is in .env, report, PR #3, tag v0.1.0. Do not edit DVC stage deps while a stage runs.
+Phase 2: open PR #3 (module-2-rag-api), wait for CI, merge, tag v0.1.0. Then Phase 3: golden set + to_label.csv, RAGAS 0.4 (check docs first), MLflow stack, Decider (Jev via OpenRouter `typesafe/jev-router` — verify the API), reranker ablation vs the Phase 2 baseline numbers in reports/module-2.md. Do not edit DVC stage deps while a stage runs.
 
 ## Current Phase
 
@@ -41,11 +41,12 @@ Full detail (tasks, acceptance checks, decisions, risks) lives in `docs/PLAN.md`
 - [x] index/build.py (bge-m3 CPU dense+sparse, pinned revision → Qdrant alias + index metadata), retrieval.py hybrid RRF + filters; real index 2,241 points
 - [x] generation.py (OpenAI-compatible, OpenRouter default), pipeline.ask(), prompt with [Art. N] citations + refusal rule
 - [x] FastAPI /ask (+SSE), /health, /metadata, /feedback; lifespan load-once; correlation-id; JSON logs; 422/500 handlers
-- [x] tests ≥80% cov (142 passed, 92.8%); multi-stage non-root Dockerfile; compose profile core; README 3 commands
-- [ ] bge-m3 parity vs FlagEmbedding; retrieval spot check on the real index; alias rollback demo
-- [ ] real /ask end to end (needs OPENROUTER_API_KEY in .env), local + compose; push image to Docker Hub (ahmedshobaki)
+- [x] tests ≥80% cov (162 passed, 92.1%); multi-stage non-root Dockerfile; compose profile core; README 3 commands
+- [x] bge-m3 parity vs FlagEmbedding (PARITY OK); retrieval spot check (AR MRR 0.775, EN 0.833); alias rollback 213 ms / 70 ms
+- [x] real /ask end to end through the container (prompt v1→v3, 8/9 correct, $0.00014/question); image pushed as ahmedshobaki/legal-rag-api:0.1.0
 - [x] walkthrough 02-rag-api.html
-- [ ] reports/module-2.md; reviewers (python, fastapi, security) fixed; PR; tag v0.1.0
+- [x] reports/module-2.md; reviewers (python, fastapi, security) fixed
+- [ ] PR #3 green + merged; tag v0.1.0
 - **Status:** in_progress
 
 ### Phase 3: Eval, MLflow, Decider + JEV ablation (tag v0.2.0)
@@ -123,6 +124,13 @@ Full detail (tasks, acceptance checks, decisions, risks) lives in `docs/PLAN.md`
 | `dvc repro` skipped index after code/params edits | 1 | root cause: deps were edited while the stage ran and DVC hashed them at the end; `dvc repro -f -s index`; rule: no dep edits during a run |
 | CRLF on Windows → DVC output md5 differs from Linux | 1 | `newline="\n"` in every writer + tests; ruff `line-ending = "lf"`; pre-commit `mixed-line-ending --fix=lf` |
 | heredoc/sed escapes turned `\r`/`\n` into real control chars | 2 | edit files with the Edit tool or a scratchpad script, never escapes inside heredocs |
+| parity FAILED on sparse weights | 1 | reference bug: FlagEmbedding needs colbert_linear.pt next to sparse_linear.pt or it uses a random head; added to allow_patterns → PARITY OK |
+| qdrant-client 1.19 vs server 1.16 warning | 1 | server pinned v1.19.2; volume recreated + index rebuilt (proved always_changed) |
+| retrieval 2.2 s per query after binding ports to 127.0.0.1 | 1 | Windows `localhost` tries ::1 first (2,069 vs 17 ms per call) → 127.0.0.1 in all host URLs |
+| C: full again (pagefile 16 GB + Docker vhdx growth) | 1 | user freed space (51→62 GB free); Docker engine went read-only → restarted Docker Desktop |
+| HF cache bind mount not writable by uid 1000 | 1 | Windows bind mounts are root:root 755 in the container → option removed, named volume only |
+| pre-commit mixed-line-ending exe hung (antivirus) | 1 | hook removed; .gitattributes eol=lf + ruff LF + newline="\n" writers cover it |
+| port 8000 taken by the user's own studio.py | 1 | API_HOST_PORT in compose (user's .env: 8010) |
 
 ## Notes
 
