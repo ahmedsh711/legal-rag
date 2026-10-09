@@ -297,6 +297,7 @@ def test_cli_writes_json_and_lineage(tmp_path, monkeypatch):
     out = tmp_path / "articles.json"
     parse_module.main(["--pdf", str(pdf), "--out", str(out), "--params", str(params)])
     records = json.loads(out.read_text(encoding="utf-8"))
+    assert b"\r" not in out.read_bytes()  # LF on every OS: DVC hashes raw bytes
     assert [r["article_number"] for r in records] == [1, 2, 12, 13, 14, 15, 16, 17]
     assert records[0]["id"] == "eg-civil-1"
     assert records[4]["quality_flags"] == ["arabic_only"]

@@ -189,7 +189,7 @@ def load_articles(path: str | Path) -> list[Article]:
 
 def _write_metrics(path: Path, metrics: dict[str, float]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(metrics, indent=2), encoding="utf-8", newline="\n")
 
 
 def main(argv: list[str] | None = None) -> None:

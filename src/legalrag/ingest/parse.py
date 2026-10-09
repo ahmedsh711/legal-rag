@@ -516,7 +516,7 @@ def _write_atomic(path: Path, text: str) -> None:
     """Write to a temp file then rename, so a crash never leaves a half-written output."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8", newline="\n")  # same bytes on every OS (DVC hash)
     tmp.replace(path)
 
 

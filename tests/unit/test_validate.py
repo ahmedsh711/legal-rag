@@ -165,6 +165,7 @@ def test_cli_writes_metrics_and_fails_on_errors(tmp_path):
     metrics = tmp_path / "metrics.json"
     main(["--articles", str(good), "--params", str(p), "--metrics", str(metrics)])
     assert json.loads(metrics.read_text(encoding="utf-8"))["articles_total"] == 6
+    assert b"\r" not in metrics.read_bytes()
 
     bad = tmp_path / "bad.json"
     bad.write_text(

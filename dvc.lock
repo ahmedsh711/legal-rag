@@ -15,8 +15,8 @@ stages:
       size: 416
     - path: src/legalrag/ingest
       hash: md5
-      md5: 84bbc3c0e778c59748eef82930a9e60b.dir
-      size: 104340
+      md5: 12e8301474f01218f1e64eebedd7672d.dir
+      size: 104336
       nfiles: 12
     - path: src/legalrag/logging_conf.py
       hash: md5
@@ -24,12 +24,12 @@ stages:
       size: 1545
     - path: src/legalrag/settings.py
       hash: md5
-      md5: e7b23f2b8fc4fa35bd87a9f7368923b1
-      size: 3491
+      md5: 0e26d49bf535a463040e16fdbfa4d6b7
+      size: 3922
     - path: uv.lock
       hash: md5
-      md5: 18717d0b71fc75bdbb764e506f30823e
-      size: 694335
+      md5: 874b3c254aa023fed0afde1b7a83d824
+      size: 825489
     params:
       params.yaml:
         corpus.known_anomalies:
@@ -65,12 +65,12 @@ stages:
     outs:
     - path: data/processed/articles.json
       hash: md5
-      md5: aba219cfa0f17d5dd9c74c031cb4db4b
-      size: 1731346
+      md5: 7f589ec24c78500aad3812642ee23eab
+      size: 1710653
     - path: data/processed/articles.meta.json
       hash: md5
-      md5: 28e071bd79ce1ba26143a138da6354dd
-      size: 262
+      md5: 935814c7a02c1adeeeb62606d3bd77cf
+      size: 251
   validate:
     cmd: uv run python -m legalrag.ingest.validate --articles
       data/processed/articles.json --params params.yaml --metrics
@@ -78,17 +78,17 @@ stages:
     deps:
     - path: data/processed/articles.json
       hash: md5
-      md5: aba219cfa0f17d5dd9c74c031cb4db4b
-      size: 1731346
+      md5: 7f589ec24c78500aad3812642ee23eab
+      size: 1710653
     - path: src/legalrag/ingest
       hash: md5
-      md5: 84bbc3c0e778c59748eef82930a9e60b.dir
-      size: 104340
+      md5: 12e8301474f01218f1e64eebedd7672d.dir
+      size: 104336
       nfiles: 12
     - path: uv.lock
       hash: md5
-      md5: 18717d0b71fc75bdbb764e506f30823e
-      size: 694335
+      md5: 874b3c254aa023fed0afde1b7a83d824
+      size: 825489
     params:
       params.yaml:
         corpus:
@@ -145,5 +145,44 @@ stages:
     outs:
     - path: reports/corpus_metrics.json
       hash: md5
+      md5: 9e5a0f6e2fcc7e6beb81a6839d7149f9
+      size: 210
+  index:
+    cmd: uv run python -m legalrag.index.build --articles
+      data/processed/articles.json --params params.yaml --manifest
+      data/processed/index_manifest.json --metrics reports/index_metrics.json
+    deps:
+    - path: data/processed/articles.json
+      hash: md5
+      md5: aba219cfa0f17d5dd9c74c031cb4db4b
+      size: 1731346
+    - path: reports/corpus_metrics.json
+      hash: md5
       md5: ef4a4663a7c2ae950b3661fabf7d00b0
       size: 220
+    - path: src/legalrag/index
+      hash: md5
+      md5: ae47a872da86b8e84362cc943f95391f.dir
+      size: 40497
+      nfiles: 8
+    - path: uv.lock
+      hash: md5
+      md5: 874b3c254aa023fed0afde1b7a83d824
+      size: 825489
+    params:
+      params.yaml:
+        index:
+          embedding_model: BAAI/bge-m3
+          embedding_revision: 9a0624b896d81da7492a910ffa53731274b6cf3d
+          max_length: 1024
+          batch_size: 16
+          alias: articles
+    outs:
+    - path: data/processed/index_manifest.json
+      hash: md5
+      md5: 6efcf28090457e619f6a0e9c1650fab6
+      size: 341
+    - path: reports/index_metrics.json
+      hash: md5
+      md5: b9c5e58e3fe0aabfaafacd1b0b147827
+      size: 50
