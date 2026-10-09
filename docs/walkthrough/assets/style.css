@@ -65,12 +65,25 @@ a { color: var(--accent); }
 
 /* bilingual blocks */
 .en, .ar { margin: 0 0 1rem; }
-.ar { font-family: var(--font-arabic); direction: rtl; text-align: right; font-size: 1.08em; line-height: 1.9; }
+.ar { font-family: var(--font-arabic); direction: rtl; text-align: right; font-size: 1.05em; line-height: 1.9; }
 .ar code, .ar .kw { direction: ltr; unicode-bidi: embed; font-size: 0.9em; }
 .ar h3, .ar strong { color: var(--gold); }
 body[data-lang="en"] .ar { display: none; }
 body[data-lang="ar"] .en { display: none; }
-body[data-lang="both"] .ar { border-inline-start: 3px solid var(--gold); padding-inline-start: 0.8rem; }
+/* Both: paragraphs are written in EN/AR pairs; on wide screens they sit side by side, row by row */
+body[data-lang="both"] main { max-width: 128ch; }
+body[data-lang="both"] div.ar { border-inline-start: 3px solid var(--gold); padding-inline-start: 0.8rem; }
+@media (min-width: 980px) {
+  body[data-lang="both"] .pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.6rem; align-items: start; }
+  body[data-lang="both"] .pair > div.ar { border-inline-start: 0; border-inline-end: 3px solid var(--gold); padding-inline-start: 0; padding-inline-end: 0.8rem; }
+}
+.pair > .en, .pair > .ar { min-width: 0; }
+/* bilingual headings: <h2><span class="en">..</span><span class="ar">..</span></h2> */
+h1 .ar, h2 .ar, h3 .ar { display: block; margin: 0.15rem 0 0; font-family: var(--font-arabic); font-weight: 700; }
+body[data-lang="both"] h1 .ar, body[data-lang="both"] h2 .ar, body[data-lang="both"] h3 .ar { font-size: 0.78em; color: var(--gold); }
+body[data-lang="en"] h1 .ar, body[data-lang="en"] h2 .ar, body[data-lang="en"] h3 .ar { display: none; }
+/* bilingual tables: one row per idea, EN and AR cells side by side */
+td.ar, th.ar { font-family: var(--font-arabic); direction: rtl; text-align: right; }
 
 code, pre { font-family: var(--font-mono); font-size: 0.86em; }
 code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
@@ -103,3 +116,26 @@ figure { margin: 1rem 0; }
 figure svg { max-width: 100%; height: auto; }
 figcaption { font-size: 0.85rem; color: var(--muted); }
 @media (prefers-reduced-motion: no-preference) { .lang-toggle button { transition: background 0.15s; } }
+
+/* pipeline flow: boxes with arrows, wraps on phones */
+.flow { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 1rem 0; }
+.flow .step { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 0.45rem 0.7rem; font-size: 0.88rem; }
+.flow .step b { display: block; color: var(--accent); }
+.flow .step.jev { border-color: var(--gold); }
+.flow .step.jev b { color: var(--gold); }
+.flow .arrow { color: var(--muted); }
+.legend { font-size: 0.85rem; color: var(--muted); }
+.term { font-weight: 600; color: var(--accent); }
+dl.glossary { display: grid; grid-template-columns: minmax(0, 14rem) minmax(0, 1fr); gap: 0.4rem 1rem; }
+dl.glossary dt { font-weight: 600; }
+dl.glossary dd { margin: 0; }
+@media (max-width: 640px) { dl.glossary { grid-template-columns: 1fr; } dl.glossary dd { margin-bottom: 0.6rem; } }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0.8rem; margin: 1rem 0; }
+.cards a.card { display: block; text-decoration: none; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 0.9rem 1rem; }
+.cards a.card:hover, .cards a.card:focus-visible { border-color: var(--accent); }
+.cards .card .k { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--accent); }
+.cards .card .t { font-family: var(--font-display); font-size: 1.1rem; margin: 0.2rem 0; }
+.cards .card .ar { font-size: 0.95rem; }
+
+/* Arabic inside code spans: keep letters joined (monospace fonts break Arabic shaping) */
+code.arw { font-family: var(--font-arabic); direction: rtl; unicode-bidi: isolate; font-size: 0.95em; }
