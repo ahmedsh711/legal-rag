@@ -10,11 +10,15 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi[standard]>=0.142.4",
     "httpx>=0.28.1",
+    "openai>=1.60",
     "pydantic>=2",
     "pydantic-settings>=2.13.1",
     "pypdf>=6.19.0",
     "pyyaml>=6.0.3",
+    "qdrant-client>=1.19",
     "structlog>=25.5.0",
+    "torch>=2.14.1",
+    "transformers>=4.44,<6",
     "truststore>=0.10.4",
 ]
 
@@ -42,6 +46,9 @@ line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
 
+[tool.ruff.format]
+line-ending = "lf"  # DVC hashes raw bytes of source deps: CRLF on Windows = "changed" on Linux
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "T20"]  # T20 = no print() in src (course rule)
 ignore = ["E501"]
@@ -55,7 +62,18 @@ ignore = ["E501"]
 testpaths = ["tests"]
 addopts = "--cov=src/legalrag --cov-report=term-missing --cov-fail-under=80"
 asyncio_mode = "auto"
+filterwarnings = ["ignore:Payload indexes have no effect in the local Qdrant"]
 
 [tool.coverage.run]
 branch = true
 source = ["src/legalrag"]
+
+# torch from PyTorch's CPU-only index: the default Linux wheel bundles CUDA (~2.5 GB) and would
+# bloat the API image. The GPU belongs to vLLM; embeddings run on CPU.
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

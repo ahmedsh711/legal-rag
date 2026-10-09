@@ -28,3 +28,24 @@ stages:
     metrics:
       - reports/corpus_metrics.json:
           cache: false
+
+  index:
+    # embeds every article with bge-m3 and loads it into Qdrant (needs: docker compose --profile core up -d qdrant)
+    # always_changed: the real output lives in Qdrant, which DVC cannot see (fresh clone, wiped
+    # volume). The stage runs on every repro; the build reuses an existing identical collection
+    # in seconds and only embeds when it is missing.
+    always_changed: true
+    cmd: uv run python -m legalrag.index.build --articles data/processed/articles.json --params params.yaml --manifest data/processed/index_manifest.json --metrics reports/index_metrics.json
+    deps:
+      - data/processed/articles.json
+      - reports/corpus_metrics.json   # runs only after `validate` passed: never embed an invalid corpus
+      - src/legalrag/index
+      - uv.lock
+    params:
+      - index
+    outs:
+      - data/processed/index_manifest.json:
+          cache: false
+    metrics:
+      - reports/index_metrics.json:
+          cache: false

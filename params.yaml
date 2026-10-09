@@ -44,3 +44,11 @@ corpus:
       reason: "the PDF's Arabic has one paragraph; the English has two (the second is scrambled)"
       flag: arabic_shorter_than_english
       allow: [length_ratio]
+
+# Index build (src/legalrag/index/build.py). Changing any of these builds a new collection.
+index:
+  embedding_model: BAAI/bge-m3
+  embedding_revision: 9a0624b896d81da7492a910ffa53731274b6cf3d  # pinned commit (safetensors); same weights on every rebuild
+  max_length: 1024          # tokens per text; the longest article is ~600 tokens
+  batch_size: 16
+  alias: articles
