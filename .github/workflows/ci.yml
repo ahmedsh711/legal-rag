@@ -1,0 +1,44 @@
+# Continuous integration: runs on every pull request and on pushes to main.
+# lint -> test (coverage gate lives in pyproject.toml). Later phases add the
+# RAGAS quality gate and the Docker build/push jobs (see task_plan.md, Phase 4).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install (exactly what uv.lock says)
+        run: uv sync --locked
+      - name: Ruff lint
+        run: uv run ruff check src tests
+      - name: Ruff format check
+        run: uv run ruff format --check src tests
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Tests with coverage gate
+        run: uv run pytest
