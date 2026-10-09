@@ -9,7 +9,7 @@ services:
   # Ports are published on 127.0.0.1 only: these services have no auth (or dev passwords), so
   # nobody else on the Wi-Fi should reach them. Containers talk to each other by service name.
   qdrant:
-    image: qdrant/qdrant:v1.16.1
+    image: qdrant/qdrant:v1.19.2  # keep within one minor version of qdrant-client in uv.lock
     profiles: [core]
     ports: ["127.0.0.1:6333:6333", "127.0.0.1:6334:6334"]
     volumes: [qdrant_data:/qdrant/storage]
@@ -44,12 +44,13 @@ services:
       FEEDBACK_PATH: /app/feedback/feedback.jsonl
     volumes:
       # bge-m3 (~2.3 GB) is downloaded once into this volume, not baked into the image.
-      # HF_CACHE=<host ~/.cache/huggingface> in .env reuses the host's copy instead.
-      - ${HF_CACHE:-hf_cache}:/home/app/.cache/huggingface
+      # (A Windows bind mount was tried: it appears as root:root 755 inside the container,
+      # so the non-root app user cannot write the model there.)
+      - hf_cache:/home/app/.cache/huggingface
       - feedback:/app/feedback
       # only on machines with HTTPS inspection: LOCAL_CA_CERT=<path to root CA pem> in .env
       - ${LOCAL_CA_CERT:-./no-local-ca.pem}:/run/local-ca.pem:ro
-    ports: ["127.0.0.1:8000:8000"]
+    ports: ["127.0.0.1:${API_HOST_PORT:-8000}:8000"]  # port 8000 taken on your machine? set API_HOST_PORT
     depends_on:
       qdrant:
         condition: service_healthy

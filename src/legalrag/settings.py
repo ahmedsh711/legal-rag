@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     app_name: str = "legal-rag"
     environment: Literal["dev", "staging", "prod"] = "dev"
     log_level: str = "INFO"
-    api_port: int = 8000
 
     # --- generation backend (OpenAI-compatible everywhere: OpenRouter or local vLLM) ---
     llm_backend: Literal["openrouter", "vllm"] = "openrouter"
@@ -33,7 +32,7 @@ class Settings(BaseSettings):
     judge_model: str = (
         "anthropic/claude-haiku-5.5"  # different family from the generator (self-preference bias)
     )
-    vllm_base_url: str = "http://localhost:8001/v1"
+    vllm_base_url: str = "http://127.0.0.1:8001/v1"
     vllm_model: str = "Qwen/Qwen2.5-1.5B-Instruct-AWQ"
     llm_timeout_s: float = 60.0
     llm_max_tokens: int = 800
@@ -60,7 +59,9 @@ class Settings(BaseSettings):
     embedding_revision: str = "9a0624b896d81da7492a910ffa53731274b6cf3d"  # pragma: allowlist secret
     embedding_device: Literal["cpu", "cuda"] = "cpu"
     query_max_length: int = 512  # questions are short; shorter max length = faster query embedding
-    qdrant_url: str = "http://localhost:6333"
+    # 127.0.0.1, not "localhost": compose publishes ports on IPv4 loopback only, and on Windows
+    # "localhost" tries IPv6 (::1) first -> every Qdrant call waited ~2 s (measured 2,069 vs 17 ms)
+    qdrant_url: str = "http://127.0.0.1:6333"
     qdrant_collection_alias: str = "articles"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
@@ -71,11 +72,11 @@ class Settings(BaseSettings):
     feedback_path: str = "data/feedback/feedback.jsonl"
 
     # --- infra ---
-    redis_url: str = "redis://localhost:6379/0"
-    mlflow_tracking_uri: str = "http://localhost:5000"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    mlflow_tracking_uri: str = "http://127.0.0.1:5000"
     mlflow_config_model_name: str = "legal-rag-config"
     mlflow_config_alias: str = "production"
-    langfuse_host: str = "http://localhost:3000"
+    langfuse_host: str = "http://127.0.0.1:3000"
     langfuse_public_key: SecretStr = SecretStr("")
     langfuse_secret_key: SecretStr = SecretStr("")
     rate_limit_per_minute: int = 60

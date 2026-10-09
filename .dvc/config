@@ -3,4 +3,4 @@
     autostage = true
 ['remote "minio"']
     url = s3://dvc
-    endpointurl = http://localhost:9000
+    endpointurl = http://127.0.0.1:9000
