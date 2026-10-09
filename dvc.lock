@@ -1,0 +1,149 @@
+schema: '2.0'
+stages:
+  parse:
+    cmd: uv run python -m legalrag.ingest.parse --pdf
+      data/raw/egyptian_civil_code.pdf --out data/processed/articles.json
+      --params params.yaml
+    deps:
+    - path: data/raw/egyptian_civil_code.pdf
+      hash: md5
+      md5: 5086ef5f16f15d856278db943e58e948
+      size: 2599703
+    - path: src/legalrag/__init__.py
+      hash: md5
+      md5: 82e2879621db4f455178f0298d08a18d
+      size: 416
+    - path: src/legalrag/ingest
+      hash: md5
+      md5: 84bbc3c0e778c59748eef82930a9e60b.dir
+      size: 104340
+      nfiles: 12
+    - path: src/legalrag/logging_conf.py
+      hash: md5
+      md5: 44209058df21d94cb1efb28e24541b86
+      size: 1545
+    - path: src/legalrag/settings.py
+      hash: md5
+      md5: e7b23f2b8fc4fa35bd87a9f7368923b1
+      size: 3491
+    - path: uv.lock
+      hash: md5
+      md5: 18717d0b71fc75bdbb764e506f30823e
+      size: 694335
+    params:
+      params.yaml:
+        corpus.known_anomalies:
+          1022:
+            reason: the PDF prints Article 1022's Arabic inside Article 1021's
+              Arabic block
+            flag: arabic_text_inside_article_1021
+            allow:
+            - empty_ar
+          1021:
+            reason: its Arabic block also contains the Arabic of Article 1022
+            flag: contains_arabic_of_article_1022
+            allow:
+            - length_ratio
+          970:
+            reason: the Arabic includes later amendments (state property) that
+              the English translation lacks
+            flag: arabic_newer_than_english
+            allow:
+            - length_ratio
+          519:
+            reason: the PDF's Arabic is one sentence; the English translation
+              has three
+            flag: arabic_shorter_than_english
+            allow:
+            - length_ratio
+          1060:
+            reason: the PDF's Arabic has one paragraph; the English has two (the
+              second is scrambled)
+            flag: arabic_shorter_than_english
+            allow:
+            - length_ratio
+    outs:
+    - path: data/processed/articles.json
+      hash: md5
+      md5: aba219cfa0f17d5dd9c74c031cb4db4b
+      size: 1731346
+    - path: data/processed/articles.meta.json
+      hash: md5
+      md5: 28e071bd79ce1ba26143a138da6354dd
+      size: 262
+  validate:
+    cmd: uv run python -m legalrag.ingest.validate --articles
+      data/processed/articles.json --params params.yaml --metrics
+      reports/corpus_metrics.json
+    deps:
+    - path: data/processed/articles.json
+      hash: md5
+      md5: aba219cfa0f17d5dd9c74c031cb4db4b
+      size: 1731346
+    - path: src/legalrag/ingest
+      hash: md5
+      md5: 84bbc3c0e778c59748eef82930a9e60b.dir
+      size: 104340
+      nfiles: 12
+    - path: uv.lock
+      hash: md5
+      md5: 18717d0b71fc75bdbb764e506f30823e
+      size: 694335
+    params:
+      params.yaml:
+        corpus:
+          expected_articles: 1149
+          max_chars_ar: 1800
+          max_chars_en: 2700
+          length_ratio:
+          - 0.9
+          - 2.8
+          pinned:
+            1: تسرى النصوص التشريعية
+            89: يتم العقد بمجرد أن يتبادل طرفان
+            147: العقد شريعة المتعاقدين
+            374: خمس عشرة سنة
+            418: أن ينقل للمشتري
+            802: لمالك الشيء وحده
+            1030: الرهن الرسمي عقد
+            1149: للشركاء الذين اقتسموا
+          book_starts:
+            89: الكتاب الأول
+            418: الكتاب الثاني
+            802: الكتاب الثالث
+            1030: الكتاب الرابع
+          known_anomalies:
+            1022:
+              reason: the PDF prints Article 1022's Arabic inside Article 1021's
+                Arabic block
+              flag: arabic_text_inside_article_1021
+              allow:
+              - empty_ar
+            1021:
+              reason: its Arabic block also contains the Arabic of Article 1022
+              flag: contains_arabic_of_article_1022
+              allow:
+              - length_ratio
+            970:
+              reason: the Arabic includes later amendments (state property) that
+                the English translation lacks
+              flag: arabic_newer_than_english
+              allow:
+              - length_ratio
+            519:
+              reason: the PDF's Arabic is one sentence; the English translation
+                has three
+              flag: arabic_shorter_than_english
+              allow:
+              - length_ratio
+            1060:
+              reason: the PDF's Arabic has one paragraph; the English has two
+                (the second is scrambled)
+              flag: arabic_shorter_than_english
+              allow:
+              - length_ratio
+    outs:
+    - path: reports/corpus_metrics.json
+      hash: md5
+      md5: ef4a4663a7c2ae950b3661fabf7d00b0
+      size: 220

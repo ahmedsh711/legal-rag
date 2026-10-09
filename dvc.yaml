@@ -1,0 +1,30 @@
+# Reproducible corpus pipeline. `dvc repro` re-runs only stages whose deps/params changed.
+# uv.lock is a dependency on purpose: a pypdf upgrade can change extraction, so it must rebuild.
+# Later phases add: index (embed -> Qdrant) and evaluate (golden set -> RAGAS -> MLflow).
+stages:
+  parse:
+    cmd: uv run python -m legalrag.ingest.parse --pdf data/raw/egyptian_civil_code.pdf --out data/processed/articles.json --params params.yaml
+    deps:
+      - data/raw/egyptian_civil_code.pdf
+      - src/legalrag/ingest
+      - src/legalrag/__init__.py
+      - src/legalrag/settings.py
+      - src/legalrag/logging_conf.py
+      - uv.lock
+    params:
+      - corpus.known_anomalies
+    outs:
+      - data/processed/articles.json
+      - data/processed/articles.meta.json
+
+  validate:
+    cmd: uv run python -m legalrag.ingest.validate --articles data/processed/articles.json --params params.yaml --metrics reports/corpus_metrics.json
+    deps:
+      - data/processed/articles.json
+      - src/legalrag/ingest
+      - uv.lock
+    params:
+      - corpus
+    metrics:
+      - reports/corpus_metrics.json:
+          cache: false

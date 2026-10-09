@@ -11,13 +11,7 @@ dist/
 # secrets & local
 .env
 *.pem
-# data handled by DVC (pointer files are committed)
-/data/raw/*
-!/data/raw/*.dvc
-!/data/raw/.gitignore
-/data/processed/*
-!/data/processed/*.dvc
-!/data/processed/.gitignore
+# data files are git-ignored by DVC itself (it writes a .gitignore next to each tracked file)
 # course copyright material (local reference only)
 /docs/research/course_materials/
 /docs/research/handbook.pdf
