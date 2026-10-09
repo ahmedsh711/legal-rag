@@ -1,0 +1,53 @@
+schema: '2.0'
+stages:
+  parse:
+    cmd: uv run python -m legalrag.ingest.parse --pdf
+      data/raw/egyptian_civil_code.pdf --out data/processed/articles.json
+    deps:
+    - path: data/raw/egyptian_civil_code.pdf
+      hash: md5
+      md5: 5086ef5f16f15d856278db943e58e948
+      size: 2599703
+    - path: src/legalrag/ingest/normalize.py
+      hash: md5
+      md5: e86eeacb4ad2b955c2fe165a47024003
+      size: 3846
+    - path: src/legalrag/ingest/parse.py
+      hash: md5
+      md5: a52edac9f377f408ed5df11310a30f64
+      size: 16324
+    - path: src/legalrag/ingest/schema.py
+      hash: md5
+      md5: b3b63f07e8fcf1f516cf8b86c495bfde
+      size: 1010
+    outs:
+    - path: data/processed/articles.json
+      hash: md5
+      md5: d21eead0566355413ae895f92f722748
+      size: 1581539
+  validate:
+    cmd: uv run python -m legalrag.ingest.validate --articles
+      data/processed/articles.json --params params.yaml --metrics
+      reports/corpus_metrics.json
+    deps:
+    - path: data/processed/articles.json
+      hash: md5
+      md5: d21eead0566355413ae895f92f722748
+      size: 1581539
+    - path: src/legalrag/ingest/validate.py
+      hash: md5
+      md5: db3813c1a6dd87a98ad54cf9b23876eb
+      size: 5281
+    params:
+      params.yaml:
+        corpus:
+          expected_articles: 1149
+          max_chars: 2500
+          known_anomalies:
+            1022: Arabic text of Article 1022 is merged into Article 1021's
+              Arabic block in the source PDF
+    outs:
+    - path: reports/corpus_metrics.json
+      hash: md5
+      md5: d02fdbc8220eec889a6d218939041eb5
+      size: 220

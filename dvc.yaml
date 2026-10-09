@@ -1,0 +1,23 @@
+# Reproducible corpus pipeline. `dvc repro` re-runs only stages whose deps/params changed.
+# Later phases add: index (embed -> Qdrant) and evaluate (golden set -> RAGAS -> MLflow).
+stages:
+  parse:
+    cmd: uv run python -m legalrag.ingest.parse --pdf data/raw/egyptian_civil_code.pdf --out data/processed/articles.json
+    deps:
+      - data/raw/egyptian_civil_code.pdf
+      - src/legalrag/ingest/parse.py
+      - src/legalrag/ingest/normalize.py
+      - src/legalrag/ingest/schema.py
+    outs:
+      - data/processed/articles.json
+
+  validate:
+    cmd: uv run python -m legalrag.ingest.validate --articles data/processed/articles.json --params params.yaml --metrics reports/corpus_metrics.json
+    deps:
+      - data/processed/articles.json
+      - src/legalrag/ingest/validate.py
+    params:
+      - corpus
+    metrics:
+      - reports/corpus_metrics.json:
+          cache: false

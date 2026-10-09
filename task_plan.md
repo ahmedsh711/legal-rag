@@ -6,11 +6,11 @@ Ship a production-style, fully observable RAG service over the Egyptian Civil Co
 
 ## Next Step
 
-Phase 0: push branch module-0-bootstrap, open PR #1, wait for green CI, merge. Then start Phase 1 (corpus parser, TDD).
+Phase 1: study pypdf output, then TDD ingest/parse.py (split on English Article lines, pair Arabic, headings, repealed flags).
 
 ## Current Phase
 
-Phase 0
+Phase 1
 
 ## Phases
 
@@ -24,15 +24,15 @@ Full detail (tasks, acceptance checks, decisions, risks) lives in `docs/PLAN.md`
 - [x] CLAUDE.md, README skeleton, planning files
 - [x] docs/walkthrough: index + 4 concept pages (00a foundations, 00b rag-jev, 00c eval-tracking, 00d serving-monitoring), EN/AR/Both toggle, chosen/rejected tables
 - [x] minimal CI (lint + tests) added early so PR #1 has a real check
-- [ ] PR #1 merged
-- **Status:** in_progress
+- [x] PR #1 merged (CI green: lint 6s, test 7s); branch protection requires lint+test
+- **Status:** complete
 
 ### Phase 1: Corpus pipeline PDF → articles.json + DVC (branch module-1-corpus)
 
 - [ ] TDD ingest/parse.py, normalize.py, validate.py (1,149 articles, repealed 55–80 & 389–417, Art 452 EN empty)
 - [ ] dvc init + MinIO remote + dvc.yaml parse→validate; dvc repro idempotent; 20-article spot check in reports/module-1.md
 - [ ] walkthrough 01-corpus.html
-- **Status:** pending
+- **Status:** in_progress
 
 ### Phase 2: Vanilla RAG + FastAPI + Docker (tag v0.1.0)
 
@@ -109,6 +109,10 @@ Full detail (tasks, acceptance checks, decisions, risks) lives in `docs/PLAN.md`
 |-------|---------|------------|
 | Windows `gh` not logged in | 1 | reused WSL gh token via `gh auth login --with-token` |
 | `bash` on PATH resolves to WSL bash → ralph-loop hook would fail | 1 | patched plugin hooks.json to Git Bash full path |
+| ralph-loop stop hook needs `jq` (missing on Windows) | 1 | installed jq 1.8.1 into ~/.local/bin |
+| minio/minio and quay.io MinIO images no longer pullable | 1 | switched to frozen `bitnamilegacy/minio:2025.7.23` (auto-creates buckets); noted in report |
+| plain `dvc push/pull` skipped the PDF pointer | 2 | root cause: root .gitignore `data/raw/*` made DVC treat the folder as ignored; removed it, DVC writes per-file .gitignore; wipe-and-pull test passes |
+| parser: tanween-ending words broke AR/EN line split | 1 | `_LAST_ARABIC` includes diacritics; regression test added |
 
 ## Notes
 
