@@ -10,10 +10,10 @@ def test_defaults_are_sane_without_env(monkeypatch):
     s = Settings(_env_file=None)
     # Assert
     assert s.llm_backend == "openrouter"
-    assert s.decider_backend == "jev"
+    assert s.decider_backend == "none"  # off until the Phase 3 ablation picks one
     assert s.embedding_model == "BAAI/bge-m3"
     assert 0 < s.gate_threshold <= 1
-    assert s.tier_second_opinion < s.tier_act
+    assert s.rerank_keep_top <= s.retrieve_top_n
 
 
 def test_env_overrides_defaults(monkeypatch):

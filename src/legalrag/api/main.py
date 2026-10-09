@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -25,6 +26,9 @@ from openai import APIConnectionError, APIStatusError
 from legalrag import __version__
 from legalrag.api.middleware import RequestIdMiddleware
 from legalrag.api.schemas import AskRequest, AskResponse, FeedbackRequest, HealthResponse, Source
+from legalrag.decider.base import Decider
+from legalrag.decider.jev import JevDecider
+from legalrag.decider.local import LocalDecider
 from legalrag.generation import PROMPT_VERSION, Generator, make_client
 from legalrag.index.store import alias_target, read_metadata
 from legalrag.ingest.normalize import NORMALIZATION_VERSION
@@ -102,9 +106,29 @@ def build_components(settings: Settings) -> Components:
         settings.llm_temperature,
     )
     pipeline = RagPipeline(
-        retriever, generator, context_size=settings.rerank_keep_top, top_n=settings.retrieve_top_n
+        retriever,
+        generator,
+        context_size=settings.rerank_keep_top,
+        top_n=settings.retrieve_top_n,
+        decider=build_decider(settings),
+        gate_threshold=settings.gate_threshold,
     )
     return Components(pipeline, client, settings.qdrant_collection_alias, collection, meta or {})
+
+
+def build_decider(settings: Settings) -> Decider | None:
+    if settings.decider_backend == "jev":
+        return JevDecider(
+            httpx.AsyncClient(timeout=settings.jev_timeout_s),
+            settings.jev_base_url,
+            settings.openrouter_api_key.get_secret_value(),
+            settings.jev_model,
+        )
+    if settings.decider_backend == "local":
+        return LocalDecider.from_pretrained(
+            settings.reranker_model, settings.reranker_revision, settings.embedding_device
+        )
+    return None
 
 
 def _llm_failure(exc: Exception) -> tuple[int, str, dict[str, str]]:
