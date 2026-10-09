@@ -30,10 +30,12 @@ def main() -> int:
     params = load_index_params("params.yaml")
     # Give FlagEmbedding a local folder at the pinned commit; otherwise it downloads the whole
     # repo (pytorch_model.bin + a 2.2 GB ONNX copy) on its own.
+    # colbert_linear.pt is required too: without it FlagEmbedding silently uses a RANDOM sparse
+    # head (it only logs "new initialize" at INFO level) and the comparison is meaningless.
     local = snapshot_download(
         params.embedding_model,
         revision=params.embedding_revision,
-        allow_patterns=["*.json", "*.model", "model.safetensors", "sparse_linear.pt"],
+        allow_patterns=["*.json", "*.model", "model.safetensors", "*_linear.pt"],
     )
     articles = [
         Article(**r)

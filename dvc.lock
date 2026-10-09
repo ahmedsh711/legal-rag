@@ -15,8 +15,8 @@ stages:
       size: 416
     - path: src/legalrag/ingest
       hash: md5
-      md5: 12e8301474f01218f1e64eebedd7672d.dir
-      size: 104336
+      md5: 00340d0d03c827a34ca62b8ba24741d7.dir
+      size: 104355
       nfiles: 12
     - path: src/legalrag/logging_conf.py
       hash: md5
@@ -24,8 +24,8 @@ stages:
       size: 1545
     - path: src/legalrag/settings.py
       hash: md5
-      md5: 0e26d49bf535a463040e16fdbfa4d6b7
-      size: 3922
+      md5: 1ebfda8b3e6fb1a88ed85ebb80ec14af
+      size: 4167
     - path: uv.lock
       hash: md5
       md5: 874b3c254aa023fed0afde1b7a83d824
@@ -82,8 +82,8 @@ stages:
       size: 1710653
     - path: src/legalrag/ingest
       hash: md5
-      md5: 12e8301474f01218f1e64eebedd7672d.dir
-      size: 104336
+      md5: 00340d0d03c827a34ca62b8ba24741d7.dir
+      size: 104355
       nfiles: 12
     - path: uv.lock
       hash: md5
@@ -145,8 +145,8 @@ stages:
     outs:
     - path: reports/corpus_metrics.json
       hash: md5
-      md5: 9e5a0f6e2fcc7e6beb81a6839d7149f9
-      size: 210
+      md5: e5f99020baa97099260e6cdd4a11032f
+      size: 211
   index:
     cmd: uv run python -m legalrag.index.build --articles
       data/processed/articles.json --params params.yaml --manifest
@@ -154,16 +154,16 @@ stages:
     deps:
     - path: data/processed/articles.json
       hash: md5
-      md5: aba219cfa0f17d5dd9c74c031cb4db4b
-      size: 1731346
+      md5: 7f589ec24c78500aad3812642ee23eab
+      size: 1710653
     - path: reports/corpus_metrics.json
       hash: md5
-      md5: ef4a4663a7c2ae950b3661fabf7d00b0
-      size: 220
+      md5: e5f99020baa97099260e6cdd4a11032f
+      size: 211
     - path: src/legalrag/index
       hash: md5
-      md5: ae47a872da86b8e84362cc943f95391f.dir
-      size: 40497
+      md5: 478895d28887937ab3d0ee2e2f2273b7.dir
+      size: 46679
       nfiles: 8
     - path: uv.lock
       hash: md5
@@ -180,9 +180,9 @@ stages:
     outs:
     - path: data/processed/index_manifest.json
       hash: md5
-      md5: 6efcf28090457e619f6a0e9c1650fab6
-      size: 341
+      md5: fd319888f067f85ca93d4c8087b388c8
+      size: 362
     - path: reports/index_metrics.json
       hash: md5
-      md5: b9c5e58e3fe0aabfaafacd1b0b147827
-      size: 50
+      md5: 1f9ea80219f9f51ec13de46be65b8e8a
+      size: 63

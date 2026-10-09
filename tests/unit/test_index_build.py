@@ -3,7 +3,13 @@
 import pytest
 from qdrant_client import QdrantClient
 
-from legalrag.index.build import IndexParams, build_index, collection_name, load_index_params
+from legalrag.index.build import (
+    IndexParams,
+    build_index,
+    collection_name,
+    finished_build,
+    load_index_params,
+)
 from legalrag.index.store import alias_target, read_metadata
 
 
@@ -48,6 +54,17 @@ def test_rebuild_with_same_inputs_reuses_the_serving_collection(articles, embedd
     assert again["collection"] == first["collection"] and again["reused"]
     assert alias_target(client, "articles") == first["collection"]
     assert client.count(first["collection"]).count == first["points"]
+
+
+def test_finished_build_tells_whether_embedding_is_needed(articles, embedder):
+    client = QdrantClient(":memory:")
+    name = collection_name("articles", "v1", IndexParams())
+    assert finished_build(client, name) is None  # fresh Qdrant: must embed
+    build_index(articles, embedder, client, IndexParams(), articles_md5="v1")
+    assert finished_build(client, name)["points"] == 9  # already there: no model needed
+    # the reuse path never touches the embedder, so main() can skip loading bge-m3
+    again = build_index(articles, None, client, IndexParams(), articles_md5="v1")
+    assert again["reused"]
 
 
 def test_empty_corpus_never_goes_live(embedder):

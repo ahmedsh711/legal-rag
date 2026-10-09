@@ -12,10 +12,10 @@ Prerequisites: Docker Desktop, [uv](https://docs.astral.sh/uv/), `cp .env.exampl
 ```bash
 docker compose --env-file .env -f docker/compose.yaml --profile core up -d   # 1. qdrant + redis + api
 uv run dvc repro                                                             # 2. PDF -> articles.json -> validate -> Qdrant index
-curl -s localhost:8000/ask -H 'content-type: application/json'      -d '{"question":"ما هي مدة تقادم الالتزام؟"}'                             # 3. ask (add ?stream=true for SSE)
+curl -s 127.0.0.1:8000/ask -H 'content-type: application/json'      -d '{"question":"ما هي مدة تقادم الالتزام؟"}'                             # 3. ask (add ?stream=true for SSE)
 ```
 
-Step 2 embeds 2,241 texts with bge-m3 on CPU (~17 min on a laptop, once; DVC skips it when nothing changed). The API container waits for the index: until the alias exists it exits and Docker restarts it. Check with `curl localhost:8000/health` (`"status": "ok"` once ready) and see what is serving with `curl localhost:8000/metadata`.
+Step 2 embeds 2,241 texts with bge-m3 on CPU (~17 min on a laptop, once; DVC skips it when nothing changed). The API container waits for the index: until the alias exists it exits and Docker restarts it. Check with `curl 127.0.0.1:8000/health` (`"status": "ok"` once ready) and see what is serving with `curl 127.0.0.1:8000/metadata`.
 
 | Endpoint | Purpose |
 |---|---|
@@ -25,7 +25,7 @@ Step 2 embeds 2,241 texts with bge-m3 on CPU (~17 min on a laptop, once; DVC ski
 | `GET /live` | liveness: the process answers |
 | `GET /metadata` | app, prompt, LLM, embedding model and index versions |
 
-Interactive docs: http://localhost:8000/docs
+Interactive docs: http://127.0.0.1:8000/docs
 
 ## Developer commands
 
