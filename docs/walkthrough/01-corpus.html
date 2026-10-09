@@ -53,6 +53,7 @@
     <tr><td class="file">src/legalrag/ingest/normalize.py</td><td class="en">Small text helpers: script detection, bracket repair, line joining, search normalization.</td><td class="ar">أدوات نص صغيرة: نعرف النص عربي ولا إنجليزي، نصلّح الأقواس، نلزق السطور، ونوحّد للبحث.</td></tr>
     <tr><td class="file">src/legalrag/ingest/parse.py</td><td class="en">Reads the PDF and cuts it into articles with their headings. A DVC stage.</td><td class="ar">بيقرا الـ PDF ويقسّمه لمواد بعناوينها. وهو مرحلة في DVC.</td></tr>
     <tr><td class="file">src/legalrag/ingest/validate.py</td><td class="en">Checks the result and fails loudly on gaps, empty text, mixed scripts, failed splits. A DVC stage.</td><td class="ar">بيراجع النتيجة ويفشل بصوت عالي لو فيه فجوات أو نص فاضي أو لغات متلخبطة أو تقسيم فاشل. وهو مرحلة في DVC.</td></tr>
+    <tr><td class="file">src/legalrag/ingest/params.py</td><td class="en">Loads the <code>corpus</code> section of params.yaml into a typed model; a typo fails with a clear message.</td><td class="ar">بيقرا جزء <code>corpus</code> من params.yaml في model بأنواع؛ أي غلطة إملائية بتفشل برسالة واضحة.</td></tr>
     <tr><td class="file">params.yaml</td><td class="en">Validation thresholds and the known-anomaly list, versioned by DVC.</td><td class="ar">حدود المراجعة وقايمة المشاكل المعروفة، وDVC بيتابع نسخها.</td></tr>
     <tr><td class="file">dvc.yaml / dvc.lock</td><td class="en">The pipeline (parse → validate) and the exact hashes of its inputs and outputs.</td><td class="ar">الـ pipeline (parse ← validate) والـ hashes بالظبط لمدخلاتها ومخرجاتها.</td></tr>
     <tr><td class="file">data/raw/egyptian_civil_code.pdf.dvc</td><td class="en">A 5-line pointer: the PDF's MD5 and size. The PDF itself lives in MinIO.</td><td class="ar">فايل صغير 5 سطور بيشاور على الـ PDF (الـ MD5 والحجم). الـ PDF نفسه في MinIO.</td></tr>
@@ -110,7 +111,8 @@
     <ul>
       <li><strong>hierarchy</strong>: <code>book</code> (الكتاب), <code>chapter</code> (الباب), <code>section</code> (الفصل), <code>subsection</code> (الفرع), <code>topic</code> (numbered headings), plus <code>heading_en</code> (the English path). Later these become search filters.</li>
       <li><strong>text</strong>: <code>text_ar</code>, <code>text_en</code>, kept exactly as written apart from extraction repairs.</li>
-      <li><strong>status</strong>: <code>is_repealed</code>, <code>note</code>, <code>source_page</code>, and <code>citation</code> ("Egyptian Civil Code, Article N"), filled automatically in <code>model_post_init</code>.</li>
+      <li><strong>status</strong>: <code>is_repealed</code>, <code>note</code>, <code>quality_flags</code> (documented source defects) and <code>source_page</code>.</li>
+      <li><strong>identity</strong>: <code>id</code> (<code>eg-civil-147</code>), <code>citation</code> and <code>citation_ar</code> are derived from the number and <em>checked</em> on load, so they can never drift. <code>extra="forbid"</code> rejects unknown fields: a schema mismatch fails instead of passing silently.</li>
     </ul>
   </div>
   <div class="ar" lang="ar" dir="rtl">
@@ -118,7 +120,8 @@
     <ul>
       <li><strong>التسلسل</strong>: <code>book</code> (الكتاب)، <code>chapter</code> (الباب)، <code>section</code> (الفصل)، <code>subsection</code> (الفرع)، <code>topic</code> (العناوين المرقمة)، و<code>heading_en</code> (المسار بالإنجليزي). بعدين دول هيبقوا filters في البحث.</li>
       <li><strong>النص</strong>: <code>text_ar</code> و<code>text_en</code>، زي ما هما مكتوبين بالظبط ماعدا تصليح أخطاء الاستخراج.</li>
-      <li><strong>الحالة</strong>: <code>is_repealed</code> و<code>note</code> و<code>source_page</code> و<code>citation</code> ("Egyptian Civil Code, Article N")، وده بيتملي لوحده في <code>model_post_init</code>.</li>
+      <li><strong>الحالة</strong>: <code>is_repealed</code> و<code>note</code> و<code>quality_flags</code> (عيوب معروفة في المصدر) و<code>source_page</code>.</li>
+      <li><strong>الهوية</strong>: <code>id</code> (<code>eg-civil-147</code>) و<code>citation</code> و<code>citation_ar</code> بيتحسبوا من رقم المادة و<em>بيتراجعوا</em> وقت التحميل، فعمرهم ما يختلفوا عنه. و<code>extra="forbid"</code> بيرفض أي حقل غريب: لو الـ schema اختلفت البرنامج يفشل بدل ما يعدّي.</li>
     </ul>
   </div>
 </div>
@@ -157,10 +160,11 @@
   </div>
 </div>
 <div class="flow" aria-label="Parser modes">
-  <div class="step"><b>ar</b>collect Arabic text</div><span class="arrow">→</span>
-  <div class="step"><b>en</b>collect English text</div><span class="arrow">⇄</span>
-  <div class="step"><b>ar2</b>a later Arabic paragraph (AR1, EN1, AR2, EN2 layout)</div><span class="arrow">→</span>
-  <div class="step jev"><b>tail</b>headings for the next article</div>
+  <div class="step"><b>ARABIC</b>collect Arabic text</div><span class="arrow">→</span>
+  <div class="step"><b>ENGLISH</b>collect English text</div><span class="arrow">⇄</span>
+  <div class="step"><b>ARABIC_AGAIN</b>a later Arabic paragraph (AR1, EN1, AR2, EN2 layout)</div><span class="arrow">→</span>
+  <div class="step"><b>NOTE</b>a repeal note inside English text</div><span class="arrow">→</span>
+  <div class="step jev"><b>HEADINGS</b>lines for the next article</div>
 </div>
 <div class="tablewrap"><table>
   <thead><tr><th>Piece</th><th class="en">What it does and why</th><th class="ar">بيعمل إيه وليه</th></tr></thead>
@@ -173,7 +177,10 @@
     <tr><td><code>_split_mixed()</code>, <code>_english_tail()</code></td><td class="en">Split "Arabic … English" lines at the last Arabic letter <em>or diacritic</em> (tanween at a word end once broke this), keeping the full stop with the Arabic.</td><td class="ar">بيقسموا سطر "عربي … إنجليزي" عند آخر حرف عربي <em>أو تشكيل</em> (التنوين في آخر الكلمة كان مبوّظ ده مرة)، والنقطة بتفضل مع العربي.</td></tr>
     <tr><td><code>_looks_like_body()</code></td><td class="en">Arabic appearing after English: is it the next paragraph of this article, or a heading? Body if it starts with a paragraph marker, is ≥ 50 characters (headings are short, wrapped body lines are ~70), or ends with <code>.</code>/<code class="arw">،</code>. Lines like <code class="arw">الفصل…</code> or <code class="arw">١ -…</code> are always headings.</td><td class="ar">لو عربي ظهر بعد الإنجليزي: ده فقرة جاية من نفس المادة ولا عنوان؟ بيبقى نص لو بادئ بعلامة فقرة، أو طوله ≥ 50 حرف (العناوين قصيرة والسطور العادية حوالي 70)، أو بينتهي بـ <code>.</code> أو <code class="arw">،</code>. وسطور زي <code class="arw">الفصل…</code> أو <code class="arw">١ -…</code> دايمًا عناوين.</td></tr>
     <tr><td><code>Headings.apply()</code></td><td class="en">Updates the current book/chapter/section/topic in Arabic and English. A keyword line (<code class="arw">الكتاب الثاني</code>) takes the next line as its title and clears lower levels; other lines become the topic. Arabic repeal notes and number-only fragments are ignored.</td><td class="ar">بتحدّث الكتاب/الباب/الفصل/الموضوع الحالي بالعربي والإنجليزي. سطر الكلمة المفتاحية (<code class="arw">الكتاب الثاني</code>) بياخد السطر اللي بعده كعنوان ويمسح المستويات اللي تحته؛ وباقي السطور بتبقى الموضوع. وملاحظات الإلغاء العربي والأرقام اللي لوحدها بتتجاهل.</td></tr>
-    <tr><td><code>parse_lines()</code></td><td class="en">The main loop: start a draft at each Arabic header, route each line by mode, record repeal notes (from headings <em>and</em> from English text), then build sorted <code>Article</code> records.</td><td class="ar">الـ loop الأساسي: يبدأ مسودة مع كل عنوان عربي، يوزّع كل سطر حسب الحالة، يسجل ملاحظات الإلغاء (من العناوين <em>ومن</em> النص الإنجليزي)، وفي الآخر يبني سجلات <code>Article</code> مترتبة.</td></tr>
+    <tr><td><code>Kind</code>, <code>Row</code>, <code>Mode</code></td><td class="en">Small types instead of strings and bare tuples: what a line is, and which mode an article draft is in. Typos become errors, and the code reads like the diagram above.</td><td class="ar">أنواع صغيرة بدل strings وtuples: السطر ده نوعه إيه، والمسودة في أنهي حالة. أي غلطة إملائية تبقى error، والكود يتقري زي الرسمة اللي فوق.</td></tr>
+    <tr><td><code>_Parser</code></td><td class="en">Holds the running state (headings, drafts, repeal notes) and has one small handler per mode: <code>_on_arabic</code>, <code>_on_english</code>, <code>_on_arabic_again</code>, <code>_on_note</code>. <code>run()</code> starts a draft at each Arabic header and sends every other line to the handler of the current mode.</td><td class="ar">بيشيل الحالة الشغالة (العناوين والمسودات وملاحظات الإلغاء) وفيه handler صغير لكل حالة. و<code>run()</code> بيبدأ مسودة مع كل عنوان عربي ويبعت أي سطر تاني للـ handler بتاع الحالة الحالية.</td></tr>
+    <tr><td><code>parse_lines()</code>, <code>_build_articles()</code></td><td class="en">Find the start marker (or fail), classify, run the parser, number Arabic-only drafts, then build sorted records. Fails loudly on a duplicate number, text without a number, or an implausible repeal range (more than 100 articles).</td><td class="ar">يلاقي علامة البداية (أو يفشل)، يصنّف، يشغّل الـ parser، يرقّم المسودات العربي بس، ويبني السجلات مترتبة. وبيفشل بصوت عالي لو فيه رقم متكرر، أو نص من غير رقم، أو مدى إلغاء مش منطقي (أكتر من 100 مادة).</td></tr>
+    <tr><td><code>apply_quality_flags()</code>, <code>build_meta()</code></td><td class="en">Copy documented source defects from params.yaml onto the records; write <code>articles.meta.json</code> (PDF md5, schema, normalization and pypdf versions): the lineage of the artifact.</td><td class="ar">بينسخوا العيوب الموثقة من params.yaml على السجلات؛ ويكتبوا <code>articles.meta.json</code> (الـ md5 بتاع الـ PDF ونسخ الـ schema والتوحيد وpypdf)، يعني أصل الداتا.</td></tr>
     <tr><td><code>_resolve_numbers()</code></td><td class="en">An Arabic-only block gets the reversed Arabic number if it fits between its neighbours' English numbers, otherwise the unreversed one.</td><td class="ar">البلوك العربي اللي ملوش إنجليزي بياخد الرقم العربي مقلوب لو بيقع بين أرقام جيرانه، وإلا الرقم زي ما هو.</td></tr>
     <tr><td><code>main()</code></td><td class="en">The CLI that DVC calls: reads paths from settings or flags, writes <code>articles.json</code> (UTF-8, Arabic not escaped), logs counts.</td><td class="ar">الـ CLI اللي DVC بينادي عليه: بياخد المسارات من الإعدادات أو الـ flags، يكتب <code>articles.json</code> (UTF-8 والعربي من غير escape)، ويسجل الأعداد.</td></tr>
   </tbody>
@@ -183,11 +190,11 @@
 <h2 id="validate"><span class="en">7. <code>ingest/validate.py</code> and <code>params.yaml</code></span><span class="ar">7. <code>ingest/validate.py</code> و<code>params.yaml</code></span></h2>
 <div class="pair">
   <div class="en">
-    <p><code>validate_articles()</code> returns a <code>ValidationReport</code> (errors, warnings, metrics). Rules: numbers 1–1149 each once; live articles have Arabic and English; no Arabic letters in English text and no Latin words in Arabic text (a failed column split); no text over <code>max_chars</code> (a failed article split); repealed articles carry a note and no text. A problem on an article listed in <code>known_anomalies</code> becomes a <em>warning</em>, so it is visible but does not block.</p>
+    <p><code>validate_articles()</code> returns a <code>ValidationReport</code> (errors, warnings, metrics). Per article: both texts present, no mixed scripts, under the length caps, and an English/Arabic length ratio inside the measured band (0.9–2.8), which catches text that moved to the wrong article even when the counts look right. Corpus-wide: numbers 1–1149 each once, 8 pinned golden phrases present, each book starting at its known article, and no book or chapter reappearing later. A documented anomaly turns only its <em>listed</em> checks into warnings; a new defect on the same article still fails.</p>
     <p><code>main()</code> reads <code>params.yaml</code>, writes <code>reports/corpus_metrics.json</code> (shown by <code>dvc metrics show</code>) and exits with code 1 on any error, which stops <code>dvc repro</code> before a bad corpus can be embedded.</p>
   </div>
   <div class="ar" lang="ar" dir="rtl">
-    <p><code>validate_articles()</code> بترجّع <code>ValidationReport</code> (أخطاء وتحذيرات وأرقام). القواعد: الأرقام من 1 لـ 1149 كل واحد مرة؛ المواد الشغالة ليها عربي وإنجليزي؛ مفيش حروف عربي في النص الإنجليزي ولا كلمات لاتيني في العربي (يبقى تقسيم الأعمدة فشل)؛ مفيش نص أطول من <code>max_chars</code> (يبقى تقسيم المواد فشل)؛ والمواد الملغية معاها ملاحظة ومن غير نص. ولو المشكلة في مادة موجودة في <code>known_anomalies</code> بتبقى <em>تحذير</em>، باينة بس مش بتوقف.</p>
+    <p><code>validate_articles()</code> بترجّع <code>ValidationReport</code> (أخطاء وتحذيرات وأرقام). لكل مادة: النصين موجودين، مفيش لغات متلخبطة، تحت حدود الطول، ونسبة طول الإنجليزي للعربي جوه النطاق اللي قسناه (0.9–2.8)، ودي بتمسك نص راح لمادة غلط حتى لو الأعداد شكلها سليم. وعلى مستوى القانون كله: الأرقام من 1 لـ 1149 كل واحد مرة، و8 عبارات ذهبية موجودة، وكل كتاب بيبدأ عند مادته المعروفة، ومفيش كتاب أو باب بيرجع يظهر تاني. والعيب الموثق بيحوّل بس الفحوصات <em>المكتوبة له</em> لتحذيرات؛ وأي عيب جديد في نفس المادة برضه بيفشل.</p>
     <p><code>main()</code> بتقرا <code>params.yaml</code>، وتكتب <code>reports/corpus_metrics.json</code> (اللي بيظهر في <code>dvc metrics show</code>)، وتخرج بكود 1 مع أي خطأ، فـ <code>dvc repro</code> يقف قبل ما داتا بايظة توصل للـ embedding.</p>
   </div>
 </div>
@@ -198,7 +205,7 @@
   <div class="en">
     <ul>
       <li><code>data/raw/egyptian_civil_code.pdf.dvc</code>: the PDF's MD5 and size. Git versions this small file; the bytes go to the MinIO bucket <code>dvc</code>.</li>
-      <li><code>dvc.yaml</code>: stage <code>parse</code> (deps: the PDF and the parser source files; out: <code>articles.json</code>) and stage <code>validate</code> (deps: <code>articles.json</code>, <code>validate.py</code>; params: <code>corpus</code>; metrics: <code>corpus_metrics.json</code>).</li>
+      <li><code>dvc.yaml</code>: stage <code>parse</code> (deps: the PDF, the whole <code>ingest</code> package, settings, logging and <code>uv.lock</code>, so even a pypdf upgrade rebuilds; outs: <code>articles.json</code> and <code>articles.meta.json</code>) and stage <code>validate</code> (deps: <code>articles.json</code>, <code>validate.py</code>; params: <code>corpus</code>; metrics: <code>corpus_metrics.json</code>).</li>
       <li><code>dvc.lock</code>: written by <code>dvc repro</code>, the exact hash of every dep, param and output. Committing it is what makes a result reproducible.</li>
       <li>Credentials live in <code>.dvc/config.local</code> (never committed); the shared <code>.dvc/config</code> only says <code>url = s3://dvc</code> and <code>endpointurl = http://localhost:9000</code>.</li>
     </ul>
@@ -260,8 +267,8 @@
 <pre><code>docker compose --env-file .env -f docker/compose.yaml --profile tracking up -d minio   # object store
 uv run dvc pull                     # PDF + articles.json from MinIO
 uv run dvc repro                    # rebuild (skips stages that did not change)
-uv run dvc metrics show             # 1149 total, 1093 live, 56 repealed, 0 errors
-uv run pytest                       # 71 tests, coverage gate 80%</code></pre>
+uv run dvc metrics show             # 1149 total, 1093 live, 56 repealed, 0 errors, 5 documented warnings
+uv run pytest                       # 84 tests, coverage gate 80%</code></pre>
 
 <div class="pager"><a href="00d-serving-monitoring.html">← Concepts 4</a><a href="index.html">Guide index →</a></div>
 </main>

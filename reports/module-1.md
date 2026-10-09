@@ -9,8 +9,8 @@
 | Records (articles 1–1149, no gaps) | 1,149 |
 | Live articles (Arabic + English text) | 1,093 |
 | Repealed articles (flagged, kept as records) | 56 (54–80, 389–417) |
-| Known source anomalies (flagged in `params.yaml`) | 1 (Article 1022) |
-| Validation errors | 0 |
+| Known source anomalies (flagged in `params.yaml` and on the records) | 5 (1022, 1021, 970, 519, 1060) |
+| Validation errors / warnings | 0 / 5 (the 5 documented anomalies) |
 | Longest article text, Arabic / English (chars) | 1,419 / 2,141 |
 | Mean Arabic text length (chars) | 235.8 |
 | Hierarchy captured | preliminary title + 4 books, 18 chapters, 54 sections, 136 topics |
@@ -54,9 +54,12 @@ Articles 52, 82, 89, 93, 206, 219, 237, 256, 313, 464, 504, 508, 514, 533, 558, 
 
 ## Known limitations (honest list)
 
-1. **Article 1022:** its Arabic text is merged into Article 1021's Arabic block in the source PDF, and its English lines are scrambled (`f an agreement to the contrary, the cost In the absence o`). Kept English-only and listed in `params.yaml → corpus.known_anomalies`; validation reports it as a warning, not an error.
+Every item below is listed in `params.yaml` under `corpus.known_anomalies` with a reason, copied onto the record as a `quality_flag`, and allowed only for the one check it breaks.
+
+1. **Article 1022:** its Arabic text is merged into Article 1021's Arabic block in the source PDF, and its English lines are scrambled (`f an agreement to the contrary, the cost In the absence o`). Kept English-only (flag `arabic_text_inside_article_1021`); Article 1021 carries the mirror flag `contains_arabic_of_article_1022`.
 2. **Numbers inside Arabic article text** (cross-references like `للمادة ٣٦٢`) are digit-reversed by extraction and cannot be fixed reliably. Citations never use them: they always come from `article_number`.
 3. A few lines lost their first character in extraction (Article 219, the `rticle 452` header).
+4. **Arabic and English differ in the source** (found by the length-ratio check): 970's Arabic includes later amendments the English lacks; 519 and 1060 have shorter Arabic than English in the PDF. Mirrored AR/EN evaluation questions on these articles may legitimately disagree.
 
 ## Versioning with DVC
 
@@ -99,9 +102,32 @@ A mistake worth recording: the first `dvc push` silently skipped the PDF. The re
 | Validation thresholds | `params.yaml` (DVC param) | constants in code | a change is versioned and re-runs only `validate` |
 | Object store | frozen Bitnami MinIO | SeaweedFS, RustFS | it is the tool the course names; alternatives noted for production |
 
+## Code review and what changed
+
+Two independent reviews ran on this branch (a Python reviewer and an ML-pipeline reviewer). Accepted and fixed:
+
+| Finding | Fix |
+|---|---|
+| A wrong PDF without the start marker would be parsed from page 1 | `parse_lines` raises `ValueError` |
+| Bad inputs crashed with raw tracebacks; a failed run left stale metrics | typed `params.py` loader, per-record errors with position, exit code 1, metrics always rewritten |
+| `parse_lines` was ~130 lines with string modes | `Mode` enum, one handler per mode, `Row`/`Kind` types, `_build_articles` split out |
+| The repeal note ended up inside Article 54's English text; duplicates were silently dropped; absurd repeal ranges accepted | `NOTE` mode keeps notes out of text; duplicates and unnumbered text raise; spans over 100 raise |
+| Validation could not see text moving between articles | English/Arabic length-ratio band, 8 pinned golden phrases, book start articles, contiguous books/chapters, per-language length caps at ~1.25x the measured max |
+| Anomalies silenced every check on an article | each anomaly allows only named checks and sets `quality_flags` on the record |
+| No lineage on the artifact | `articles.meta.json` (PDF md5, schema/normalization/pypdf versions) is a DVC output |
+| DVC deps incomplete (a pypdf upgrade would not rebuild) | parse/validate depend on the whole `ingest` package, settings, logging and `uv.lock` |
+| Schema: no stable id, citation could drift, unknown fields accepted | `id` (`eg-civil-147`), `citation`, `citation_ar` derived and checked; `extra="forbid"` |
+| Tatweel counted as an Arabic letter; some hamza marks not stripped | fixed in `normalize.py` (search normalization stays `v1`: letters and digits are unchanged) |
+
+Declined, with reasons (cost if wrong in brackets):
+- Compare paragraph-marker counts between languages: the English translation does not number paragraphs, so counts never match (none: the ratio check covers mis-splits).
+- Git SHA inside `articles.meta.json`: it would change the output on every commit without any data change; MLflow runs tag the git SHA instead (low).
+- Page ranges and paragraph-level citations: not needed for article-level citation in v1 (low).
+- CI cannot run the real-PDF tests because the DVC remote is a local MinIO; the skip states the reason, and the full suite runs locally before every PR (medium: a parser regression could pass CI; mitigated by the local run and the DVC validate stage).
+
 ## Tests
 
-`uv run pytest`: 71 passed, coverage 96.85% (unit tests on synthetic samples of every layout above + integration tests on the real PDF, skipped when the PDF is not pulled).
+`uv run pytest`: 84 passed, coverage 97.20% (unit tests on synthetic samples of every layout above + integration tests on the real PDF, skipped when the PDF is not pulled).
 
 ## Definition of done (Phase 1)
 

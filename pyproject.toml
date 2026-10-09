@@ -15,6 +15,7 @@ dependencies = [
     "pypdf>=6.19.0",
     "pyyaml>=6.0.3",
     "structlog>=25.5.0",
+    "truststore>=0.10.4",
 ]
 
 [dependency-groups]

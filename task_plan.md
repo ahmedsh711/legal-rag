@@ -6,7 +6,7 @@ Ship a production-style, fully observable RAG service over the Egyptian Civil Co
 
 ## Next Step
 
-Phase 1: study pypdf output, then TDD ingest/parse.py (split on English Article lines, pair Arabic, headings, repealed flags).
+Phase 1: push branch module-1-corpus, open PR #2, wait for green CI, merge. Then Phase 2 (verify qdrant-client/FlagEmbedding APIs by installing them, then TDD the index builder).
 
 ## Current Phase
 
@@ -29,9 +29,11 @@ Full detail (tasks, acceptance checks, decisions, risks) lives in `docs/PLAN.md`
 
 ### Phase 1: Corpus pipeline PDF → articles.json + DVC (branch module-1-corpus)
 
-- [ ] TDD ingest/parse.py, normalize.py, validate.py (1,149 articles, repealed 55–80 & 389–417, Art 452 EN empty)
-- [ ] dvc init + MinIO remote + dvc.yaml parse→validate; dvc repro idempotent; 20-article spot check in reports/module-1.md
-- [ ] walkthrough 01-corpus.html
+- [x] TDD ingest/parse.py, normalize.py, validate.py, params.py (1,149 records; repealed 54–80 & 389–417 from PDF notes; 5 documented anomalies)
+- [x] dvc init + MinIO remote + dvc.yaml parse→validate; dvc repro idempotent; wipe-and-pull restores identical hashes; 20-article spot check in reports/module-1.md
+- [x] python-reviewer + mle-reviewer findings fixed (see reports/module-1.md "Code review")
+- [x] walkthrough 01-corpus.html
+- [ ] PR #2 merged
 - **Status:** in_progress
 
 ### Phase 2: Vanilla RAG + FastAPI + Docker (tag v0.1.0)

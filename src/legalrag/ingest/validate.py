@@ -1,13 +1,21 @@
 """Validate articles.json before anything is embedded.
 
 "A silent parsing bug becomes a hallucination three steps later, and by then you will blame
-the model" (handbook). Rules, all from the corpus inspection:
+the model" (handbook). Checks, each derived from what the corpus inspection found:
 
-- numbers 1..expected_total, each exactly once (repealed articles are records, not gaps);
-- live articles have Arabic and English text, unless listed as a known source anomaly;
-- no Arabic letters in English text, no Latin words in Arabic text (a failed column split);
-- no record longer than ``max_chars`` per language (a failed article split);
-- repealed articles carry a note and no text.
+Per article (codes in ``CheckCode``; a documented anomaly may *allow* specific codes):
+- ``empty_ar`` / ``empty_en``: live articles need both texts;
+- ``arabic_in_en`` / ``latin_in_ar``: mixed scripts mean the column split failed;
+- ``too_long``: longer than ``max_chars_*`` means an article split failed;
+- ``length_ratio``: English/Arabic length outside the measured band means text moved
+  between articles even though the counts look right.
+Repealed articles must carry a note and no text.
+
+Whole corpus:
+- numbers 1..expected, each exactly once;
+- pinned golden phrases are present in their articles;
+- each book starts at its documented first article;
+- a book or chapter never reappears after another one started (hierarchy is contiguous).
 
 Run as a DVC stage; it writes metrics for ``dvc metrics show`` and exits 1 on any error.
 """
@@ -16,20 +24,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
+from pydantic import ValidationError
 
+from legalrag.ingest.normalize import LATIN_WORD, has_arabic
+from legalrag.ingest.params import CheckCode, CorpusInputError, CorpusParams, load_params
 from legalrag.ingest.schema import Article
 from legalrag.logging_conf import configure_logging, get_logger
 
 log = get_logger(__name__)
-
-_ARABIC_LETTER = re.compile(r"[ء-ي]")
-_LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
 
 
 @dataclass
@@ -43,65 +50,109 @@ class ValidationReport:
         return not self.errors
 
 
-def _check_live(a: Article, max_chars: int, anomaly: str | None, report: ValidationReport) -> None:
+# ---------------------------------------------------------------- per-article checks
+
+
+def _article_problems(a: Article, params: CorpusParams) -> list[tuple[CheckCode, str]]:
+    """Every rule a live article breaks, as (check code, message)."""
     n = a.article_number
-    problems = []
-    if not a.text_ar:
-        problems.append(f"article {n}: empty Arabic text")
-    if not a.text_en:
-        problems.append(f"article {n}: empty English text")
-    if _ARABIC_LETTER.search(a.text_en):
-        problems.append(f"article {n}: Arabic letters in English text")
-    if _LATIN_WORD.search(a.text_ar):
-        problems.append(f"article {n}: Latin words in Arabic text")
-    if max(len(a.text_ar), len(a.text_en)) > max_chars:
-        problems.append(
-            f"article {n}: text too long (> {max_chars} chars), probably a failed split"
-        )
-    if anomaly:
-        report.warnings.extend(f"{p} (known anomaly: {anomaly})" for p in problems)
-    else:
-        report.errors.extend(problems)
+    ar, en = a.text_ar.strip(), a.text_en.strip()
+    problems: list[tuple[CheckCode, str]] = []
+    if not ar:
+        problems.append(("empty_ar", f"article {n}: empty Arabic text"))
+    if not en:
+        problems.append(("empty_en", f"article {n}: empty English text"))
+    if has_arabic(en):
+        problems.append(("arabic_in_en", f"article {n}: Arabic letters in English text"))
+    if LATIN_WORD.search(ar):
+        problems.append(("latin_in_ar", f"article {n}: Latin words in Arabic text"))
+    if len(ar) > params.max_chars_ar or len(en) > params.max_chars_en:
+        problems.append(("too_long", f"article {n}: text too long, probably a failed split"))
+    if ar and en:
+        ratio = len(en) / len(ar)
+        low, high = params.length_ratio
+        if not low <= ratio <= high:
+            problems.append(
+                (
+                    "length_ratio",
+                    f"article {n}: English/Arabic length ratio {ratio:.2f} outside {low}-{high}",
+                )
+            )
+    return problems
 
 
-def validate_articles(
-    articles: list[Article],
-    expected_total: int,
-    max_chars: int,
-    known_anomalies: dict[int, str] | None = None,
-) -> ValidationReport:
-    known_anomalies = known_anomalies or {}
-    report = ValidationReport()
-    numbers = [a.article_number for a in articles]
-    seen: set[int] = set()
-    for n in numbers:
-        if n in seen:
-            report.errors.append(f"duplicate article {n}")
-        seen.add(n)
-    missing = [n for n in range(1, expected_total + 1) if n not in seen]
+def _check_article(a: Article, params: CorpusParams, report: ValidationReport) -> None:
+    n = a.article_number
+    if a.is_repealed:
+        if a.text_ar.strip() or a.text_en.strip() or not a.note:
+            report.errors.append(f"article {n}: repealed articles need a note and no text")
+        return
+    anomaly = params.known_anomalies.get(n)
+    for code, message in _article_problems(a, params):
+        if anomaly and code in anomaly.allow:
+            report.warnings.append(f"{message} (known anomaly: {anomaly.reason})")
+        else:
+            report.errors.append(message)
+
+
+# ---------------------------------------------------------------- corpus-level checks
+
+
+def _check_numbers(articles: list[Article], expected: int, report: ValidationReport) -> None:
+    counts = Counter(a.article_number for a in articles)
+    report.errors.extend(f"duplicate article {n}" for n, c in sorted(counts.items()) if c > 1)
+    missing = [n for n in range(1, expected + 1) if n not in counts]
     if missing:
         report.errors.append(
             f"missing articles: {missing[:20]}{' ...' if len(missing) > 20 else ''}"
         )
-    extra = sorted(n for n in seen if n > expected_total)
+    extra = sorted(n for n in counts if n > expected)
     if extra:
-        report.errors.append(f"unexpected article numbers above {expected_total}: {extra[:20]}")
+        report.errors.append(f"unexpected article numbers above {expected}: {extra[:20]}")
 
+
+def _check_pinned(
+    by_number: dict[int, Article], params: CorpusParams, report: ValidationReport
+) -> None:
+    for n, phrase in params.pinned.items():
+        if n not in by_number or phrase not in by_number[n].text_ar:
+            report.errors.append(f"article {n}: pinned phrase {phrase!r} not found")
+    for n, book_prefix in params.book_starts.items():
+        here, before = by_number.get(n), by_number.get(n - 1)
+        if here is None or not here.book.startswith(book_prefix):
+            report.errors.append(f"article {n}: should start {book_prefix!r}")
+        elif before is not None and before.book == here.book:
+            report.errors.append(f"article {n}: {book_prefix!r} should start here, not earlier")
+
+
+def _check_contiguous(articles: list[Article], report: ValidationReport) -> None:
+    """A book or (book, chapter) that reappears after another started means headings were misread."""
+    for name, key in (("book", lambda a: a.book), ("chapter", lambda a: (a.book, a.chapter))):
+        seen, previous = set(), None
+        for a in sorted(articles, key=lambda x: x.article_number):
+            value = key(a)
+            if value != previous:
+                if value in seen:
+                    report.errors.append(f"article {a.article_number}: {name} {value!r} reappears")
+                seen.add(value)
+                previous = value
+
+
+def validate_articles(articles: list[Article], params: CorpusParams) -> ValidationReport:
+    report = ValidationReport()
+    _check_numbers(articles, params.expected_articles, report)
+    by_number = {a.article_number: a for a in articles}
     for a in articles:
-        if a.is_repealed:
-            if a.text_ar or not a.note:
-                report.errors.append(
-                    f"article {a.article_number}: repealed but has Arabic text or no note"
-                )
-        else:
-            _check_live(a, max_chars, known_anomalies.get(a.article_number), report)
+        _check_article(a, params, report)
+    _check_pinned(by_number, params, report)
+    _check_contiguous(articles, report)
 
     live = [a for a in articles if not a.is_repealed]
     report.metrics = {
         "articles_total": len(articles),
         "articles_live": len(live),
         "articles_repealed": len(articles) - len(live),
-        "known_anomalies": sum(1 for a in live if a.article_number in known_anomalies),
+        "known_anomalies": sum(1 for a in live if a.article_number in params.known_anomalies),
         "max_chars_ar": max((len(a.text_ar) for a in live), default=0),
         "max_chars_en": max((len(a.text_en) for a in live), default=0),
         "mean_chars_ar": round(sum(len(a.text_ar) for a in live) / max(len(live), 1), 1),
@@ -111,28 +162,58 @@ def validate_articles(
     return report
 
 
-def main(argv: list[str] | None = None) -> None:
-    from legalrag.settings import get_settings
+# ---------------------------------------------------------------- CLI (DVC stage)
 
-    settings = get_settings()
+
+def load_articles(path: str | Path) -> list[Article]:
+    """Read articles.json; a bad record is reported with its position, not as a wall of errors."""
+    path = Path(path)
+    if not path.is_file():
+        raise CorpusInputError(f"articles file not found: {path} (run `dvc repro` or `dvc pull`)")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CorpusInputError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(raw, list):
+        raise CorpusInputError(f"{path} must contain a JSON list of articles")
+    articles = []
+    for i, record in enumerate(raw):
+        try:
+            articles.append(Article(**record))
+        except (ValidationError, TypeError) as exc:
+            raise CorpusInputError(
+                f"record #{i} in {path} does not match the schema: {exc}"
+            ) from exc
+    return articles
+
+
+def _write_metrics(path: Path, metrics: dict[str, float]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+
+
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Validate articles.json")
-    parser.add_argument("--articles", default=settings.articles_path)
+    parser.add_argument("--articles", default=None, help="default: settings.articles_path")
     parser.add_argument("--params", default="params.yaml")
     parser.add_argument("--metrics", default="reports/corpus_metrics.json")
     args = parser.parse_args(argv)
+
+    from legalrag.settings import get_settings  # after argparse so --help works without a valid env
+
+    settings = get_settings()
     configure_logging(settings.log_level)
-
-    params = yaml.safe_load(Path(args.params).read_text(encoding="utf-8"))["corpus"]
-    raw = json.loads(Path(args.articles).read_text(encoding="utf-8"))
-    articles = [Article(**r) for r in raw]
-    anomalies = {int(k): v for k, v in (params.get("known_anomalies") or {}).items()}
-    report = validate_articles(
-        articles, params["expected_articles"], params["max_chars"], anomalies
-    )
-
     metrics_path = Path(args.metrics)
-    metrics_path.parent.mkdir(parents=True, exist_ok=True)
-    metrics_path.write_text(json.dumps(report.metrics, indent=2), encoding="utf-8")
+    try:
+        params = load_params(args.params)
+        articles = load_articles(args.articles or settings.articles_path)
+    except CorpusInputError as exc:
+        log.error("corpus_input_error", detail=str(exc))
+        _write_metrics(metrics_path, {"errors": 1})  # never leave a stale "all good" metrics file
+        sys.exit(1)
+
+    report = validate_articles(articles, params)
+    _write_metrics(metrics_path, report.metrics)
     for w in report.warnings:
         log.warning("corpus_warning", detail=w)
     for e in report.errors:

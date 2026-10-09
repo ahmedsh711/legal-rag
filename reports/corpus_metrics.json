@@ -2,10 +2,10 @@
   "articles_total": 1149,
   "articles_live": 1093,
   "articles_repealed": 56,
-  "known_anomalies": 1,
+  "known_anomalies": 5,
   "max_chars_ar": 1419,
   "max_chars_en": 2141,
   "mean_chars_ar": 235.8,
   "errors": 0,
-  "warnings": 1
+  "warnings": 5
 }

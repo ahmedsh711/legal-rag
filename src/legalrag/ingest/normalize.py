@@ -16,9 +16,12 @@ import re
 
 NORMALIZATION_VERSION = "v1"
 
-_ARABIC_LETTER = re.compile(r"[ء-ي]")
+# Arabic letters only: U+0621-U+064A minus tatweel (U+0640), which is decoration, not a letter
+_ARABIC_LETTER = re.compile(r"[ء-ؿف-ي]")
 _LATIN_LETTER = re.compile(r"[A-Za-z]")
-_DIACRITICS = re.compile(r"[ً-ْٰ]")  # tashkeel incl. tanween, shadda, sukun, dagger alef
+LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
+# tashkeel: tanween, fatha..sukun, maddah/hamza marks (U+064B-U+0655) and dagger alef (U+0670)
+_DIACRITICS = re.compile(r"[ً-ٰٕ]")
 _TATWEEL = "ـ"
 _ALEF_FORMS = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا"})
 _DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
@@ -29,10 +32,12 @@ _SPACES = re.compile(r"\s+")
 
 
 def has_arabic(text: str) -> bool:
+    """True if the text contains at least one Arabic letter (digits and tatweel do not count)."""
     return bool(_ARABIC_LETTER.search(text))
 
 
 def has_latin(text: str) -> bool:
+    """True if the text contains at least one Latin letter."""
     return bool(_LATIN_LETTER.search(text))
 
 
@@ -74,7 +79,7 @@ def join_arabic_lines(lines: list[str]) -> str:
         if not line:
             paragraphs.append([])
             continue
-        if line.startswith("(") and paragraphs[-1] and _MIRRORED_MARKER.match(raw or ""):
+        if paragraphs[-1] and starts_with_paragraph_marker(raw):
             paragraphs.append([])
         paragraphs[-1].append(line)
     return "\n".join(_collapse(" ".join(p)) for p in paragraphs if p)

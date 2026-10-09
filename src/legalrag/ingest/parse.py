@@ -10,9 +10,19 @@ How the PDF is laid out (found by inspection, see docs/research/03_corpus_inspec
     English text ...
 
 So an article runs from its Arabic header to the next Arabic header and holds, in order:
-Arabic text, English text, then the headings that belong to the *next* article.
-Exceptions handled below: both headers on one line, Arabic-only articles, English headers with
-text on the same line, cross-references that start a line ("Article 444 ."), and repeal notes.
+Arabic text, English text, then the headings that belong to the *next* article. Each draft
+article moves through these modes:
+
+    ARABIC -> ENGLISH -> (ARABIC_AGAIN -> ENGLISH)* -> HEADINGS
+                     \\-> NOTE (a repeal note inside English text) -> HEADINGS
+
+Exceptions handled (each has a unit test): both headers on one line, Arabic text continuing
+after an early English header, Arabic and English glued on one line, alternating paragraphs,
+a header that lost its first letter, cross-references that start a line, repeal notes.
+
+Known limit: a cross-reference to a *later* article that starts a line and happens to keep the
+header numbers increasing (e.g. "Article 451" inside Article 450, followed by the real 451)
+would be taken as a header. ``longest_increasing`` removes every case seen in this PDF.
 
 Run as a DVC stage:  python -m legalrag.ingest.parse --pdf data/raw/... --out data/processed/...
 """
@@ -21,12 +31,19 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import hashlib
 import json
 import re
+import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
+from typing import NamedTuple
 
 from legalrag.ingest.normalize import (
+    LATIN_WORD,
+    NORMALIZATION_VERSION,
     arabic_digits_to_int,
     has_arabic,
     has_latin,
@@ -34,12 +51,15 @@ from legalrag.ingest.normalize import (
     join_english_lines,
     starts_with_paragraph_marker,
 )
-from legalrag.ingest.schema import Article
+from legalrag.ingest.params import CorpusInputError, CorpusParams, load_params
+from legalrag.ingest.schema import SCHEMA_VERSION, Article
 from legalrag.logging_conf import configure_logging, get_logger
 
 log = get_logger(__name__)
 
 Line = tuple[int, str]  # (page number, text)
+
+# ---------------------------------------------------------------- patterns and limits
 
 START_MARKER = re.compile(
     r"نصوص\s*القانون\s*المدن[يى]"
@@ -64,15 +84,19 @@ EN_LEVELS = [
     ("subsection", re.compile(r"^SUB-?SECTION\b", re.I)),
 ]
 LEVEL_ORDER = ["book", "chapter", "section", "subsection", "topic"]
+
+HEADING_MAX_CHARS = 50  # real headings are short; wrapped body lines are ~65-72 characters
+MAX_REPEAL_SPAN = 100  # a note claiming more than this many repealed articles is a parsing bug
+NO_UPPER_BOUND = sys.maxsize
+
 _LEADING_NUMBER = re.compile(r"^[\s٠-٩0-9]+\s*[-–.)]\s*")
 # last Arabic letter *or diacritic*: words often end in tanween ("قانوناً")
 _LAST_ARABIC = re.compile(r"^(.*[ء-ْٰ])(.*)$")
 _NUMBERED_HEADING = re.compile(r"^[٠-٩0-9]+\s*[-–]")  # "١ -القانون والحق"
-_LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
 _LEADING_PUNCT = re.compile(r"^[\s.,،؛:)]*")
 
 
-# ---------------------------------------------------------------- helpers
+# ---------------------------------------------------------------- small helpers
 
 
 def extract_lines(pdf_path: str | Path) -> list[Line]:
@@ -88,10 +112,10 @@ def extract_lines(pdf_path: str | Path) -> list[Line]:
 
 
 def longest_increasing(values: list[int]) -> list[int]:
-    """Indices of a longest strictly increasing subsequence.
+    """Indices of a longest strictly increasing subsequence (patience sorting, O(n log n)).
 
-    Real article headers increase through the document; a cross-reference that happens to
-    start a line ("Article 444 ." inside Article 450) breaks the order and is dropped.
+    Real headers increase through the document; a cross-reference that starts a line breaks
+    the order and is dropped. Example: headers [449, 450, 444, 451] -> keep 449, 450, 451.
     """
     tails: list[int] = []  # tails[k] = smallest last value of an increasing run of length k+1
     tail_idx: list[int] = []
@@ -125,7 +149,12 @@ def _split_mixed(line: str) -> tuple[str, str]:
     return (ar + lead).strip(), en[len(lead) :].strip()
 
 
-HEADING_MAX_CHARS = 50  # real headings are short; wrapped body lines are ~65-72 characters
+def _english_tail(line: str) -> tuple[str, str] | None:
+    """If a line is Arabic text followed by an English sentence, return (arabic, english)."""
+    ar, en = _split_mixed(line)
+    if ar and len(LATIN_WORD.findall(en)) >= 3:
+        return ar, en
+    return None
 
 
 def _looks_like_body(arabic: str) -> bool:
@@ -140,12 +169,7 @@ def _looks_like_body(arabic: str) -> bool:
     )
 
 
-def _english_tail(line: str) -> tuple[str, str] | None:
-    """If a line is Arabic text followed by an English sentence, return (arabic, english)."""
-    ar, en = _split_mixed(line)
-    if ar and len(_LATIN_WORD.findall(en)) >= 3:
-        return ar, en
-    return None
+# ---------------------------------------------------------------- headings
 
 
 @dataclass
@@ -159,8 +183,11 @@ class Headings:
         heading_en = " / ".join(v for v in (self.en[k] for k in LEVEL_ORDER) if v)
         return {**{k: self.ar[k] for k in LEVEL_ORDER}, "heading_en": heading_en}
 
-    def _apply(self, side: dict[str, str], levels, lines: list[str]) -> None:
-        pending: str | None = None
+    @staticmethod
+    def _apply_side(
+        side: dict[str, str], levels: Sequence[tuple[str, re.Pattern[str]]], lines: list[str]
+    ) -> None:
+        pending: str | None = None  # a keyword line ("الكتاب الثاني") waits for its title line
         topic: list[str] = []
         for text in lines:
             level = next((name for name, rx in levels if rx.match(text)), None)
@@ -190,8 +217,74 @@ class Headings:
                 ar_lines.append(ar)
             if en and has_latin(en):  # drop number-only fragments like ".٤٦٩١/٣/٢١"
                 en_lines.append(en)
-        self._apply(self.ar, AR_LEVELS, ar_lines)
-        self._apply(self.en, EN_LEVELS, en_lines)
+        self._apply_side(self.ar, AR_LEVELS, ar_lines)
+        self._apply_side(self.en, EN_LEVELS, en_lines)
+
+
+# ---------------------------------------------------------------- line classification
+
+
+class Kind(Enum):
+    ARABIC_HEADER = "arabic_header"
+    COMBINED_HEADER = "combined_header"  # "مادة٣٨( Article 83"
+    ENGLISH_HEADER = "english_header"
+    TEXT = "text"
+
+
+class Row(NamedTuple):
+    page: int
+    text: str  # for an English header: only the text after "Article N"
+    kind: Kind
+    number: int | None = None  # English article number (authoritative)
+    ar_digits: str | None = None  # digits printed in the Arabic header (often reversed)
+
+
+def _classify(lines: list[Line]) -> list[Row]:
+    rows = []
+    for page, text in lines:
+        if m := COMBINED_HEADER.match(text):
+            rows.append(Row(page, text, Kind.COMBINED_HEADER, int(m.group(2)), m.group(1)))
+        elif m := AR_HEADER.match(text):
+            rows.append(Row(page, text, Kind.ARABIC_HEADER, None, m.group(1)))
+        elif m := EN_HEADER.match(text):
+            rows.append(Row(page, m.group(2).strip(), Kind.ENGLISH_HEADER, int(m.group(1))))
+        else:
+            rows.append(Row(page, text, Kind.TEXT))
+    # keep only English numbers that increase through the document; the rest are cross-references
+    numbered = [i for i, r in enumerate(rows) if r.number is not None]
+    keep = {numbered[i] for i in longest_increasing([rows[i].number for i in numbered])}
+    for i in numbered:
+        if i not in keep:
+            row = rows[i]
+            if row.kind is Kind.COMBINED_HEADER:
+                rows[i] = row._replace(kind=Kind.ARABIC_HEADER, number=None)
+            else:
+                rows[i] = Row(row.page, lines[i][1], Kind.TEXT)
+    return rows
+
+
+# ---------------------------------------------------------------- the parser
+
+
+class Mode(Enum):
+    ARABIC = "arabic"
+    ENGLISH = "english"
+    ARABIC_AGAIN = "arabic_again"  # a later Arabic paragraph (AR1, EN1, AR2, EN2 layout)
+    NOTE = "note"  # continuation lines of a repeal note found in English text
+    HEADINGS = "headings"  # everything here belongs to the next article
+
+
+@dataclass
+class Repeal:
+    first: int
+    last: int
+    note: str
+    page: int
+    headings: dict[str, str]
+
+    def __post_init__(self) -> None:
+        if self.first > self.last or self.last - self.first > MAX_REPEAL_SPAN:
+            raise ValueError(f"implausible repeal range {self.first}-{self.last}: {self.note!r}")
 
 
 @dataclass
@@ -199,39 +292,136 @@ class _Draft:
     page: int
     headings: dict[str, str]
     ar_digits: str | None = None
-    number: int | None = None  # from the English header (authoritative)
-    mode: str = "ar"  # ar -> en -> tail
+    number: int | None = None
+    mode: Mode = Mode.ARABIC
     ar: list[str] = field(default_factory=list)
     en: list[str] = field(default_factory=list)
-    tail: list[str] = field(default_factory=list)  # headings for the next article
+    tail: list[str] = field(default_factory=list)
+
+    @property
+    def english_started(self) -> bool:
+        return any(t.strip() for t in self.en)
+
+    def take_glued(self, text: str, new_paragraph: bool = False) -> bool:
+        """Handle 'Arabic text. English text' on one line; True if the line was split."""
+        split = _english_tail(text)
+        if not split:
+            return False
+        self.ar.append(split[0])
+        self.en.extend(["", split[1]] if new_paragraph else [split[1]])
+        self.mode = Mode.ENGLISH
+        return True
 
 
-# ---------------------------------------------------------------- parser
+class _Parser:
+    def __init__(self) -> None:
+        self.headings = Headings()
+        self.repeals: list[Repeal] = []
+        self.drafts: list[_Draft] = []
+        self.pending: list[str] = []  # heading lines waiting for the next article
+        self.pending_page = 1
+        self.handlers: dict[Mode, Callable[[_Draft, Row], None]] = {
+            Mode.ARABIC: self._on_arabic,
+            Mode.ENGLISH: self._on_english,
+            Mode.ARABIC_AGAIN: self._on_arabic_again,
+            Mode.NOTE: self._on_note,
+            Mode.HEADINGS: lambda draft, row: draft.tail.append(row.text),
+        }
 
+    # -- article boundaries
+    def _flush_headings(self, page: int) -> None:
+        normal: list[str] = []
+        for text in self.pending:
+            if m := REPEAL_NOTE.search(text):
+                self.headings.apply(normal)
+                normal = []
+                self._add_repeal(m, text, page)
+            else:
+                normal.append(text)
+        self.headings.apply(normal)
+        self.pending = []
 
-def _classify(lines: list[Line]) -> list[tuple[int, str, str, int | None, str | None]]:
-    """(page, text, kind, english_number, arabic_digits); kind in AR, COMBINED, EN, TEXT."""
-    rows = []
-    for page, text in lines:
-        if m := COMBINED_HEADER.match(text):
-            rows.append((page, text, "COMBINED", int(m.group(2)), m.group(1)))
-        elif m := AR_HEADER.match(text):
-            rows.append((page, text, "AR", None, m.group(1)))
-        elif m := EN_HEADER.match(text):
-            rows.append((page, m.group(2).strip(), "EN", int(m.group(1)), None))
+    def _add_repeal(self, match: re.Match[str], text: str, page: int) -> None:
+        first, last = int(match.group(1)), int(match.group(2))
+        self.repeals.append(Repeal(first, last, text.strip(" *"), page, self.headings.snapshot()))
+
+    def _start_draft(self, page: int) -> _Draft:
+        if self.drafts:  # the previous article's tail holds headings for this one
+            self.pending = self.drafts[-1].tail + self.pending
+            self.drafts[-1].tail = []
+        self._flush_headings(self.pending_page)
+        draft = _Draft(page=page, headings=self.headings.snapshot())
+        self.drafts.append(draft)
+        return draft
+
+    # -- per-mode handlers
+    def _on_arabic(self, d: _Draft, row: Row) -> None:
+        text = row.text
+        if REPEAL_NOTE.search(text):
+            d.mode = Mode.HEADINGS
+            d.tail.append(text)
+        elif d.take_glued(text):  # "... وأن يكف عن أي عمل. The vendor is bound ..."
+            pass
+        elif has_latin(text) and not has_arabic(text):
+            d.mode = Mode.ENGLISH
+            d.en.append(text)
         else:
-            rows.append((page, text, "TEXT", None, None))
-    # keep only English numbers that increase through the document; the rest are cross-references
-    en_rows = [i for i, r in enumerate(rows) if r[3] is not None]
-    keep = {en_rows[i] for i in longest_increasing([rows[i][3] for i in en_rows])}
-    fixed = []
-    for i, (page, text, kind, num, digits) in enumerate(rows):
-        if num is not None and i not in keep:
-            original = lines[i][1]
-            kind, num = ("AR", None) if kind == "COMBINED" else ("TEXT", None)
-            text = original if kind == "TEXT" else text
-        fixed.append((page, text, kind, num, digits))
-    return fixed
+            d.ar.append(text)
+
+    def _on_english(self, d: _Draft, row: Row) -> None:
+        text = row.text
+        if has_arabic(text):
+            if not d.english_started:  # Arabic continues after an early English header
+                self._on_arabic(d, row)
+            elif _looks_like_body(_split_mixed(text)[0]):  # paragraphs alternate AR/EN
+                d.ar.append("")
+                if not d.take_glued(text, new_paragraph=True):
+                    d.ar.append(text)
+                    d.mode = Mode.ARABIC_AGAIN
+            else:
+                d.mode = Mode.HEADINGS
+                d.tail.append(text)
+        elif m := REPEAL_NOTE.search(text):  # "* Articles 54-80 have been repealed ..."
+            self._add_repeal(m, text, row.page)
+            d.mode = Mode.NOTE
+        else:
+            d.en.append(text)
+
+    def _on_arabic_again(self, d: _Draft, row: Row) -> None:
+        text = row.text
+        if has_latin(text) and not has_arabic(text):
+            d.en.extend(["", text])
+            d.mode = Mode.ENGLISH
+        elif not d.take_glued(text, new_paragraph=True):
+            d.ar.append(text)
+
+    def _on_note(self, d: _Draft, row: Row) -> None:
+        if has_arabic(row.text):
+            d.mode = Mode.HEADINGS
+            d.tail.append(row.text)
+        elif has_latin(row.text):  # the note wraps: "... by Presidential" / "Decree."
+            self.repeals[-1].note = f"{self.repeals[-1].note} {row.text.strip()}"
+
+    # -- main loop
+    def run(self, rows: list[Row]) -> tuple[list[_Draft], list[Repeal]]:
+        current: _Draft | None = None
+        for row in rows:
+            if row.kind in (Kind.ARABIC_HEADER, Kind.COMBINED_HEADER):
+                current = self._start_draft(row.page)
+                current.ar_digits, current.number = row.ar_digits, row.number
+            elif current is None:  # headings before the first article
+                self.pending.append(row.text)
+                self.pending_page = row.page
+            elif row.kind is Kind.ENGLISH_HEADER:
+                if current.number is not None or current.mode is not Mode.ARABIC:
+                    current = self._start_draft(row.page)  # English header with no Arabic header
+                current.number, current.mode = row.number, Mode.ENGLISH
+                if row.text:
+                    current.en.append(row.text)
+            else:
+                self.handlers[current.mode](current, row)
+                self.pending_page = row.page
+        return self.drafts, self.repeals
 
 
 def _resolve_numbers(drafts: list[_Draft]) -> None:
@@ -239,128 +429,28 @@ def _resolve_numbers(drafts: list[_Draft]) -> None:
     for i, d in enumerate(drafts):
         if d.number is not None or not d.ar_digits:
             continue
-        prev_n = next((x.number for x in reversed(drafts[:i]) if x.number), 0)
-        next_n = next((x.number for x in drafts[i + 1 :] if x.number), 10**6)
-        reversed_n = arabic_digits_to_int(d.ar_digits[::-1])
-        straight_n = arabic_digits_to_int(d.ar_digits)
-        for candidate in (reversed_n, straight_n):
-            if prev_n < candidate < next_n:
-                d.number = candidate
-                break
+        prev_n = next((x.number for x in reversed(drafts[:i]) if x.number is not None), 0)
+        next_n = next((x.number for x in drafts[i + 1 :] if x.number is not None), NO_UPPER_BOUND)
+        candidates = [
+            n
+            for n in (arabic_digits_to_int(d.ar_digits[::-1]), arabic_digits_to_int(d.ar_digits))
+            if prev_n < n < next_n
+        ]
+        if len(set(candidates)) > 1:
+            log.warning("ambiguous_arabic_number", digits=d.ar_digits, chose=candidates[0])
+        if candidates:
+            d.number = candidates[0]  # the reversed reading is preferred (it matched 1078/1087)
 
 
-def parse_lines(lines: list[Line]) -> list[Article]:
-    start = next((i for i, (_, t) in enumerate(lines) if START_MARKER.search(t)), -1)
-    rows = _classify(lines[start + 1 :])
-
-    headings = Headings()
-    repeals: list[tuple[int, int, str, int, dict[str, str]]] = []
-    drafts: list[_Draft] = []
-    pending_head: list[str] = []  # heading lines waiting to be applied
-    pending_page = 1
-
-    def flush_headings(lines_: list[str], page: int) -> None:
-        normal = []
-        for text in lines_:
-            if m := REPEAL_NOTE.search(text):
-                headings.apply(normal)
-                normal = []
-                repeals.append(
-                    (int(m.group(1)), int(m.group(2)), text.strip(), page, headings.snapshot())
-                )
-            else:
-                normal.append(text)
-        headings.apply(normal)
-
-    def new_draft(page: int) -> _Draft:
-        nonlocal pending_head
-        if drafts:
-            pending_head = drafts[-1].tail + pending_head
-            drafts[-1].tail = []
-        flush_headings(pending_head, pending_page)
-        pending_head = []
-        draft = _Draft(page=page, headings=headings.snapshot())
-        drafts.append(draft)
-        return draft
-
-    cur: _Draft | None = None
-    for page, text, kind, num, digits in rows:
-        if kind in ("AR", "COMBINED"):
-            cur = new_draft(page)
-            cur.ar_digits, cur.number = digits, num
-            continue
-        if cur is None:  # headings before the first article
-            pending_head.append(text)
-            pending_page = page
-            continue
-        if kind == "EN":
-            if cur.number is None and cur.mode == "ar":
-                cur.number, cur.mode = num, "en"
-            else:  # an English header with no Arabic header of its own
-                cur = new_draft(page)
-                cur.number, cur.mode = num, "en"
-            if text:
-                cur.en.append(text)
-            continue
-        english_started = any(t.strip() for t in cur.en)
-        if cur.mode == "ar" or (cur.mode == "en" and not english_started and has_arabic(text)):
-            # Arabic text. It can continue after an early English header (the "Article 120" layout).
-            if cur.mode == "ar" and REPEAL_NOTE.search(text):
-                cur.mode = "tail"
-                cur.tail.append(text)
-            elif split := _english_tail(text):  # "... وأن يكف عن أي عمل. The vendor is bound ..."
-                cur.ar.append(split[0])
-                cur.en.append(split[1])
-                cur.mode = "en"
-            elif has_latin(text) and not has_arabic(text):
-                cur.mode = "en"
-                cur.en.append(text)
-            else:
-                cur.ar.append(text)
-        elif cur.mode == "ar2":  # a later Arabic paragraph of the same article
-            if has_latin(text) and not has_arabic(text):
-                cur.mode = "en"
-                cur.en.append("")  # new English paragraph
-                cur.en.append(text)
-            elif split := _english_tail(text):
-                cur.ar.append(split[0])
-                cur.en.extend(["", split[1]])
-                cur.mode = "en"
-            else:
-                cur.ar.append(text)
-        elif cur.mode == "en":
-            if has_arabic(text):
-                arabic = _split_mixed(text)[0]
-                if _looks_like_body(arabic):  # paragraphs alternate: AR (1), EN (1), AR (2), EN (2)
-                    cur.mode = "ar2"
-                    cur.ar.append("")  # new Arabic paragraph
-                    if split := _english_tail(text):
-                        cur.ar.append(split[0])
-                        cur.en.extend(["", split[1]])
-                        cur.mode = "en"
-                    else:
-                        cur.ar.append(text)
-                else:
-                    cur.mode = "tail"
-                    cur.tail.append(text)
-            else:
-                if m := REPEAL_NOTE.search(text):  # "* Articles 54-80 have been repealed ..."
-                    note = text.strip(" *")
-                    repeals.append((int(m.group(1)), int(m.group(2)), note, page, cur.headings))
-                cur.en.append(text)
-        else:
-            cur.tail.append(text)
-        pending_page = page
-
-    _resolve_numbers(drafts)
+def _build_articles(drafts: list[_Draft], repeals: list[Repeal]) -> list[Article]:
     records: dict[int, Article] = {}
     for d in drafts:
         if d.number is None:
-            log.warning("article_without_number", page=d.page, text_ar=join_arabic_lines(d.ar)[:60])
-            continue
+            raise ValueError(f"article text without a number on page {d.page}: {d.ar[:1]}")
         if d.number in records:
-            log.warning("duplicate_article", article=d.number, page=d.page)
-            continue
+            raise ValueError(
+                f"duplicate article {d.number} (pages {records[d.number].source_page}, {d.page})"
+            )
         records[d.number] = Article(
             article_number=d.number,
             text_ar=join_arabic_lines(d.ar),
@@ -368,47 +458,115 @@ def parse_lines(lines: list[Line]) -> list[Article]:
             source_page=d.page,
             **d.headings,
         )
-    for first, last, note, page, snap in repeals:
-        for n in range(first, last + 1):
+    for rp in repeals:
+        for n in range(rp.first, rp.last + 1):
             if n in records:
-                records[n] = records[n].model_copy(update={"is_repealed": True, "note": note})
+                old = records[n]
+                if old.text_ar or old.text_en:
+                    log.warning("repeal_note_overrides_text", article=n)
+                records[n] = old.model_copy(
+                    update={"is_repealed": True, "note": rp.note, "text_ar": "", "text_en": ""}
+                )
             else:
                 records[n] = Article(
-                    article_number=n, is_repealed=True, note=note, source_page=page, **snap
+                    article_number=n,
+                    is_repealed=True,
+                    note=rp.note,
+                    source_page=rp.page,
+                    **rp.headings,
                 )
     return [records[n] for n in sorted(records)]
 
 
+def parse_lines(lines: list[Line]) -> list[Article]:
+    """Lines of the PDF -> sorted articles. Raises ValueError when the input is not the expected PDF."""
+    start = next((i for i, (_, t) in enumerate(lines) if START_MARKER.search(t)), None)
+    if start is None:
+        raise ValueError(
+            "start marker 'نصوص القانون المدنى' not found: is this the Civil Code PDF?"
+        )
+    drafts, repeals = _Parser().run(_classify(lines[start + 1 :]))
+    _resolve_numbers(drafts)
+    return _build_articles(drafts, repeals)
+
+
 def parse_pdf(pdf_path: str | Path) -> list[Article]:
+    """Extract and parse the PDF in one call."""
     return parse_lines(extract_lines(pdf_path))
 
 
-def main(argv: list[str] | None = None) -> None:
-    from legalrag.settings import get_settings
+def apply_quality_flags(articles: list[Article], params: CorpusParams) -> list[Article]:
+    """Copy documented source defects (params.yaml) onto the records so later stages can see them."""
+    return [
+        a.model_copy(update={"quality_flags": [params.known_anomalies[a.article_number].flag]})
+        if a.article_number in params.known_anomalies
+        else a
+        for a in articles
+    ]
 
-    settings = get_settings()
+
+# ---------------------------------------------------------------- CLI (DVC stage)
+
+
+def _md5(path: Path) -> str:
+    return hashlib.md5(path.read_bytes()).hexdigest()  # noqa: S324 - content fingerprint, not security
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write to a temp file then rename, so a crash never leaves a half-written output."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def build_meta(pdf: Path, articles: list[Article]) -> dict[str, object]:
+    """Lineage for articles.json: which source bytes and which code versions produced it."""
+    import pypdf
+
+    from legalrag import __version__
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "normalization_version": NORMALIZATION_VERSION,
+        "source_pdf_md5": _md5(pdf),
+        "source_pdf_bytes": pdf.stat().st_size,
+        "articles": len(articles),
+        "repealed": sum(a.is_repealed for a in articles),
+        "parser": {"legalrag": __version__, "pypdf": pypdf.__version__},
+    }
+
+
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Parse the Egyptian Civil Code PDF into articles.json"
     )
-    parser.add_argument("--pdf", default=settings.raw_pdf_path)
-    parser.add_argument("--out", default=settings.articles_path)
+    parser.add_argument("--pdf", default=None, help="source PDF (default: settings.raw_pdf_path)")
+    parser.add_argument("--out", default=None, help="output JSON (default: settings.articles_path)")
+    parser.add_argument("--params", default="params.yaml")
     args = parser.parse_args(argv)
 
+    from legalrag.settings import get_settings  # after argparse so --help works without a valid env
+
+    settings = get_settings()
     configure_logging(settings.log_level)
-    articles = parse_pdf(args.pdf)
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps([a.model_dump() for a in articles], ensure_ascii=False, indent=1),
-        encoding="utf-8",
-    )
-    log.info(
-        "parsed",
-        articles=len(articles),
-        repealed=sum(a.is_repealed for a in articles),
-        arabic_only=sum(1 for a in articles if a.text_ar and not a.text_en),
-        out=str(out),
-    )
+    pdf = Path(args.pdf or settings.raw_pdf_path)
+    out = Path(args.out or settings.articles_path)
+    try:
+        if not pdf.is_file():
+            raise CorpusInputError(f"PDF not found: {pdf} (run `dvc pull`)")
+        params = load_params(args.params)
+        articles = apply_quality_flags(parse_pdf(pdf), params)
+        if not articles:
+            raise CorpusInputError(f"no articles found in {pdf}")
+    except (CorpusInputError, ValueError) as exc:
+        log.error("parse_failed", detail=str(exc))
+        sys.exit(1)
+
+    _write_atomic(out, json.dumps([a.model_dump() for a in articles], ensure_ascii=False, indent=1))
+    meta = build_meta(pdf, articles)
+    _write_atomic(out.with_suffix(".meta.json"), json.dumps(meta, indent=2))
+    log.info("parsed", out=str(out), **{k: v for k, v in meta.items() if k != "parser"})
 
 
 if __name__ == "__main__":

@@ -11,6 +11,8 @@ Quirks covered (see docs/research/03_corpus_inspection.md):
 - heading blocks in both languages that set book / chapter / section / topic
 """
 
+import textwrap
+
 import pytest
 
 from legalrag.ingest.parse import Article, longest_increasing, parse_lines
@@ -269,14 +271,86 @@ def test_tanween_ending_does_not_break_the_split():
     assert a.text_en.endswith("special domicile.")
 
 
-def test_cli_writes_json(tmp_path, monkeypatch):
+def test_cli_writes_json_and_lineage(tmp_path, monkeypatch):
     import json
 
     from legalrag.ingest import parse as parse_module
 
     monkeypatch.setattr(parse_module, "extract_lines", lambda _path: SAMPLE)
+    pdf = tmp_path / "code.pdf"
+    pdf.write_bytes(b"%PDF-1.4 fake")
+    params = tmp_path / "params.yaml"
+    params.write_text(
+        textwrap.dedent(
+            """\
+            corpus:
+              expected_articles: 17
+              max_chars_ar: 500
+              max_chars_en: 500
+              length_ratio: [0.5, 3.0]
+              known_anomalies:
+                14: {reason: no English in source, flag: arabic_only, allow: [empty_en]}
+            """
+        ),
+        encoding="utf-8",
+    )
     out = tmp_path / "articles.json"
-    parse_module.main(["--pdf", "ignored.pdf", "--out", str(out)])
+    parse_module.main(["--pdf", str(pdf), "--out", str(out), "--params", str(params)])
     records = json.loads(out.read_text(encoding="utf-8"))
     assert [r["article_number"] for r in records] == [1, 2, 12, 13, 14, 15, 16, 17]
-    assert records[0]["citation"] == "Egyptian Civil Code, Article 1"
+    assert records[0]["id"] == "eg-civil-1"
+    assert records[4]["quality_flags"] == ["arabic_only"]
+    meta = json.loads((tmp_path / "articles.meta.json").read_text(encoding="utf-8"))
+    assert meta["articles"] == 8 and meta["repealed"] == 2
+    assert len(meta["source_pdf_md5"]) == 32 and meta["schema_version"]
+
+
+def test_cli_fails_cleanly_on_missing_pdf(tmp_path):
+    from legalrag.ingest import parse as parse_module
+
+    with pytest.raises(SystemExit) as exc:
+        parse_module.main(
+            ["--pdf", str(tmp_path / "missing.pdf"), "--out", str(tmp_path / "o.json")]
+        )
+    assert exc.value.code == 1
+
+
+def test_missing_start_marker_is_an_error():
+    with pytest.raises(ValueError, match="start marker"):
+        parse_lines([(1, "مادة١"), (1, "نص"), (1, "Article 1"), (1, "Text.")])
+
+
+def test_duplicate_article_is_an_error():
+    lines = [
+        (1, "نصوص القانون المدنى"),
+        (1, "مادة١"),
+        (1, "نص"),
+        (1, "Article 1"),
+        (1, "Text."),
+        (2, "مادة٢"),
+        (2, "نص"),
+        (2, "Article 2"),
+        (2, "Text."),
+        (3, "مادة٢"),
+        (3, "نص مكرر"),
+    ]  # an Arabic-only block whose number resolves to 2 again
+    with pytest.raises(ValueError, match="without a number|duplicate"):
+        parse_lines(lines)
+
+
+def test_implausible_repeal_range_is_an_error():
+    lines = [
+        (1, "نصوص القانون المدنى"),
+        (1, "مادة١"),
+        (1, "نص"),
+        (1, "Article 1"),
+        (1, "* Articles 2-999999 have been repealed"),
+    ]
+    with pytest.raises(ValueError, match="implausible repeal range"):
+        parse_lines(lines)
+
+
+def test_repeal_note_is_not_left_in_english_text(real_patterns):
+    assert real_patterns[454].text_en == ""
+    assert real_patterns[452].text_en == "An action on a warranty is prescribed in one year."
+    assert real_patterns[455].note == "Articles 454-456 have been repealed by Presidential Decree."
