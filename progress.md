@@ -21,7 +21,7 @@
 
 ### Phase 1: Corpus pipeline
 
-- **Status:** in_progress (awaiting PR merge)
+- **Status:** complete (PR #2 merged)
 - Actions taken:
   - Surveyed pypdf output (header counts, reversed digits, layouts); TDD parser on 3 synthetic samples; 4 audit rounds on the real PDF
   - DVC with MinIO (bitnamilegacy image); wipe-and-pull test exposed .gitignore bug, fixed
@@ -32,6 +32,25 @@
   - Ruling: truststore injected in legalrag/__init__.py — Python's certifi fails behind this machine's HTTPS inspection — cost if wrong: none
   - Ruling: docs-lookup agent had no Context7 access; Phase 2 APIs will be verified by installing and testing the libraries
 - Files: src/legalrag/ingest/{normalize,schema,params,parse,validate}.py, tests/unit/*, tests/integration/test_corpus_real.py, params.yaml, dvc.yaml, dvc.lock, reports/module-1.md, docs/walkthrough/01-corpus.html
+
+### Phase 2: Vanilla RAG + FastAPI + Docker
+
+- **Status:** in_progress (branch module-2-rag-api)
+- Actions taken:
+  - TDD index (embedder, store, build), retrieval (hybrid RRF + explicit refs), generation, pipeline, API (schemas, middleware, main); Dockerfile + entrypoint + compose core
+  - Verified qdrant-client by experiment (in-memory hybrid RRF + aliases) because docs-lookup had no Context7
+  - First real index: 2,241 points, 1,028 s embedding; second (pinned revision): 3,764 s; power scheme "Silent" observed during the third run (cause of the variance not verified)
+  - Disk full (C: 300 MB free): stopped the parity run that pulled the whole bge-m3 repo; removed only own caches; asked user, who chose "decide later" for Phases 4–6 disk space
+  - Pinned bge-m3 revision 9a0624b8 (params + settings + index metadata + startup check)
+  - DVC skipped a stage after mid-run dep edits → forced rerun; rule recorded
+  - CRLF outputs on Windows → `newline="\n"` in every writer + tests; ruff LF; pre-commit mixed-line-ending
+  - Docker Hub user is `ahmedshobaki` (from the Docker Desktop login), not the GitHub handle
+  - Reviews (python, fastapi, security): no CRITICAL. Fixed: SSE error event, provider 4xx → 502, stream closed on disconnect + lazy request, /health off the event loop, /feedback sync + id pattern, lifespan cleanup, middleware finally/fullmatch, regex boundaries, explicit refs kept in context, empty choices, volume dirs owned by app, entrypoint -f, CA placeholder tracked, ports on 127.0.0.1, required passwords, qdrant healthcheck, .env.* ignored
+  - Ruling: HEALTHCHECK stays on /health (readiness) — Docker does not restart unhealthy containers, so "unhealthy" honestly means "cannot serve"; k8s gets separate probes in Phase 6 — cost if wrong: low
+  - Ruling: api keeps `env_file: ../.env` — all services are local and loopback-only; per-service secrets come with k8s Secrets in Phase 6 — cost if wrong: low
+  - Ruling: /ask and /feedback throttling + auth deferred to Phase 4 (Redis token bucket) — ports are loopback-only now — cost if wrong: low
+  - Ruling: pinned revision kept in IndexParams default + Settings + params.yaml — the startup check refuses any drift — cost if wrong: none
+  - Ruling: Docker base images pinned by tag, not digest — course scale; Phase 4 CI builds are reproducible from uv.lock — cost if wrong: low
 
 ## Test Results
 
@@ -44,6 +63,14 @@
 | Phase 1 pytest | `uv run pytest` | all pass, cov >= 80% | 84 passed, 97.20% | pass |
 | dvc repro | real PDF | 0 errors | 1149 total / 1093 live / 56 repealed / 0 errors / 5 warnings | pass |
 | dvc pull after wiping cache | MinIO | same hashes | pdf 5086ef5f…, articles 2 files fetched | pass |
+| Phase 2 pytest | `uv run pytest` | all pass, cov >= 80% | 162 passed, 92.12% | pass |
+| index build | `dvc repro` on empty Qdrant 1.19.2 | 2,241 points, deterministic name | articles_fb16830c7f, 2,241 points (same name as the build on 1.16) | pass |
+| index reuse | `dvc repro` with nothing changed | seconds, no model load | 29 s total, `index_reused` | pass |
+| bge-m3 parity | `uv run --with FlagEmbedding python scripts/parity_bge_m3.py` | dense < 1e-4, sparse equal | 1.0e-6 / 0 / 0 mismatches | pass |
+| retrieval spot check | 10 concepts × AR/EN + 2 refs | baseline numbers | AR 7/10 @1, 9/10 @5, MRR 0.775; EN 7/10, 10/10, 0.833; refs 2/2 | recorded |
+| alias rollback | swap to previous and back | no downtime | 213 ms / 70 ms, 2,241 points served | pass |
+| API container | compose core, /live /health /metadata /feedback /ask | 200s, 422 readable | all as expected; runs as uid 1000; healthy in 22 s (warm volume) | pass |
+| /ask end to end | 9 questions, prompt v3 | gold cited, refusals | 8/9 (Arabic 147 = retrieval miss), $0.00126 total, p50 2.9 s, TTFT 1.5 s | pass |
 
 ## Error Log
 

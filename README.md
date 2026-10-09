@@ -3,16 +3,33 @@
 Final project for the ITI × MLOps MENA **MLOps Practitioner** course, Track B (LLM / RAG).
 Ask a question about the Egyptian Civil Code in Arabic or English and get an answer **with article citations**. The pipeline's *deciding* steps (routing, reranking, "can we answer?", claim checking) run on the Jev decision model; only the *writing* step runs on an LLM.
 
-> Status: Phase 0 (bootstrap). The 3-command quickstart is completed in Phase 2.
+> Status: Phase 2. Vanilla RAG (hybrid retrieval + cited answers) behind a FastAPI service in Docker. The Jev decision steps arrive in Phases 3–4.
 
 ## Quickstart (3 commands)
 
+Prerequisites: Docker Desktop, [uv](https://docs.astral.sh/uv/), `cp .env.example .env` with your `OPENROUTER_API_KEY`, and the course PDF at `data/raw/egyptian_civil_code.pdf` (or `uv run dvc pull` if you can reach the DVC remote).
+
 ```bash
-docker compose -f docker/compose.yaml --profile core up -d          # 1. services
-uv run python -m legalrag.index.build                               # 2. index the corpus
-curl -s localhost:8000/ask -H 'content-type: application/json' \
-     -d '{"question":"ما هي مدة التقادم في الالتزامات؟"}'             # 3. ask
+docker compose --env-file .env -f docker/compose.yaml --profile core up -d   # 1. qdrant + redis + api
+uv run dvc repro                                                             # 2. PDF -> articles.json -> validate -> Qdrant index
+curl -s 127.0.0.1:8000/ask -H 'content-type: application/json' -d '{"question":"ما هي مدة تقادم الالتزام؟"}'   # 3. ask
 ```
+
+- **Step 2** embeds 2,241 texts with bge-m3 on CPU, once (10–30 min on a laptop). The `index` stage always runs because its real output lives in Qdrant, which DVC cannot see; when the index is already there it is reused in seconds.
+- **The API container** downloads bge-m3 (2.3 GB) into the `hf_cache` volume on its first start, and waits for the index: until the alias exists it exits and Docker restarts it. `curl 127.0.0.1:8000/health` returns `"status": "healthy"` once it is ready; `curl 127.0.0.1:8000/metadata` shows what is serving.
+- **Streaming:** add `?stream=true` to `/ask` for Server-Sent Events (`token` events, then one `done` event with sources and timings).
+- **Port 8000 taken** on your machine? Set `API_HOST_PORT=8010` in `.env` and use that port.
+- Use `127.0.0.1`, not `localhost`: ports are published on IPv4 loopback only, and on Windows `localhost` tries IPv6 first (each Python call to Qdrant waited ~2 s).
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /ask` | `{"question": "...", "book": null}` → answer, cited sources, refusal flag, request id, token usage, timings. `?stream=true` → Server-Sent Events |
+| `POST /feedback` | `{"request_id": "...", "rating": "up" \| "down", "comment": "..."}` |
+| `GET /health` | readiness: 200 only when the index is reachable and not empty |
+| `GET /live` | liveness: the process answers |
+| `GET /metadata` | app, prompt, LLM, embedding model and index versions |
+
+Interactive docs: http://127.0.0.1:8000/docs
 
 ## Developer commands
 

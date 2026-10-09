@@ -1,0 +1,13 @@
+{
+  "embedding_model": "BAAI/bge-m3",
+  "embedding_revision": "9a0624b896d81da7492a910ffa53731274b6cf3d",
+  "dim": 1024,
+  "max_length": 1024,
+  "normalization_version": "v1",
+  "text_format_version": "v1",
+  "articles_md5": "7f589ec24c78500aad3812642ee23eab",
+  "articles": 1149,
+  "points": 2241,
+  "collection": "articles_fb16830c7f",
+  "alias": "articles"
+}
