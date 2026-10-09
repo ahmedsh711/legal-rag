@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>legal-rag Learning Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Fraunces:opsz,wght@9..144,600&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lang="both">
+<header class="topbar">
+  <div class="crumbs"><strong>legal-rag</strong> · learning guide</div>
+  <div class="lang-toggle" role="group" aria-label="Language">
+    <button type="button" data-lang="en">EN</button>
+    <button type="button" data-lang="ar">عربي</button>
+    <button type="button" data-lang="both">Both · الاتنين</button>
+  </div>
+</header>
+<main>
+
+<p class="eyebrow">MLOps Practitioner · Final project · Track B</p>
+<h1><span class="en">Arabic Legal Q&amp;A over the Egyptian Civil Code</span><span class="ar">نظام سؤال وجواب قانوني على القانون المدني المصري</span></h1>
+
+<div class="pair">
+  <div class="en">
+    <p class="lede">This guide teaches every concept used in this project, in the order we build it. Each idea is explained in plain English and in simple Egyptian Arabic, side by side. Every design decision shows what we chose, what we rejected, and why.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p class="lede">الدليل ده بيشرح كل مفهوم بنستخدمه في المشروع، بنفس الترتيب اللي هنبني بيه. كل فكرة مكتوبة بإنجليزي بسيط وبالعامية المصرية جنب بعض. وكل قرار تصميم هتلاقي معاه: اخترنا إيه، ورفضنا إيه، وليه.</p>
+  </div>
+</div>
+
+<h2><span class="en">The business problem</span><span class="ar">المشكلة اللي بنحلها</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>A law firm or a government office needs to answer questions about Egyptian civil law quickly and <strong>with citations</strong>: "Article 147 says…". A wrong answer that sounds confident is worse than no answer, because a lawyer may act on it. So the system must:</p>
+    <ul>
+      <li>find the right articles (retrieval),</li>
+      <li>write an answer only from those articles (grounded generation),</li>
+      <li>cite article numbers a lawyer can check,</li>
+      <li>say "I can't find this in the code" instead of guessing,</li>
+      <li>and keep doing this reliably in production: measured, versioned, monitored.</li>
+    </ul>
+    <p>The last point is what this course is about. The model is a small part; the system around it is the job.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>مكتب محاماة أو جهة حكومية محتاجة تجاوب على أسئلة في القانون المدني المصري بسرعة و<strong>بالاستشهاد بالمادة</strong>: "المادة 147 بتقول…". الإجابة الغلط اللي شكلها واثقة أخطر من إن مفيش إجابة، لأن المحامي ممكن يتصرف على أساسها. عشان كده النظام لازم:</p>
+    <ul>
+      <li>يلاقي المواد الصح (Retrieval)،</li>
+      <li>يكتب الإجابة من المواد دي بس (Grounded generation)،</li>
+      <li>يذكر رقم المادة عشان المحامي يراجعها،</li>
+      <li>يقول "مش لاقي ده في القانون" بدل ما يألّف،</li>
+      <li>ويفضل شغال كده في الـ production: متقاس، ومتسجّل له versions، ومتراقب.</li>
+    </ul>
+    <p>النقطة الأخيرة دي هي الكورس كله. الموديل حتة صغيرة؛ الشغل الحقيقي هو السيستم اللي حواليه.</p>
+  </div>
+</div>
+
+<div class="callout quote">
+  <div class="pair">
+    <div class="en">"Training is a research problem. Serving is a systems problem." · "A model checkpoint is not a product. It's a file." (Session 3)</div>
+    <div class="ar" lang="ar" dir="rtl">"الـ Training مشكلة بحثية، والـ Serving مشكلة سيستم." · "الـ checkpoint مش منتج، ده مجرد فايل." (السيشن التالتة)</div>
+  </div>
+</div>
+
+<h2><span class="en">The whole system on one page</span><span class="ar">السيستم كله في صفحة واحدة</span></h2>
+<div class="pair">
+  <div class="en"><p><strong>Online path</strong> (what happens for each question). Gold boxes are <em>decisions</em> made by Jev, the cheap decision model; the blue box is the only step that <em>writes</em> text.</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p><strong>المسار الأونلاين</strong> (اللي بيحصل مع كل سؤال). المربعات الدهبي دي <em>قرارات</em> بياخدها Jev (موديل القرارات الرخيص)، والمربع الأزرق هو الخطوة الوحيدة اللي <em>بتكتب</em> كلام.</p></div>
+</div>
+<div class="flow" aria-label="Online request path">
+  <div class="step"><b>1 · API</b>FastAPI /ask, validation, rate limit</div><span class="arrow">→</span>
+  <div class="step"><b>2 · Guardrails in</b>PII, injection</div><span class="arrow">→</span>
+  <div class="step jev"><b>3 · Route</b>in scope? which book?</div><span class="arrow">→</span>
+  <div class="step"><b>4 · Retrieve</b>Qdrant hybrid (bge-m3)</div><span class="arrow">→</span>
+  <div class="step jev"><b>5 · Rerank</b>score each article 0–3</div><span class="arrow">→</span>
+  <div class="step jev"><b>6 · Gate</b>can these answer it?</div><span class="arrow">→</span>
+  <div class="step" style="border-color:var(--accent)"><b>7 · Generate</b>LLM writes with [Art. N]</div><span class="arrow">→</span>
+  <div class="step jev"><b>8 · Validate</b>is each claim supported?</div><span class="arrow">→</span>
+  <div class="step"><b>9 · Answer</b>text + citations + request_id</div>
+</div>
+<div class="pair">
+  <div class="en"><p><strong>Offline paths</strong> (run on a schedule or on change):</p>
+    <ul>
+      <li><strong>Corpus:</strong> PDF → parse → <code>articles.json</code> → embed → Qdrant collection. Versioned with DVC.</li>
+      <li><strong>Evaluation:</strong> golden questions → RAGAS + judge → MLflow run → best config registered as <code>production</code>.</li>
+      <li><strong>Release:</strong> PR → CI (lint, tests, quality gate) → image on Docker Hub → canary → full rollout.</li>
+      <li><strong>Watching:</strong> Prometheus metrics, Langfuse traces, Evidently drift → alerts → Airflow → re-index / re-evaluate → human approval.</li>
+    </ul>
+  </div>
+  <div class="ar" lang="ar" dir="rtl"><p><strong>المسارات الأوفلاين</strong> (بتشتغل بجدول مواعيد أو لما حاجة تتغير):</p>
+    <ul>
+      <li><strong>الداتا:</strong> PDF ← parse ← <code>articles.json</code> ← embeddings ← collection في Qdrant. وكله متسجّل بـ DVC.</li>
+      <li><strong>التقييم:</strong> أسئلة ذهبية ← RAGAS وjudge ← run في MLflow ← أحسن config بيتسجل باسم <code>production</code>.</li>
+      <li><strong>النزول للـ production:</strong> PR ← CI (lint وtests وquality gate) ← image على Docker Hub ← canary ← rollout كامل.</li>
+      <li><strong>المراقبة:</strong> metrics في Prometheus، traces في Langfuse، drift من Evidently ← alerts ← Airflow ← نعمل re-index أو نقيّم تاني ← وبشر يوافق في الآخر.</li>
+    </ul>
+  </div>
+</div>
+
+<h2><span class="en">How the project is built, phase by phase</span><span class="ar">هنبني المشروع إزاي، مرحلة مرحلة</span></h2>
+<div class="pair">
+  <div class="en"><p>Each phase ends with something that runs, a pull request, and a git tag. The rubric column refers to the course's 10-point final-project rubric.</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p>كل مرحلة بتخلص بحاجة شغالة فعلاً، وPull Request، وgit tag. عمود الـ rubric معناه بنود تقييم المشروع النهائي العشرة.</p></div>
+</div>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>#</th><th class="en">What exists at the end</th><th class="ar">اللي بيبقى موجود في الآخر</th><th>Concepts</th><th>Rubric</th></tr></thead>
+  <tbody>
+    <tr><td>0</td><td class="en">Package skeleton, quality gates, this guide</td><td class="ar">هيكل الـ package، بوابات الجودة، والدليل ده</td><td>packaging, uv, ruff, pre-commit, pytest, config</td><td>01, 10</td></tr>
+    <tr><td>1</td><td class="en">PDF turned into 1,149 structured article records, versioned</td><td class="ar">الـ PDF اتحول لـ 1,149 مادة متنظمة ومتسجّل لها version</td><td>ingestion, Arabic normalization, data validation, DVC</td><td>05</td></tr>
+    <tr><td>2</td><td class="en">A working RAG API in Docker that answers with citations</td><td class="ar">API شغال جوه Docker بيجاوب بالاستشهاد بالمواد</td><td>embeddings, Qdrant, hybrid search, FastAPI, Docker</td><td>01, 02, 03</td></tr>
+    <tr><td>3</td><td class="en">Measured quality; JEV vs local decider compared in MLflow</td><td class="ar">جودة متقاسة؛ ومقارنة JEV بالـ decider المحلي في MLflow</td><td>RAGAS, judge calibration, MLflow, registry, JEV-RAG</td><td>04</td></tr>
+    <tr><td>4</td><td class="en">Production pipeline with guardrails, vLLM option, CI/CD, load test</td><td class="ar">pipeline جاهز للـ production فيه guardrails واختيار vLLM وCI/CD وload test</td><td>serving, BentoML, vLLM, CI, Locust, rate limits</td><td>06, 07</td></tr>
+    <tr><td>5</td><td class="en">Dashboards, alerts, traces, drift detection</td><td class="ar">dashboards وalerts وtraces واكتشاف الـ drift</td><td>Prometheus, Grafana, Alertmanager, Langfuse, Evidently</td><td>08</td></tr>
+    <tr><td>6</td><td class="en">Automated re-index and release: Airflow, CT, canary, Kubernetes</td><td class="ar">re-index ونزول للـ production أوتوماتيك: Airflow وCT وcanary وKubernetes</td><td>orchestration, CT, IaC, release strategies</td><td>06</td></tr>
+    <tr><td>7</td><td class="en">Optimization numbers, runbook, final README</td><td class="ar">أرقام الـ optimization والـ runbook والـ README النهائي</td><td>quantization, cost, runbooks</td><td>09, 10</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2><span class="en">Concept pages (read before the code)</span><span class="ar">صفحات المفاهيم (اقراها قبل الكود)</span></h2>
+<div class="cards">
+  <a class="card" href="00a-foundations.html"><div class="k">Concepts 1</div><div class="t">Foundations</div><div class="en">MLOps, packaging, config, APIs, logging, tests, Docker, git flow</div><div class="ar" lang="ar" dir="rtl">الأساسيات: MLOps والـ packaging والـ config والـ API والـ logs والـ tests وDocker</div></a>
+  <a class="card" href="00b-rag-jev.html"><div class="k">Concepts 2</div><div class="t">RAG and JEV</div><div class="en">tokens, embeddings, chunking, vector DB, hybrid search, reranking, Jev, vLLM, guardrails</div><div class="ar" lang="ar" dir="rtl">الـ RAG وJEV: الـ embeddings والـ chunking والـ vector DB والـ reranking وJev وvLLM</div></a>
+  <a class="card" href="00c-eval-tracking.html"><div class="k">Concepts 3</div><div class="t">Evaluation, tracking, automation</div><div class="en">RAGAS, judges, MLflow, DVC, CI/CT, Airflow, Terraform</div><div class="ar" lang="ar" dir="rtl">التقييم والتتبع والأتمتة: RAGAS وMLflow وDVC وCI/CT وAirflow</div></a>
+  <a class="card" href="00d-serving-monitoring.html"><div class="k">Concepts 4</div><div class="t">Serving and monitoring</div><div class="en">inference patterns, latency, load tests, releases, Kubernetes, Prometheus, drift, Langfuse</div><div class="ar" lang="ar" dir="rtl">الـ serving والمراقبة: الـ latency والـ releases وPrometheus والـ drift وLangfuse</div></a>
+</div>
+<div class="pair">
+  <div class="en"><p class="legend">Code-tour pages (one per phase, explaining every file and function) are added as each phase ships: <span class="file">01-corpus.html</span>, <span class="file">02-rag-api.html</span>, <span class="file">03-eval-mlflow-jev.html</span>, <span class="file">04-serving-ci.html</span>, <span class="file">05-observability.html</span>, <span class="file">06-automation-release.html</span>, <span class="file">07-optimization-runbook.html</span>.</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p class="legend">صفحات شرح الكود (صفحة لكل مرحلة، بتشرح كل فايل وكل function) بتتضاف لما المرحلة تخلص.</p></div>
+</div>
+
+<h2 id="glossary"><span class="en">Glossary</span><span class="ar">قاموس المصطلحات</span></h2>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Term</th><th class="en">Meaning</th><th class="ar">يعني إيه</th></tr></thead>
+  <tbody>
+    <tr><td>MLOps</td><td class="en">Practices that take a model from a notebook to a reliable, monitored, repeatable production system.</td><td class="ar">الممارسات اللي بتنقل الموديل من النوتبوك لسيستم شغال في الـ production، يتكرر ويتراقب.</td></tr>
+    <tr><td>LLMOps</td><td class="en">MLOps for LLM apps: same ideas plus prompts, tokens, traces, judges and new kinds of drift.</td><td class="ar">MLOps لتطبيقات الـ LLM: نفس الأفكار بالإضافة للـ prompts والـ tokens والـ traces والـ judges وأنواع drift جديدة.</td></tr>
+    <tr><td>RAG</td><td class="en">Retrieval-Augmented Generation: fetch relevant text first, then let the LLM answer from it.</td><td class="ar">بنجيب النصوص اللي تخص السؤال الأول، وبعدين الـ LLM يجاوب منها مش من دماغه.</td></tr>
+    <tr><td>Token</td><td class="en">The unit an LLM reads and is billed in; a word is often 1–3 tokens, Arabic often more.</td><td class="ar">الوحدة اللي الموديل بيقرا بيها وبتتحاسب بيها؛ الكلمة غالبًا 1–3 tokens، والعربي غالبًا أكتر.</td></tr>
+    <tr><td>Embedding</td><td class="en">A list of numbers (a vector) that represents meaning; similar meanings are close.</td><td class="ar">ليستة أرقام (vector) بتمثل المعنى؛ المعاني القريبة بتبقى قريبة من بعض.</td></tr>
+    <tr><td>Chunk</td><td class="en">One piece of the corpus that gets embedded and retrieved. Here: one article.</td><td class="ar">حتة من الداتا بنعملها embedding ونرجّعها. عندنا: مادة واحدة.</td></tr>
+    <tr><td>Vector database</td><td class="en">A database that finds the nearest vectors to a query fast. We use Qdrant.</td><td class="ar">داتابيز بتلاقي أقرب vectors للسؤال بسرعة. بنستخدم Qdrant.</td></tr>
+    <tr><td>Hybrid search</td><td class="en">Combining meaning-based (dense) and keyword-based (sparse) search.</td><td class="ar">بندمج البحث بالمعنى (dense) مع البحث بالكلمات (sparse).</td></tr>
+    <tr><td>Reranker</td><td class="en">A second, more careful pass that reorders the retrieved candidates.</td><td class="ar">مرحلة تانية أدق بترتب النتايج اللي رجعت من جديد.</td></tr>
+    <tr><td>Jev</td><td class="en">A hosted "decision model": it answers typed questions (yes/no, choice, score) with probabilities, never free text.</td><td class="ar">"موديل قرارات" على السحابة: بيجاوب أسئلة محددة (آه/لأ، اختيار، درجة) باحتمالات، ومبيكتبش كلام حر.</td></tr>
+    <tr><td>Grounded / faithful</td><td class="en">Every claim in the answer is supported by the retrieved text.</td><td class="ar">كل جملة في الإجابة ليها دليل في النص اللي رجعناه.</td></tr>
+    <tr><td>Hallucination</td><td class="en">A fluent, confident statement the sources do not support.</td><td class="ar">كلام واثق وشكله صح بس ملوش أصل في المصادر.</td></tr>
+    <tr><td>Golden set</td><td class="en">A frozen, versioned list of test questions with expected articles/answers.</td><td class="ar">ليستة أسئلة اختبار ثابتة ومتسجّلة، معاها المواد والإجابات المتوقعة.</td></tr>
+    <tr><td>RAGAS</td><td class="en">A library that scores RAG answers: faithfulness, relevancy, context precision and recall.</td><td class="ar">مكتبة بتدي درجات لإجابات الـ RAG: الأمانة للمصدر، والصلة بالسؤال، ودقة وشمول السياق.</td></tr>
+    <tr><td>LLM-as-a-judge</td><td class="en">Using an LLM with a written rubric to grade outputs. Must be calibrated against humans.</td><td class="ar">بنستخدم LLM ومعاه معايير مكتوبة عشان يقيّم. لازم نعايره قصاد تقييم بشري.</td></tr>
+    <tr><td>MLflow</td><td class="en">Tracks experiments (params, metrics, artifacts) and holds a registry of versions.</td><td class="ar">بيسجّل التجارب (params وmetrics وartifacts) وفيه registry للـ versions.</td></tr>
+    <tr><td>DVC</td><td class="en">Git for data: Git keeps a small pointer file, the bytes live in remote storage.</td><td class="ar">Git للداتا: Git بيحفظ فايل صغير بيشاور، والداتا نفسها في storage بره.</td></tr>
+    <tr><td>CI / CD / CT</td><td class="en">Continuous integration (check every change), delivery/deployment (ship it), training (re-evaluate/re-build on triggers).</td><td class="ar">CI بيشيك كل تغيير، CD بينزّله، CT بيعيد التدريب أو التقييم لما يحصل trigger.</td></tr>
+    <tr><td>p95 latency</td><td class="en">95% of requests are faster than this. The average hides slow users; p95/p99 don't.</td><td class="ar">95% من الطلبات أسرع من الرقم ده. المتوسط بيخبي المستخدمين اللي اتأخروا؛ p95 وp99 لأ.</td></tr>
+    <tr><td>TTFT</td><td class="en">Time to first token: how long until the user sees the answer start.</td><td class="ar">الوقت لحد أول token: قد إيه المستخدم بيستنى لحد ما الإجابة تبدأ تظهر.</td></tr>
+    <tr><td>Canary</td><td class="en">Send a small % of traffic to the new version, watch it, then grow or roll back.</td><td class="ar">بنبعت نسبة صغيرة من الترافيك للنسخة الجديدة، نراقبها، وبعدين نكبّر أو نرجع.</td></tr>
+    <tr><td>Drift</td><td class="en">The world (questions, documents, models) changes so quality drops without any error.</td><td class="ar">الدنيا بتتغير (الأسئلة، المستندات، الموديلات) فالجودة بتقل من غير أي error.</td></tr>
+    <tr><td>Trace / span</td><td class="en">A trace is one request's full story; spans are its timed steps (retrieve, rerank, generate…).</td><td class="ar">الـ trace هو حكاية الطلب كله؛ والـ spans هي خطواته بوقت كل واحدة.</td></tr>
+    <tr><td>Guardrail</td><td class="en">A check before or after the model (PII, prompt injection, off-topic, groundedness).</td><td class="ar">فحص قبل أو بعد الموديل (بيانات شخصية، prompt injection، خارج الموضوع، الأمانة للمصدر).</td></tr>
+    <tr><td>Quantization (AWQ)</td><td class="en">Storing weights in fewer bits (4-bit) so a model fits a small GPU, at some quality cost.</td><td class="ar">بنخزن الأوزان بعدد bits أقل (4-bit) عشان الموديل يدخل GPU صغير، مع شوية خسارة في الجودة.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="pager"><span></span><a href="00a-foundations.html">Concepts 1 · Foundations →</a></div>
+</main>
+<script src="assets/toggle.js"></script>
+</body>
+</html>

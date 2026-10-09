@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foundations · legal-rag guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Fraunces:opsz,wght@9..144,600&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lang="both">
+<header class="topbar">
+  <div class="crumbs"><a href="index.html">legal-rag guide</a> / Concepts 1 · Foundations</div>
+  <div class="lang-toggle" role="group" aria-label="Language">
+    <button type="button" data-lang="en">EN</button>
+    <button type="button" data-lang="ar">عربي</button>
+    <button type="button" data-lang="both">Both · الاتنين</button>
+  </div>
+</header>
+<main>
+<p class="eyebrow">Concepts 1 of 4</p>
+<h1><span class="en">Foundations: from notebook to a real service</span><span class="ar">الأساسيات: من النوتبوك لخدمة حقيقية</span></h1>
+
+<nav class="toc" aria-label="On this page">
+  <strong>On this page · في الصفحة دي</strong>
+  <ol>
+    <li><a href="#mlops">What MLOps is</a></li>
+    <li><a href="#maturity">Maturity levels</a></li>
+    <li><a href="#packaging">Repo layout and packaging</a></li>
+    <li><a href="#config">Configuration and secrets</a></li>
+    <li><a href="#oop">Interfaces you can swap</a></li>
+    <li><a href="#api">APIs with FastAPI</a></li>
+    <li><a href="#serialization">Saving models safely</a></li>
+    <li><a href="#logging">Structured logging</a></li>
+    <li><a href="#testing">Testing</a></li>
+    <li><a href="#quality">Code quality gates</a></li>
+    <li><a href="#docker">Docker and Compose</a></li>
+    <li><a href="#git">Git, PRs and tags</a></li>
+  </ol>
+</nav>
+
+<!-- 1 -->
+<h2 id="mlops"><span class="en">1. What MLOps is</span><span class="ar">1. يعني إيه MLOps</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>You train a model in a notebook and it works on your laptop. MLOps is everything needed so that it also works <em>for other people, every day, and you can prove what it did</em>: packaging, versioning code and data, automated tests, deployment, monitoring, and safe updates.</p>
+    <ul>
+      <li><strong>DevOps</strong> ships software reliably: build, test, deploy.</li>
+      <li><strong>DataOps</strong> moves data reliably from source to consumers.</li>
+      <li><strong>MLOps</strong> joins both and adds what is special to models: experiments, model versions, retraining, drift.</li>
+      <li><strong>LLMOps</strong> is MLOps for LLM apps. Same ideas, plus prompts, tokens and cost, traces, LLM judges, and new kinds of drift (the provider changes the model, someone edits the prompt).</li>
+    </ul>
+    <p>The instructor's opening point: most teams already "do MLOps", badly. Models sent over WhatsApp, files named <code>model_final_final.pkl</code>, notebooks nobody else can run.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>إنت بتدرّب موديل في نوتبوك وبيشتغل على اللابتوب بتاعك. الـ MLOps هو كل اللي محتاجه عشان يشتغل <em>لناس تانية، كل يوم، وتقدر تثبت هو عمل إيه</em>: packaging، وversions للكود والداتا، وtests أوتوماتيك، وdeployment، ومراقبة، وتحديثات آمنة.</p>
+    <ul>
+      <li><strong>DevOps</strong>: إنك تنزّل سوفتوير بشكل موثوق: build وtest وdeploy.</li>
+      <li><strong>DataOps</strong>: إن الداتا توصل من مصدرها للي محتاجها بشكل موثوق.</li>
+      <li><strong>MLOps</strong>: بيجمع الاتنين ويزود الحاجات الخاصة بالموديلات: التجارب، وversions الموديل، وإعادة التدريب، والـ drift.</li>
+      <li><strong>LLMOps</strong>: هو MLOps لتطبيقات الـ LLM. نفس الأفكار، وزيادة عليها الـ prompts، والـ tokens والتكلفة، والـ traces، والـ judges، وأنواع drift جديدة (الـ provider يغيّر الموديل، حد يعدّل الـ prompt).</li>
+    </ul>
+    <p>أول نقطة قالتها المهندسة آية: أغلب الفرق "بتعمل MLOps" أصلاً، بس غلط. موديلات بتتبعت على الواتساب، وفايلات اسمها <code>model_final_final.pkl</code>، ونوتبوكات محدش غيرك يعرف يشغلها.</p>
+  </div>
+</div>
+<div class="callout quote"><div class="pair">
+  <div class="en">"I teach concepts, not tools." Tools change overnight; learn one tool per concept and stay flexible.</div>
+  <div class="ar" lang="ar" dir="rtl">"أنا مش بعلّمك tool، أنا بعلّمك concept." التولز بتتغير في يوم وليلة؛ اتعلم tool واحدة لكل مفهوم وخليك مرن.</div>
+</div></div>
+
+<!-- 2 -->
+<h2 id="maturity"><span class="en">2. Maturity levels, and where this project sits</span><span class="ar">2. مستويات النضج، ومشروعنا فين منها</span></h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>Level</th><th class="en">What it looks like</th><th class="ar">شكله إيه</th></tr></thead>
+  <tbody>
+    <tr><td>0</td><td class="en">Notebooks only. Nothing is reproducible.</td><td class="ar">نوتبوكات بس. مفيش حاجة تتكرر.</td></tr>
+    <tr><td>1</td><td class="en">Scripts and manual deploys, no tracking.</td><td class="ar">scripts وdeploy بالإيد، ومفيش تتبع.</td></tr>
+    <tr><td>2</td><td class="en">Automated pipeline, experiment tracking, basic CI.</td><td class="ar">pipeline أوتوماتيك، تتبع للتجارب، وCI بسيط.</td></tr>
+    <tr><td>3</td><td class="en">CD for ML: retrain/re-evaluate on triggers, registry, monitoring.</td><td class="ar">CD للـ ML: إعادة تدريب أو تقييم مع الـ triggers، وregistry، ومراقبة.</td></tr>
+    <tr><td>4</td><td class="en">Zero-touch, automatic rollback, full observability ("perfection belongs to God").</td><td class="ar">مفيش تدخل بشري، rollback أوتوماتيك، ومراقبة كاملة ("الكمال لله").</td></tr>
+  </tbody>
+</table></div>
+<div class="pair">
+  <div class="en">
+    <p><strong>Target: level 3.</strong> A new law version or a drift alert triggers re-indexing and re-evaluation automatically, the result is compared with production, and a human approves the switch. We stop short of level 4 on purpose: in legal work a person should approve what goes live.</p>
+    <p>The instructor's three diagnosis questions, answered for this project:</p>
+    <ol>
+      <li><em>Can you reproduce any past result from the artifact store alone?</em> Yes: git commit → DVC data hash → MLflow run.</li>
+      <li><em>How long from "better config" to serving, and is it automated?</em> Minutes: CI builds the image, the registry alias moves, the API reloads the config.</li>
+      <li><em>Who gets paged when quality silently drops?</em> Alertmanager pages on symptoms (errors, latency, faithfulness below threshold) with a runbook link.</li>
+    </ol>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p><strong>هدفنا: المستوى 3.</strong> لما ينزل تعديل في القانون أو يجيلنا alert بـ drift، الـ re-index والتقييم بيحصلوا لوحدهم، النتيجة بتتقارن بالـ production، وبعدين بني آدم يوافق على التغيير. ومش هنوصل للمستوى 4 بقصد: في الشغل القانوني لازم شخص يوافق على اللي بينزل.</p>
+    <p>أسئلة التشخيص التلاتة بتاعة المهندسة، وإجابتها في مشروعنا:</p>
+    <ol>
+      <li><em>تقدر تكرر أي نتيجة قديمة من الـ artifacts بس؟</em> آه: git commit ← DVC hash ← MLflow run.</li>
+      <li><em>قد إيه من "لقينا config أحسن" لحد ما يتخدّم؟ وهل ده أوتوماتيك؟</em> دقايق: الـ CI بيعمل build للـ image، والـ alias في الـ registry بيتحرك، والـ API بيقرا الـ config الجديد.</li>
+      <li><em>مين بيتصحّى لما الجودة تقل في صمت؟</em> Alertmanager بيبعت page على الأعراض (errors، latency، faithfulness أقل من الحد) ومعاه لينك الـ runbook.</li>
+    </ol>
+  </div>
+</div>
+
+<!-- 3 -->
+<h2 id="packaging"><span class="en">3. Repo layout and packaging</span><span class="ar">3. ترتيب الريبو والـ packaging</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>A notebook is a pile of cells; a <strong>package</strong> is code other code can <code>import</code>, install and test. We use the <strong>src layout</strong>: the code lives in <code>src/legalrag/</code>, tests in <code>tests/</code>. Because tests import the <em>installed</em> package, they catch "works only from my folder" bugs.</p>
+    <p><code>pyproject.toml</code> is the one file that describes the project: name, Python version, dependencies, dev dependencies, and tool settings (ruff, pytest, coverage). It replaced <code>requirements.txt</code>, which "used to get people in trouble" (no versions, conflicts).</p>
+    <p><strong>uv</strong> creates the virtual environment, resolves versions, and writes <code>uv.lock</code>: the exact version of every package. Commit the lock file so every machine (yours, CI, Docker) installs the same thing.</p>
+    <pre><code>uv sync          # create .venv and install exactly what uv.lock says
+uv add httpx      # add a dependency (uv picks a compatible version)
+uv run pytest    # run inside the project environment</code></pre>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>النوتبوك كومة cells؛ لكن الـ <strong>package</strong> كود تقدر تعمله <code>import</code> من كود تاني، وتسطّبه، وتختبره. بنستخدم <strong>src layout</strong>: الكود في <code>src/legalrag/</code> والـ tests في <code>tests/</code>. ولأن الـ tests بتعمل import للـ package <em>المتسطّب</em>، بتمسك مشاكل "شغال من الفولدر بتاعي بس".</p>
+    <p><code>pyproject.toml</code> هو الفايل الوحيد اللي بيوصف المشروع: الاسم، نسخة بايثون، المكتبات، مكتبات التطوير، وإعدادات التولز (ruff وpytest وcoverage). جه بدل <code>requirements.txt</code> اللي "كان بيوقّع الناس في مشاكل" (من غير versions، وتعارضات).</p>
+    <p><strong>uv</strong> بيعمل الـ virtual environment، ويحل الـ versions، ويكتب <code>uv.lock</code>: النسخة المظبوطة من كل مكتبة. اعمل commit للـ lock عشان كل جهاز (جهازك، الـ CI، Docker) يسطّب نفس الحاجة بالظبط.</p>
+  </div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Option</th><th>Verdict</th><th class="en">Why</th><th class="ar">ليه</th></tr></thead>
+  <tbody>
+    <tr><td><strong>uv + pyproject + uv.lock</strong></td><td>chosen</td><td class="en">10–100× faster than pip, one tool for venv + install + lock + Python versions, recommended in the course.</td><td class="ar">أسرع من pip بـ 10 لـ 100 مرة، تول واحدة للـ venv والتسطيب والـ lock ونسخ بايثون، والكورس رشحها.</td></tr>
+    <tr><td>pip + requirements.txt</td><td>rejected</td><td class="en">No lock of transitive versions, slower, easy to drift between machines.</td><td class="ar">مفيش lock للمكتبات اللي تحت، أبطأ، وسهل الأجهزة تختلف عن بعض.</td></tr>
+    <tr><td>Poetry / conda</td><td>rejected</td><td class="en">Work, but slower and heavier; conda environments are hard to reproduce inside slim Docker images.</td><td class="ar">شغالين، بس أبطأ وأتقل؛ وبيئات conda صعب تتكرر جوه Docker images صغيرة.</td></tr>
+    <tr><td><strong>Python 3.12</strong></td><td>chosen</td><td class="en">Newest version that RAGAS, Evidently, torch and vLLM clients all support today.</td><td class="ar">أحدث نسخة كل المكتبات اللي محتاجينها (RAGAS وEvidently وtorch) بتدعمها دلوقتي.</td></tr>
+  </tbody>
+</table></div>
+
+<!-- 4 -->
+<h2 id="config"><span class="en">4. Configuration and secrets</span><span class="ar">4. الإعدادات والأسرار</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Paths, URLs, model names and thresholds change between your laptop, CI and production. If they are written inside the code, every change is a code change. So all of them come from <strong>environment variables</strong>, with sane defaults, read in one place: <code>src/legalrag/settings.py</code>.</p>
+    <p>We use <strong>pydantic-settings</strong>: it reads env vars (or a local <code>.env</code> file), converts types, and validates ranges, so <code>GATE_THRESHOLD=1.7</code> fails at startup instead of silently breaking answers.</p>
+    <p><strong>Secrets</strong> (API keys) are typed as <code>SecretStr</code>, so printing the settings shows <code>**********</code>. They live only in <code>.env</code> (git-ignored) and in GitHub Secrets for CI. The instructor's warning: bots crawl public GitHub repos for keys within hours.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>المسارات والـ URLs وأسماء الموديلات والحدود بتختلف بين اللابتوب والـ CI والـ production. لو مكتوبة جوه الكود، كل تغيير هيبقى تعديل كود. عشان كده كلها جاية من <strong>environment variables</strong> بقيم افتراضية معقولة، وبنقراها من مكان واحد: <code>src/legalrag/settings.py</code>.</p>
+    <p>بنستخدم <strong>pydantic-settings</strong>: بيقرا الـ env vars (أو فايل <code>.env</code> محلي)، ويحوّل الأنواع، ويتأكد من الحدود؛ فلو حد كتب <code>GATE_THRESHOLD=1.7</code> البرنامج يقع وهو بيقوم بدل ما يبوّظ الإجابات في صمت.</p>
+    <p><strong>الأسرار</strong> (API keys) نوعها <code>SecretStr</code>، فلو طبعت الإعدادات هتظهر <code>**********</code>. ومكانها <code>.env</code> بس (والـ git بيتجاهله) وGitHub Secrets للـ CI. وتحذير المهندسة: فيه bots بتلف على الريبوهات العامة وتلقط المفاتيح في ساعات.</p>
+  </div>
+</div>
+
+<!-- 5 -->
+<h2 id="oop"><span class="en">5. Interfaces you can swap</span><span class="ar">5. واجهات تقدر تبدّلها</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>In Session 1 the model sat behind a <code>ModelBase</code> class with one method, <code>predict()</code>, so swapping sklearn for XGBoost did not touch the API. This is <strong>abstraction</strong>: callers depend on <em>what</em> a thing does, not <em>how</em>.</p>
+    <p>We apply the same idea in two places where we really have two implementations:</p>
+    <ul>
+      <li><code>Decider</code> (abstract base class) with <code>JevDecider</code> and <code>LocalDecider</code>. The pipeline calls <code>route()</code>, <code>rerank()</code>, <code>can_answer()</code>, <code>validate()</code> and never knows which one answered.</li>
+      <li>The LLM client: OpenRouter or local vLLM. Both speak the same OpenAI-compatible API, so the switch is one setting, not a second class.</li>
+    </ul>
+    <p>We do <em>not</em> add interfaces with only one implementation. An abstraction earns its place only when there is a real second option.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>في السيشن الأولى الموديل كان ورا class اسمها <code>ModelBase</code> فيها method واحدة <code>predict()</code>، فلما تبدّل sklearn بـ XGBoost الـ API مبيتغيرش. ده اسمه <strong>abstraction</strong>: اللي بيستخدم الحاجة بيعتمد على <em>هي بتعمل إيه</em> مش <em>بتعمله إزاي</em>.</p>
+    <p>بنطبق نفس الفكرة في مكانين عندنا فيهم فعلاً اختيارين:</p>
+    <ul>
+      <li><code>Decider</code> (abstract base class) وتحته <code>JevDecider</code> و<code>LocalDecider</code>. الـ pipeline بينادي <code>route()</code> و<code>rerank()</code> و<code>can_answer()</code> و<code>validate()</code> ومبيعرفش مين اللي جاوب.</li>
+      <li>الـ LLM client: OpenRouter أو vLLM محلي. الاتنين بيتكلموا نفس الـ API بتاع OpenAI، فالتبديل setting واحد مش class تانية.</li>
+    </ul>
+    <p>ومش بنعمل interfaces ليها implementation واحدة بس. الـ abstraction بيستاهل مكانه لما يبقى فيه اختيار تاني حقيقي.</p>
+  </div>
+</div>
+
+<!-- 6 -->
+<h2 id="api"><span class="en">6. APIs with FastAPI</span><span class="ar">6. الـ APIs باستخدام FastAPI</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>"An API is a remote function call." A client sends an HTTP request; our service runs the pipeline and returns JSON. Parts of a request: <strong>path</strong> (which resource, <code>/ask</code>), <strong>query</strong> (how, <code>?stream=true</code>), <strong>body</strong> (what, the question), <strong>headers</strong> (metadata, <code>X-Request-ID</code>, API key). Asking a question is a <code>POST</code> because it carries a body.</p>
+    <p>The checklist from Session 1, mapped to our endpoints:</p>
+    <ol>
+      <li><strong>Validate input</strong> with Pydantic: <code>question: str = Field(min_length=3, max_length=2000)</code>. Bad input returns <strong>422</strong> automatically and never reaches the model or the token budget. "Never trust incoming data."</li>
+      <li><strong>Health endpoints</strong>: <em>liveness</em> ("is the process alive? restart me if not") and <em>readiness</em> ("are Qdrant and the config loaded? send me traffic"). A pod can be alive but not ready.</li>
+      <li><strong>Load once</strong>: the embedding model, the Qdrant client and the config load in FastAPI's <em>lifespan</em> at startup. Loading per request costs hundreds of milliseconds each time ("كارثة").</li>
+      <li><strong>Async for waiting, threads for computing</strong>: calls to Qdrant, Jev and the LLM are I/O, so <code>async</code> lets one worker serve many users while they wait. Embedding a query is CPU work; inside <code>async</code> it would freeze everyone, so it runs in <code>run_in_threadpool</code>. "async does NOT make CPU work faster."</li>
+      <li><strong>Response schema</strong>: <code>response_model=AskResponse</code> fixes the contract with clients and stops internal fields from leaking.</li>
+      <li><strong>Timeouts on every outside call</strong>: "never call an external inference service without a timeout."</li>
+      <li><strong>Streaming</strong>: <code>/ask?stream=true</code> sends tokens with Server-Sent Events, so the user sees the answer start fast (TTFT).</li>
+      <li><strong>Honest errors</strong>: 422 explains what is wrong; 429 says "too many requests, retry after N seconds"; 500/503 are logged with detail but never show a traceback to the client.</li>
+    </ol>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>"الـ API ده function call من بعيد." الـ client بيبعت HTTP request؛ والخدمة بتاعتنا بتشغّل الـ pipeline وترجع JSON. أجزاء الـ request: الـ <strong>path</strong> (أنهي resource، <code>/ask</code>)، الـ <strong>query</strong> (إزاي، <code>?stream=true</code>)، الـ <strong>body</strong> (إيه، السؤال نفسه)، والـ <strong>headers</strong> (معلومات زيادة زي <code>X-Request-ID</code> والـ API key). السؤال بيتبعت <code>POST</code> لأن معاه body.</p>
+    <p>الـ checklist من السيشن الأولى، وإزاي بنطبقها:</p>
+    <ol>
+      <li><strong>نتأكد من المدخلات</strong> بـ Pydantic: <code>Field(min_length=3, max_length=2000)</code>. أي مدخل غلط بيرجع <strong>422</strong> لوحده ومبيوصلش للموديل ولا بيصرف tokens. "متثقش أبدًا في الداتا اللي داخلة."</li>
+      <li><strong>Health endpoints</strong>: الـ <em>liveness</em> ("البروسيس عايشة؟ لو لأ اعملي restart") والـ <em>readiness</em> ("Qdrant والـ config اتحملوا؟ ابعتلي ترافيك"). ممكن تبقى عايش بس مش جاهز.</li>
+      <li><strong>حمّل مرة واحدة</strong>: موديل الـ embedding وclient الـ Qdrant والـ config بيتحملوا في الـ <em>lifespan</em> وقت ما السيرفر يقوم. لو حمّلتهم مع كل request هتخسر مئات الملي ثانية كل مرة ("كارثة").</li>
+      <li><strong>async للانتظار، وthreads للحساب</strong>: النداءات لـ Qdrant وJev والـ LLM كلها I/O، فالـ <code>async</code> بيخلي worker واحد يخدم ناس كتير وهم مستنيين. لكن الـ embedding شغل CPU؛ لو اتعمل جوه <code>async</code> هيجمّد الكل، فبنشغله في <code>run_in_threadpool</code>. "الـ async مش بيسرّع شغل الـ CPU."</li>
+      <li><strong>شكل الرد ثابت</strong>: <code>response_model=AskResponse</code> بيثبت العقد مع الـ client ويمنع أي حقول داخلية تطلع.</li>
+      <li><strong>timeout على كل نداء بره</strong>: "عمرك ما تنادي خدمة inference من غير timeout."</li>
+      <li><strong>Streaming</strong>: <code>/ask?stream=true</code> بيبعت الـ tokens بـ Server-Sent Events، فالمستخدم يشوف الإجابة بتبدأ بسرعة (TTFT).</li>
+      <li><strong>أخطاء صريحة</strong>: 422 بيقول إيه الغلط؛ 429 بيقول "طلبات كتير، جرّب تاني بعد N ثانية"؛ و500/503 بيتسجلوا بالتفاصيل بس عمر الـ traceback ما يطلع للـ client.</li>
+    </ol>
+  </div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Option</th><th>Verdict</th><th class="en">Why</th><th class="ar">ليه</th></tr></thead>
+  <tbody>
+    <tr><td><strong>FastAPI</strong></td><td>chosen</td><td class="en">Pydantic validation and OpenAPI docs for free, async-native, the course default, easy SSE streaming.</td><td class="ar">validation بـ Pydantic وdocs أوتوماتيك، async من الأساس، اختيار الكورس، والـ streaming سهل.</td></tr>
+    <tr><td>Flask</td><td>rejected</td><td class="en">Sync by default and no built-in validation; we would rebuild what FastAPI gives.</td><td class="ar">sync افتراضيًا ومفيهوش validation؛ هنعيد بناء اللي FastAPI بيديهولنا جاهز.</td></tr>
+    <tr><td>Litestar</td><td>rejected</td><td class="en">Good and similar, but less material in the course and smaller community.</td><td class="ar">كويس وشبهه، بس شرحه في الكورس أقل والمجتمع أصغر.</td></tr>
+    <tr><td>BentoML only</td><td>later, as a layer</td><td class="en">BentoML shines with micro-batching a local model. Our heavy parts are remote calls, so FastAPI is the app; Phase 4 shows BentoML wrapping the same pipeline.</td><td class="ar">BentoML بيلمع لما يكون عندك موديل محلي ومحتاج micro-batching. أتقل حاجات عندنا نداءات بره، فـ FastAPI هو التطبيق؛ وفي المرحلة 4 هنوري BentoML وهو بيلف نفس الـ pipeline.</td></tr>
+  </tbody>
+</table></div>
+
+<!-- 7 -->
+<h2 id="serialization"><span class="en">7. Saving models and data safely</span><span class="ar">7. حفظ الموديلات والداتا بأمان</span></h2>
+<div class="pair">
+  <div class="en">
+    <p><strong>Pickle runs code when you load it.</strong> Never load a <code>.pkl</code> you did not create. In this project nothing is pickled:</p>
+    <ul>
+      <li>Data: JSON (<code>articles.json</code>, golden set as JSONL), readable and diff-able.</li>
+      <li>Embedding and reranker weights: downloaded from Hugging Face as <code>safetensors</code> (pure tensors, no code).</li>
+      <li>The vector index: Qdrant's own storage and snapshots.</li>
+      <li>The "model" we register: a JSON <code>rag_config</code> (prompt version, embedding model, top-k, thresholds).</li>
+    </ul>
+    <p><strong>ONNX</strong> (a portable model graph) matters when you run a local model in a different runtime (C++, edge, OpenVINO). Our generator is served by vLLM, so ONNX is optional here; it appears in Phase 7 only if exporting the reranker measurably speeds up the CPU path.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p><strong>الـ pickle بيشغّل كود وإنت بتفتحه.</strong> عمرك ما تفتح <code>.pkl</code> مش إنت اللي عامله. في المشروع ده مفيش حاجة pickle:</p>
+    <ul>
+      <li>الداتا: JSON (<code>articles.json</code>، والأسئلة الذهبية JSONL)، تتقري وتتقارن.</li>
+      <li>أوزان الـ embedding والـ reranker: من Hugging Face بصيغة <code>safetensors</code> (tensors بس، من غير كود).</li>
+      <li>الـ vector index: الـ storage والـ snapshots بتوع Qdrant نفسه.</li>
+      <li>"الموديل" اللي بنسجله: ملف JSON اسمه <code>rag_config</code> (نسخة الـ prompt، موديل الـ embedding، الـ top-k، والحدود).</li>
+    </ul>
+    <p><strong>ONNX</strong> (graph للموديل يشتغل في أي مكان) بيفرق لما تشغّل موديل محلي في runtime تاني (C++، edge، OpenVINO). الـ generator عندنا بيتخدم بـ vLLM، فالـ ONNX اختياري هنا؛ هيظهر في المرحلة 7 بس لو تصدير الـ reranker سرّع الـ CPU فعلاً بأرقام.</p>
+  </div>
+</div>
+
+<!-- 8 -->
+<h2 id="logging"><span class="en">8. Structured logging and correlation IDs</span><span class="ar">8. الـ Logging المنظم والـ correlation ID</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>"print() is not logging." Every log line is one JSON object with a timestamp, level, logger name, event and fields. Machines can filter it ("show all <code>stage=rerank</code> lines slower than 500 ms").</p>
+    <p>A <strong>correlation ID</strong> (<code>request_id</code>) is created when a request arrives, stored in a context variable, added to every log line of that request, returned in the <code>X-Request-ID</code> header, and attached to the Langfuse trace. One ID joins the log line, the trace and the user's complaint.</p>
+    <p>Levels: <code>DEBUG</code> details for developers, <code>INFO</code> normal events (answer served in 1.2 s), <code>WARNING</code> odd but handled (Jev timed out, fell back to local), <code>ERROR</code> failed (LLM unreachable). We never log raw personal data; questions are logged as length + hash where needed.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>"الـ print() مش logging." كل سطر log عبارة عن JSON فيه الوقت، والمستوى، واسم الـ logger، والحدث، وحقول زيادة. الماكينات تقدر تفلتره ("وريني كل سطور <code>stage=rerank</code> اللي خدت أكتر من 500 ملي ثانية").</p>
+    <p>الـ <strong>correlation ID</strong> (<code>request_id</code>) بيتعمل أول ما الطلب يوصل، ويتحفظ في context variable، ويتضاف لكل سطر log في الطلب ده، ويرجع في header اسمه <code>X-Request-ID</code>، ويتربط بالـ trace في Langfuse. ID واحد بيربط سطر الـ log والـ trace وشكوى المستخدم.</p>
+    <p>المستويات: <code>DEBUG</code> تفاصيل للمطورين، <code>INFO</code> أحداث عادية (الإجابة خلصت في 1.2 ثانية)، <code>WARNING</code> حاجة غريبة بس اتعاملنا معاها (Jev اتأخر فرجعنا للـ local)، <code>ERROR</code> حاجة فشلت (الـ LLM مش بيرد). ومش بنسجل بيانات شخصية خام؛ السؤال بيتسجل طوله وhash ليه لو احتجنا.</p>
+  </div>
+</div>
+
+<!-- 9 -->
+<h2 id="testing"><span class="en">9. Testing</span><span class="ar">9. الـ Testing</span></h2>
+<div class="pair">
+  <div class="en">
+    <ul>
+      <li><strong>Unit tests</strong> check one function: does the parser find Article 147? does normalization turn <code class="arw">أ</code> into <code class="arw">ا</code>?</li>
+      <li><strong>Integration tests</strong> check parts together: does <code>POST /ask</code> return 422 for an empty question and a valid schema for a good one?</li>
+      <li><strong>Evaluation tests</strong> check quality on the golden set (RAGAS). These are slow and cost money, so CI runs a small smoke set.</li>
+    </ul>
+    <p>Tools from Session 1: <strong>fixtures</strong> (shared setup such as sample articles or a test client), <strong>mocks</strong> (fake Qdrant/LLM/Jev so unit tests never call real services: "you are testing the API, not the model"), <strong>parametrize</strong> (one test, many inputs), and a <strong>coverage gate</strong>: CI fails under 80%.</p>
+    <p>We work <strong>test-first (TDD)</strong>: write the test, watch it fail for the right reason, write the smallest code that passes, then clean up. A test that never failed proves nothing.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <ul>
+      <li><strong>Unit tests</strong> بتختبر function واحدة: الـ parser لقى المادة 147؟ الـ normalization حوّل <code class="arw">أ</code> لـ <code class="arw">ا</code>؟</li>
+      <li><strong>Integration tests</strong> بتختبر أجزاء مع بعض: <code>POST /ask</code> بيرجع 422 لو السؤال فاضي، وشكل رد صح لو السؤال كويس؟</li>
+      <li><strong>Evaluation tests</strong> بتقيس الجودة على الأسئلة الذهبية (RAGAS). دي بطيئة وبفلوس، فالـ CI بيشغّل مجموعة صغيرة بس.</li>
+    </ul>
+    <p>أدوات السيشن الأولى: الـ <strong>fixtures</strong> (تجهيز مشترك زي مواد للتجربة أو test client)، والـ <strong>mocks</strong> (Qdrant وLLM وJev مزيفين عشان الـ unit tests متناديش خدمات حقيقية: "إنت بتختبر الـ API مش الموديل")، والـ <strong>parametrize</strong> (test واحد بمدخلات كتير)، و<strong>بوابة الـ coverage</strong>: الـ CI يفشل لو أقل من 80%.</p>
+    <p>بنشتغل <strong>test-first (TDD)</strong>: نكتب الـ test، نشوفه بيفشل للسبب الصح، نكتب أصغر كود يخليه ينجح، وبعدين ننضف. الـ test اللي عمره ما فشل مبيثبتش حاجة.</p>
+  </div>
+</div>
+
+<!-- 10 -->
+<h2 id="quality"><span class="en">10. Code quality gates</span><span class="ar">10. بوابات جودة الكود</span></h2>
+<div class="pair">
+  <div class="en">
+    <p><strong>Ruff</strong> is one fast tool that lints (finds bugs and bad patterns) and formats (one style for everyone). It replaces flake8, isort and black. We also enable a rule that forbids <code>print()</code> in <code>src/</code>.</p>
+    <p><strong>pre-commit</strong> runs ruff, whitespace fixers, a YAML checker and a secret scanner on every <code>git commit</code>. "The hook is a convenience; the CI workflow is the guarantee": anyone can skip a local hook with <code>--no-verify</code>, so CI runs the same checks again on every pull request.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p><strong>Ruff</strong> تول واحدة سريعة بتعمل lint (بتلاقي bugs وأنماط وحشة) وformat (ستايل واحد للكل). جت بدل flake8 وisort وblack. وفعّلنا قاعدة بتمنع <code>print()</code> جوه <code>src/</code>.</p>
+    <p><strong>pre-commit</strong> بيشغّل ruff ومظبّطات المسافات وفاحص YAML وفاحص أسرار مع كل <code>git commit</code>. "الـ hook راحة، والـ CI هو الضمان": أي حد يقدر يتخطى الـ hook المحلي بـ <code>--no-verify</code>، فالـ CI بيعيد نفس الفحوصات على كل pull request.</p>
+  </div>
+</div>
+
+<!-- 11 -->
+<h2 id="docker"><span class="en">11. Docker and Compose</span><span class="ar">11. Docker وCompose</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Docker solves "it works on my machine". An <strong>image</strong> is a frozen template (like a class); a <strong>container</strong> is a running instance of it (like an object). Changes inside a container disappear unless you build a new image or use a volume.</p>
+    <ul>
+      <li><strong>Layers and cache</strong>: copy <code>pyproject.toml</code> + <code>uv.lock</code> and install dependencies <em>before</em> copying <code>src/</code>. Code changes often, dependencies rarely, so rebuilds take seconds.</li>
+      <li><strong>Multi-stage build</strong>: a builder stage installs everything; the runtime stage copies only the result. Smaller image, fewer vulnerabilities.</li>
+      <li><strong>Non-root user</strong>, a <strong>HEALTHCHECK</strong>, a <code>.dockerignore</code> (no <code>.git</code>, <code>.venv</code>, data), and <strong>pinned tags</strong>: <code>latest</code> is not "newest", it is just a label.</li>
+      <li><strong>Compose</strong> runs several containers together. Service names are hostnames on a shared network: the API reaches <code>http://qdrant:6333</code>.</li>
+    </ul>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>Docker بيحل مشكلة "شغال عندي على جهازي". الـ <strong>image</strong> قالب ثابت (زي الـ class)؛ والـ <strong>container</strong> نسخة شغالة منه (زي الـ object). أي تغيير جوه الـ container بيروح إلا لو عملت image جديدة أو استخدمت volume.</p>
+    <ul>
+      <li><strong>الـ layers والـ cache</strong>: انسخ <code>pyproject.toml</code> و<code>uv.lock</code> وسطّب المكتبات <em>قبل</em> ما تنسخ <code>src/</code>. الكود بيتغير كتير والمكتبات نادرًا، فالـ rebuild ياخد ثواني.</li>
+      <li><strong>Multi-stage build</strong>: مرحلة builder بتسطّب كل حاجة، ومرحلة runtime بتاخد الناتج بس. image أصغر وثغرات أقل.</li>
+      <li><strong>user مش root</strong>، و<strong>HEALTHCHECK</strong>، و<code>.dockerignore</code> (من غير <code>.git</code> ولا <code>.venv</code> ولا الداتا)، و<strong>tags متثبتة</strong>: <code>latest</code> مش معناها "الأحدث"، دي مجرد اسم.</li>
+      <li><strong>Compose</strong> بيشغّل كذا container مع بعض. اسم الـ service بيبقى hostname على الشبكة: الـ API بيوصل لـ <code>http://qdrant:6333</code>.</li>
+    </ul>
+  </div>
+</div>
+<div class="pair">
+  <div class="en"><p><strong>Profiles</strong> keep the laptop alive. The full stack (Qdrant, Redis, Postgres, MinIO, MLflow, vLLM, Prometheus, Grafana, Langfuse, Airflow…) does not fit in 16 GB at once, so each service belongs to a profile and you start only what the current task needs.</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p>الـ <strong>Profiles</strong> بتحافظ على اللابتوب. الـ stack كله (Qdrant وRedis وPostgres وMinIO وMLflow وvLLM وPrometheus وGrafana وLangfuse وAirflow…) مش هيدخل في 16 جيجا مرة واحدة، فكل service تابعة لـ profile وبتشغّل اللي المهمة الحالية محتاجاه بس.</p></div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Profile</th><th class="en">Runs</th><th class="ar">بيشغّل</th></tr></thead>
+  <tbody>
+    <tr><td>core</td><td class="en">Qdrant, Redis, the API: enough to answer questions</td><td class="ar">Qdrant وRedis والـ API: كفاية عشان نجاوب أسئلة</td></tr>
+    <tr><td>tracking</td><td class="en">Postgres, MinIO, MLflow: experiments and the DVC remote</td><td class="ar">Postgres وMinIO وMLflow: التجارب ومخزن DVC</td></tr>
+    <tr><td>llm</td><td class="en">vLLM on the GPU</td><td class="ar">vLLM على كارت الشاشة</td></tr>
+    <tr><td>monitoring</td><td class="en">Prometheus, Grafana, Alertmanager, exporters, Loki</td><td class="ar">Prometheus وGrafana وAlertmanager والـ exporters وLoki</td></tr>
+    <tr><td>llm-observability</td><td class="en">Langfuse (web, worker, ClickHouse)</td><td class="ar">Langfuse (web وworker وClickHouse)</td></tr>
+    <tr><td>airflow</td><td class="en">Airflow scheduler and UI</td><td class="ar">Airflow بالـ scheduler والواجهة</td></tr>
+    <tr><td>serving</td><td class="en">nginx with canary and shadow copies of the API</td><td class="ar">nginx ومعاه نسخ canary وshadow من الـ API</td></tr>
+  </tbody>
+</table></div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Option</th><th>Verdict</th><th class="en">Why</th><th class="ar">ليه</th></tr></thead>
+  <tbody>
+    <tr><td><strong>One compose file with profiles</strong></td><td>chosen</td><td class="en">One place to read, shared Postgres/MinIO, start only what you need.</td><td class="ar">مكان واحد تقراه، Postgres وMinIO مشتركين، وتشغّل اللي محتاجه بس.</td></tr>
+    <tr><td>Many compose files</td><td>rejected</td><td class="en">Duplicated services and networks that drift apart.</td><td class="ar">services وشبكات متكررة وبتختلف عن بعض مع الوقت.</td></tr>
+    <tr><td>Kubernetes for local dev</td><td>rejected for dev, used in Phase 6 demo</td><td class="en">Too heavy for daily work on a laptop; we still write real manifests and run them on Docker Desktop's Kubernetes to learn probes, labels and rollouts.</td><td class="ar">تقيل قوي على اللابتوب للشغل اليومي؛ بس هنكتب manifests حقيقية ونشغلها على Kubernetes بتاع Docker Desktop عشان نتعلم الـ probes والـ labels والـ rollouts.</td></tr>
+  </tbody>
+</table></div>
+
+<!-- 12 -->
+<h2 id="git"><span class="en">12. Git, pull requests and tags</span><span class="ar">12. Git والـ Pull Requests والـ tags</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Never commit straight to <code>main</code>. Each phase gets a branch (<code>module-2-rag-api</code>), small commits that explain <em>why</em>, a <strong>pull request</strong> with the numbers measured and screenshots, a green CI run, and after merge a <strong>tag</strong> (<code>v0.1.0</code>…<code>v1.0.0</code>). Branch protection makes "no green CI, no merge" a rule, not a wish.</p>
+    <p>Commit messages follow a simple convention: <code>feat:</code> new behaviour, <code>fix:</code> bug, <code>test:</code>, <code>docs:</code>, <code>chore:</code>. "fix bug" is not a commit message.</p>
+    <p>Why tags matter: the reviewer checks out <code>v0.2.0</code> and gets exactly what the report describes. Together with DVC and MLflow, a tag is the start of the lineage chain.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>عمرك ما تعمل commit على <code>main</code> مباشرة. كل مرحلة ليها branch (<code>module-2-rag-api</code>)، وcommits صغيرة بتشرح <em>ليه</em>، و<strong>pull request</strong> فيه الأرقام اللي قسناها وصور، وCI أخضر، وبعد الـ merge نعمل <strong>tag</strong> (<code>v0.1.0</code> لحد <code>v1.0.0</code>). الـ branch protection بيخلي "مفيش CI أخضر، مفيش merge" قاعدة مش أمنية.</p>
+    <p>رسايل الـ commit ليها نظام بسيط: <code>feat:</code> حاجة جديدة، <code>fix:</code> إصلاح، <code>test:</code>، <code>docs:</code>، <code>chore:</code>. "fix bug" مش رسالة commit.</p>
+    <p>ليه الـ tags مهمة: اللي بيراجع يعمل checkout لـ <code>v0.2.0</code> فيلاقي بالظبط اللي التقرير بيوصفه. ومع DVC وMLflow، الـ tag هو أول حلقة في سلسلة الـ lineage.</p>
+  </div>
+</div>
+
+<div class="pager"><a href="index.html">← Guide index</a><a href="00b-rag-jev.html">Concepts 2 · RAG and JEV →</a></div>
+</main>
+<script src="assets/toggle.js"></script>
+</body>
+</html>

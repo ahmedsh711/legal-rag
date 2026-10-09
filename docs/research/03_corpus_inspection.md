@@ -25,32 +25,32 @@ Result of a read-only inspection with pypdf 6.10, PyMuPDF 1.28, pdfplumber 0.11,
 ## Samples (pypdf)
 Page 1:
 ```
-القانون المدني المصري 
-قانون الإصدار 
-مادة ١ 
-يلغي القانون المدني المعمول به أمام المحاكم الوطنية والصادر في ٨٢ أكتوبر سنة 
+القانون المدني المصري
+قانون الإصدار
+مادة ١
+يلغي القانون المدني المعمول به أمام المحاكم الوطنية والصادر في ٨٢ أكتوبر سنة
 ٣٨٨١ ...
-الفصل الأول  
-القانون وتطبيقه 
-SECTION I  
-Laws and their Applications 
-١ -القانون والحق 1. Laws and Rights 
-مادة١ ( 
-)١ (تسرى النصوص التشريعية على جميع المسائل التي تتناولها هذه 
+الفصل الأول
+القانون وتطبيقه
+SECTION I
+Laws and their Applications
+١ -القانون والحق 1. Laws and Rights
+مادة١ (
+)١ (تسرى النصوص التشريعية على جميع المسائل التي تتناولها هذه
 ...
-Article 1  
-Provisions of laws govern all matters to which these 
+Article 1
+Provisions of laws govern all matters to which these
 ```
 Page 85:
 ```
-مادة٥٢٦  
-لا يجوز فى المزارعة أن يترل المستأجر عن الإيجار أو أن يؤجر الأرض 
-من الباطن إلا برضاء المؤجر.  
-Article 625  
+مادة٥٢٦
+لا يجوز فى المزارعة أن يترل المستأجر عن الإيجار أو أن يؤجر الأرض
+من الباطن إلا برضاء المؤجر.
+Article 625
 In amodiation, the lessee cannot assign the lease or sub-
-let the land amodiated without the consent of the lessor. 
-مادة ٧٢٦  
-)١ (إذا انتهت المزارعة قبل انقضاء مدتها ، وجب ان يرد للمستأجر او 
+let the land amodiated without the consent of the lessor.
+مادة ٧٢٦
+)١ (إذا انتهت المزارعة قبل انقضاء مدتها ، وجب ان يرد للمستأجر او
 ```
 
 ## Quirks to handle in `ingest/parse.py` and `ingest/normalize.py`

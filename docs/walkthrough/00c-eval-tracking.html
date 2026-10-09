@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evaluation and Tracking · legal-rag guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Fraunces:opsz,wght@9..144,600&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lang="both">
+<header class="topbar">
+  <div class="crumbs"><a href="index.html">legal-rag guide</a> / Concepts 3 · Evaluation, tracking, automation</div>
+  <div class="lang-toggle" role="group" aria-label="Language">
+    <button type="button" data-lang="en">EN</button>
+    <button type="button" data-lang="ar">عربي</button>
+    <button type="button" data-lang="both">Both · الاتنين</button>
+  </div>
+</header>
+<main>
+<p class="eyebrow">Concepts 3 of 4</p>
+<h1><span class="en">Evaluation, tracking and automation</span><span class="ar">التقييم والتتبع والأتمتة</span></h1>
+
+<nav class="toc" aria-label="On this page">
+  <strong>On this page · في الصفحة دي</strong>
+  <ol>
+    <li><a href="#different">Why LLM apps fail differently</a></li>
+    <li><a href="#golden">The golden set</a></li>
+    <li><a href="#ragas">RAGAS metrics</a></li>
+    <li><a href="#judge">LLM-as-a-judge, calibrated</a></li>
+    <li><a href="#scorecard">Our scorecard and ablations</a></li>
+    <li><a href="#mlflow">Experiment tracking with MLflow</a></li>
+    <li><a href="#registry">The registry for a RAG system</a></li>
+    <li><a href="#dvc">Data versioning with DVC</a></li>
+    <li><a href="#prompts">Prompt versioning</a></li>
+    <li><a href="#ci">CI with GitHub Actions</a></li>
+    <li><a href="#ct">Continuous training, RAG style</a></li>
+    <li><a href="#airflow">Orchestration with Airflow</a></li>
+    <li><a href="#terraform">Infrastructure as code</a></li>
+  </ol>
+</nav>
+
+<!-- 1 -->
+<h2 id="different"><span class="en">1. Why LLM apps fail differently</span><span class="ar">1. ليه تطبيقات الـ LLM بتفشل بشكل مختلف</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>"Software fails loudly. Models fail quietly." A crash gives a 500; a bad answer comes back <code>200 OK</code> and reads beautifully. For LLM apps add:</p>
+    <ul>
+      <li><strong>No ground truth at request time:</strong> nobody tells us if an answer was right.</li>
+      <li><strong>Non-determinism:</strong> the same input can pass twice and fail once.</li>
+      <li><strong>The prompt is production config</strong> and can change without a deploy.</li>
+      <li><strong>Cost is per token:</strong> a bug shows up on the invoice.</li>
+      <li><strong>Failures look fluent:</strong> confident text, not a stack trace.</li>
+    </ul>
+    <p>The NYC "MyCity" RAG bot gave illegal advice for five months; it had no golden evaluation set. "A disclaimer is not a control, and a feedback form is not a metric."</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>"السوفتوير بيفشل بصوت عالي. الموديلات بتفشل في صمت." الـ crash بيدي 500؛ لكن الإجابة الغلط بترجع <code>200 OK</code> وشكلها حلو. وفي تطبيقات الـ LLM كمان:</p>
+    <ul>
+      <li><strong>مفيش إجابة صح وقت الطلب:</strong> محدش بيقولنا الإجابة كانت صح ولا لأ.</li>
+      <li><strong>مش ثابت:</strong> نفس المدخل ممكن ينجح مرتين ويفشل مرة.</li>
+      <li><strong>الـ prompt إعداد production</strong> وممكن يتغير من غير deploy.</li>
+      <li><strong>التكلفة بالـ token:</strong> الـ bug بيبان في الفاتورة.</li>
+      <li><strong>الفشل شكله سليم:</strong> كلام واثق، مش stack trace.</li>
+    </ul>
+    <p>بوت "MyCity" بتاع نيويورك (RAG) فضل يدي نصايح مخالفة للقانون خمس شهور؛ ومكانش عنده أسئلة ذهبية للتقييم. "الـ disclaimer مش حماية، وفورم الـ feedback مش metric."</p>
+  </div>
+</div>
+
+<!-- 2 -->
+<h2 id="golden"><span class="en">2. The golden set</span><span class="ar">2. الأسئلة الذهبية</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>A <strong>golden set</strong> is a fixed, versioned list of test questions with the articles that should be retrieved and a reference answer. Ours has at least 50 questions:</p>
+    <ul>
+      <li>25 in Arabic and the same 25 in English (mirrored), so we can compare languages fairly;</li>
+      <li>categories: normal in-scope questions, questions about repealed articles, off-topic questions that must be refused, multi-article questions, and prompt-injection attempts;</li>
+      <li>stored in <code>data/golden/golden_set.jsonl</code>, tracked by DVC, never edited silently. A moving test set makes every comparison meaningless.</li>
+    </ul>
+    <p>"50 well-chosen items beat 5,000 scraped ones." Every bad answer found later in production becomes a new golden item.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الـ <strong>golden set</strong> ليستة أسئلة اختبار ثابتة وليها version، ومع كل سؤال المواد اللي المفروض ترجع وإجابة مرجعية. عندنا على الأقل 50 سؤال:</p>
+    <ul>
+      <li>25 بالعربي ونفس الـ 25 بالإنجليزي، عشان نقارن اللغتين بعدل؛</li>
+      <li>أنواع: أسئلة عادية في نطاقنا، أسئلة عن مواد ملغية، أسئلة بره الموضوع لازم نرفضها، أسئلة محتاجة أكتر من مادة، ومحاولات prompt injection؛</li>
+      <li>متخزنة في <code>data/golden/golden_set.jsonl</code> ومتتبعة بـ DVC، ومحدش يعدّل فيها من تحت لتحت. لو مجموعة الاختبار بتتحرك، كل مقارنة ملهاش معنى.</li>
+    </ul>
+    <p>"50 سؤال متختارين صح أحسن من 5,000 متجمعين عشوائي." وأي إجابة وحشة نلاقيها بعدين في الـ production بتتحول لسؤال ذهبي جديد.</p>
+  </div>
+</div>
+
+<!-- 3 -->
+<h2 id="ragas"><span class="en">3. RAGAS metrics, and what each one blames</span><span class="ar">3. مقاييس RAGAS، وكل واحد بيلوم مين</span></h2>
+<div class="pair">
+  <div class="en"><p>RAGAS uses a judge LLM to answer small yes/no questions and turns them into 0–1 scores. Each metric points at a different part of the pipeline:</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p>RAGAS بيستخدم LLM كحَكَم يجاوب أسئلة صغيرة آه/لأ ويحولها لدرجات من 0 لـ 1. وكل مقياس بيشاور على جزء مختلف في الـ pipeline:</p></div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Metric</th><th class="en">Question it answers</th><th class="ar">بيجاوب على إيه</th><th>Blames</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Faithfulness</strong></td><td class="en">Split the answer into claims; what share is supported by the retrieved articles?</td><td class="ar">بنقسّم الإجابة لجمل؛ كام نسبة منها ليها دليل في المواد اللي رجعت؟</td><td>generator</td></tr>
+    <tr><td><strong>Answer relevancy</strong></td><td class="en">Does the answer address the question? (questions regenerated from the answer are compared with the real one)</td><td class="ar">الإجابة بترد على السؤال؟ (بيطلع أسئلة من الإجابة ويقارنها بالسؤال الحقيقي)</td><td>generator</td></tr>
+    <tr><td><strong>Context precision</strong></td><td class="en">Are the retrieved articles mostly useful, and are the useful ones ranked first?</td><td class="ar">المواد اللي رجعت أغلبها مفيد؟ والمفيد في الأول؟</td><td>retriever / reranker</td></tr>
+    <tr><td><strong>Context recall</strong></td><td class="en">Did retrieval find everything the reference answer needs? (needs a reference)</td><td class="ar">الـ retrieval جاب كل اللي الإجابة المرجعية محتاجاه؟ (محتاج إجابة مرجعية)</td><td>retriever</td></tr>
+  </tbody>
+</table></div>
+<div class="pair">
+  <div class="en">
+    <p>Reading them together tells you what to fix:</p>
+    <ul>
+      <li>low recall, high precision → raise top-k, split long articles, or try another embedding model;</li>
+      <li>high recall, low precision → the reranker or a lower top-k;</li>
+      <li>both high but low faithfulness → the prompt or the generator model.</li>
+    </ul>
+    <p>Note: "a confidently wrong document produces a perfectly faithful wrong answer". Faithfulness checks support, not truth, which is why retrieval quality is measured separately. And "absolute numbers lie, deltas do not": compare runs on the same frozen set and the same judge.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>لما تقراهم مع بعض بتعرف تصلّح إيه:</p>
+    <ul>
+      <li>recall قليل وprecision عالي ← زوّد الـ top-k، أو قسّم المواد الطويلة، أو جرّب موديل embedding تاني؛</li>
+      <li>recall عالي وprecision قليل ← الـ reranker أو top-k أقل؛</li>
+      <li>الاتنين عاليين بس faithfulness قليل ← المشكلة في الـ prompt أو موديل الكتابة.</li>
+    </ul>
+    <p>خد بالك: "مستند غلط وواثق بيطلع إجابة غلط بس أمينة جدًا للمصدر". الـ faithfulness بيشيك إن فيه دليل مش إن الكلام صح، وعشان كده جودة الـ retrieval بتتقاس لوحدها. و"الأرقام المطلقة بتكدب، الفروق لأ": قارن الـ runs على نفس الأسئلة الثابتة وبنفس الحَكَم.</p>
+  </div>
+</div>
+
+<!-- 4 -->
+<h2 id="judge"><span class="en">4. LLM-as-a-judge, calibrated</span><span class="ar">4. الـ LLM كحَكَم، بعد المعايرة</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>RAGAS is itself a judge, "not a measurement". We also write our own judge: an explicit <strong>rubric</strong> (criteria, a 1–5 scale, an example for each score) for legal answers: correct article, correct rule, no invented conditions, correct refusal.</p>
+    <p><strong>Calibrate before trusting it.</strong> You hand-label 20 answers; the judge labels the same 20; we report the agreement rate. Below roughly 80% the judge is "a random number generator with good grammar". We also test three known biases:</p>
+    <ul>
+      <li><strong>position bias:</strong> swap two answers; does the verdict flip?</li>
+      <li><strong>verbosity bias:</strong> does the longer answer win regardless of quality?</li>
+      <li><strong>self-preference:</strong> does the judge prefer answers from its own model family?</li>
+    </ul>
+    <p>The judge is pinned to one model version at temperature 0. Judges are weaker at splitting Arabic text into claims, so <strong>scores are reported per language and never pooled</strong>.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>RAGAS نفسه حَكَم، "مش جهاز قياس". وبنكتب كمان حَكَم بتاعنا: <strong>معايير</strong> واضحة (البنود، ومقياس من 1 لـ 5، ومثال لكل درجة) للإجابات القانونية: المادة صح، القاعدة صح، مفيش شروط متألفة، والرفض في مكانه.</p>
+    <p><strong>عايره قبل ما تثق فيه.</strong> إنت هتقيّم 20 إجابة بإيدك؛ والحَكَم يقيّم نفس الـ 20؛ ونكتب نسبة الاتفاق. لو أقل من 80% تقريبًا يبقى الحَكَم "مولّد أرقام عشوائي بقواعد لغة سليمة". وبنختبر تلات انحيازات معروفة:</p>
+    <ul>
+      <li><strong>انحياز المكان:</strong> نبدّل مكان إجابتين؛ الحكم بيتقلب؟</li>
+      <li><strong>انحياز الطول:</strong> الإجابة الأطول بتكسب مهما كانت جودتها؟</li>
+      <li><strong>انحياز للنفس:</strong> الحَكَم بيفضّل إجابات من نفس عيلة الموديل بتاعه؟</li>
+    </ul>
+    <p>الحَكَم متثبت على نسخة موديل واحدة وtemperature 0. والحكام أضعف في تقسيم النص العربي لجمل، فـ <strong>الدرجات بتتكتب لكل لغة لوحدها ومش بتتجمع</strong>.</p>
+  </div>
+</div>
+
+<!-- 5 -->
+<h2 id="scorecard"><span class="en">5. Our scorecard and ablations</span><span class="ar">5. كارت التقييم بتاعنا والـ ablations</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>"There is no universal LLM metric." For legal Q&amp;A the scorecard is:</p>
+    <ol>
+      <li><strong>Faithfulness</strong> (RAGAS and Jev's live claim check);</li>
+      <li><strong>Citation accuracy</strong>: cited articles ⊆ retrieved articles, and the gold article is cited;</li>
+      <li><strong>Retrieval hit@5</strong>: the gold article is in the top 5;</li>
+      <li><strong>Correct refusal rate</strong> on off-topic and unanswerable questions;</li>
+      <li><strong>Cost and latency</strong> per answer (p95, TTFT, tokens).</li>
+    </ol>
+    <p>An <strong>ablation</strong> changes one thing and re-runs the set: decider none vs local vs Jev; top-k 3/5/8; bge-m3 vs e5. If a metric never moves, it measures nothing. The best configuration wins on numbers, not opinion.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>"مفيش مقياس واحد ينفع لكل تطبيقات الـ LLM." للسؤال والجواب القانوني الكارت بتاعنا:</p>
+    <ol>
+      <li><strong>Faithfulness</strong> (من RAGAS ومن فحص Jev اللحظي للجمل)؛</li>
+      <li><strong>دقة الاستشهاد</strong>: المواد المذكورة لازم تكون من المواد اللي رجعت، والمادة الصح لازم تتذكر؛</li>
+      <li><strong>Retrieval hit@5</strong>: المادة الصح موجودة في أول 5؛</li>
+      <li><strong>نسبة الرفض الصح</strong> للأسئلة اللي بره الموضوع أو ملهاش إجابة؛</li>
+      <li><strong>التكلفة والوقت</strong> لكل إجابة (p95 وTTFT والـ tokens).</li>
+    </ol>
+    <p>الـ <strong>ablation</strong> إنك تغيّر حاجة واحدة وتعيد التجربة: من غير decider / محلي / Jev؛ top-k بـ 3 أو 5 أو 8؛ bge-m3 قصاد e5. لو مقياس عمره ما اتحرك، يبقى مش بيقيس حاجة. وأحسن config بيكسب بالأرقام مش بالرأي.</p>
+  </div>
+</div>
+
+<!-- 6 -->
+<h2 id="mlflow"><span class="en">6. Experiment tracking with MLflow</span><span class="ar">6. تتبع التجارب بـ MLflow</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Instead of <code>model_v2_final_REAL.pkl</code> and a spreadsheet, every experiment is a <strong>run</strong> in MLflow. Vocabulary: an <strong>experiment</strong> is one problem (<code>legal-rag-retrieval</code>); a <strong>run</strong> is one execution; <strong>params</strong> are inputs; <strong>metrics</strong> are results; <strong>artifacts</strong> are files; <strong>tags</strong> are labels for searching.</p>
+    <p>What a RAG run logs:</p>
+    <ul>
+      <li>params: chunking strategy, embedding model, top-k, reranker/decider, thresholds, prompt version, LLM and judge model;</li>
+      <li>metrics: the four RAGAS scores per language, hit@5, citation accuracy, refusal rate, p95 latency, tokens and cost;</li>
+      <li>artifacts: <code>rag_config.json</code>, per-question results table, the prompt text;</li>
+      <li>tags: <code>git_sha</code>, <code>dvc_data_hash</code>, <code>index_version</code>.</li>
+    </ul>
+    <p>We run MLflow the way companies do: a tracking server with <strong>Postgres</strong> for metadata and <strong>MinIO</strong> (S3-compatible) for artifacts. "MLflow won't pick your best model for you": you sort, compare and decide.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>بدل <code>model_v2_final_REAL.pkl</code> وشيت إكسل، كل تجربة بتبقى <strong>run</strong> في MLflow. المصطلحات: الـ <strong>experiment</strong> مشكلة واحدة (<code>legal-rag-retrieval</code>)؛ الـ <strong>run</strong> تشغيلة واحدة؛ الـ <strong>params</strong> المدخلات؛ الـ <strong>metrics</strong> النتايج؛ الـ <strong>artifacts</strong> الفايلات؛ والـ <strong>tags</strong> علامات للبحث.</p>
+    <p>الـ run بتاع الـ RAG بيسجل:</p>
+    <ul>
+      <li>params: طريقة التقسيم، موديل الـ embedding، الـ top-k، الـ reranker/decider، الحدود، نسخة الـ prompt، وموديل الكتابة والحَكَم؛</li>
+      <li>metrics: درجات RAGAS الأربعة لكل لغة، وhit@5، ودقة الاستشهاد، ونسبة الرفض، وp95، والـ tokens والتكلفة؛</li>
+      <li>artifacts: <code>rag_config.json</code>، وجدول نتايج كل سؤال، ونص الـ prompt؛</li>
+      <li>tags: <code>git_sha</code> و<code>dvc_data_hash</code> و<code>index_version</code>.</li>
+    </ul>
+    <p>بنشغّل MLflow زي الشركات: tracking server ومعاه <strong>Postgres</strong> للـ metadata و<strong>MinIO</strong> (متوافق مع S3) للـ artifacts. "MLflow مش هيختارلك أحسن موديل": إنت اللي بترتب وتقارن وتقرر.</p>
+  </div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Option</th><th>Verdict</th><th class="en">Why</th><th class="ar">ليه</th></tr></thead>
+  <tbody>
+    <tr><td><strong>MLflow self-hosted</strong></td><td>chosen</td><td class="en">Open source, data stays with us (what banks and governments in the region require), registry with aliases, the course's main tool. "Learn MLflow deeply."</td><td class="ar">مفتوح المصدر، والداتا بتفضل عندنا (ده اللي البنوك والحكومات في المنطقة بتطلبه)، وفيه registry بـ aliases، وأداة الكورس الأساسية. "اتعلم MLflow كويس."</td></tr>
+    <tr><td>Weights &amp; Biases</td><td>rejected</td><td class="en">Excellent UI and sweeps, but SaaS: our data leaves, seats cost money. "Know W&amp;B."</td><td class="ar">واجهة وsweeps ممتازة، بس SaaS: الداتا بتخرج والمقاعد بفلوس. "اعرف W&amp;B."</td></tr>
+  </tbody>
+</table></div>
+
+<!-- 7 -->
+<h2 id="registry"><span class="en">7. The registry for a RAG system</span><span class="ar">7. الـ Registry في سيستم RAG</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>In the course, the registry held a trained model and the API loaded <code>models:/Name@production</code>, never a file path. Swapping the production model needed no code change and no rebuild: "the single most important idea in Module 2".</p>
+    <p>In RAG the "model" is mostly configuration: prompt version, embedding model, index version, top-k, decider and thresholds. "A different prompt is a different model." So we register <strong><code>legal-rag-config</code></strong> whose artifact is <code>rag_config.json</code>. The API loads the version with alias <code>production</code> at startup. A candidate that beats production on the golden set gets alias <code>staging</code> automatically; moving <code>production</code> needs a human.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>في الكورس الـ registry كان شايل موديل متدرب، والـ API بيحمّل <code>models:/Name@production</code> عمره ما يحمّل مسار فايل. تبديل موديل الـ production مكانش محتاج تعديل كود ولا rebuild: "أهم فكرة في الموديول التاني".</p>
+    <p>في الـ RAG "الموديل" أغلبه إعدادات: نسخة الـ prompt، وموديل الـ embedding، ونسخة الـ index، والـ top-k، والـ decider والحدود. "prompt مختلف = موديل مختلف." فبنسجّل <strong><code>legal-rag-config</code></strong> والـ artifact بتاعه <code>rag_config.json</code>. الـ API بيحمّل النسخة اللي عليها alias اسمه <code>production</code> وهو بيقوم. أي نسخة مرشحة تغلب الـ production على الأسئلة الذهبية بتاخد alias <code>staging</code> لوحدها؛ لكن نقل <code>production</code> محتاج بني آدم.</p>
+  </div>
+</div>
+
+<!-- 8 -->
+<h2 id="dvc"><span class="en">8. Data versioning with DVC</span><span class="ar">8. إصدارات الداتا بـ DVC</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Git is bad at large or binary files. <strong>DVC</strong> stores a tiny pointer file in Git (an MD5 hash + size) and the real bytes in a <strong>remote</strong> (our MinIO bucket). Storage is <em>content-addressed</em>: a file with the same hash is stored once, so adding one new document does not copy the old ones.</p>
+    <pre><code>dvc add data/raw/egyptian_civil_code.pdf   # creates the .dvc pointer
+dvc push                                   # upload bytes to MinIO
+git checkout v0.1.0 &amp;&amp; dvc checkout        # go back in time: code AND data</code></pre>
+    <p>A <strong>pipeline</strong> in <code>dvc.yaml</code> lists stages with their command, inputs and outputs: <code>parse → validate → index → evaluate</code>. <code>dvc repro</code> re-runs only stages whose inputs changed. "A new law is passed → dvc add → dvc repro rebuilds the index."</p>
+    <p><strong>Lineage</strong> answers "how did I get this result?": <code>git commit → DVC data hash → MLflow run → registry version</code>. Every run is tagged with the first two.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>Git وحش مع الفايلات الكبيرة أو الـ binary. <strong>DVC</strong> بيحط فايل صغير في Git بيشاور على الداتا (MD5 hash والحجم)، والداتا نفسها في <strong>remote</strong> (bucket في MinIO). والتخزين <em>بالمحتوى</em>: الفايل اللي ليه نفس الـ hash بيتخزن مرة واحدة، فلو زودنا مستند جديد القديم مش بيتنسخ تاني.</p>
+    <p>الـ <strong>pipeline</strong> في <code>dvc.yaml</code> بيحدد المراحل وأمر كل مرحلة ومدخلاتها ومخرجاتها: <code>parse ← validate ← index ← evaluate</code>. و<code>dvc repro</code> بيعيد تشغيل المراحل اللي مدخلاتها اتغيرت بس. "نزل قانون جديد ← dvc add ← dvc repro يبني الـ index من تاني."</p>
+    <p>الـ <strong>Lineage</strong> بيجاوب على "أنا وصلت للنتيجة دي إزاي؟": <code class="arw">git commit ← DVC data hash ← MLflow run ← نسخة الـ registry</code>. وكل run عليه tag بأول حلقتين.</p>
+  </div>
+</div>
+
+<!-- 9 -->
+<h2 id="prompts"><span class="en">9. Prompt versioning</span><span class="ar">9. إصدارات الـ prompt</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>The instructor's own story: her team tried many prompts, kept the best, and lost the history they needed to improve it. Prompts are code-like config and need versions.</p>
+    <ul>
+      <li>Phases 2–4: prompts live in the repo with a version string; MLflow logs the version and text with every run.</li>
+      <li>Phase 5: the serving prompt moves to <strong>Langfuse prompt management</strong> with labels <code>production</code> and <code>canary</code>. Every trace records which version produced it, and a rollback is moving a label, which takes seconds and needs no deploy.</li>
+    </ul>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>حكاية المهندسة نفسها: الفريق بتاعها جرّب prompts كتير، وخد الأحسن، وضاع منهم التاريخ اللي كانوا محتاجينه عشان يحسنوه. الـ prompts إعدادات زي الكود ومحتاجة versions.</p>
+    <ul>
+      <li>من المرحلة 2 لـ 4: الـ prompts في الريبو بـ version؛ وMLflow بيسجل النسخة والنص مع كل run.</li>
+      <li>المرحلة 5: prompt الـ serving بيتنقل لـ <strong>Langfuse prompt management</strong> بـ labels <code>production</code> و<code>canary</code>. كل trace بيسجل أنهي نسخة طلّعته، والـ rollback نقل label بياخد ثواني ومن غير deploy.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 10 -->
+<h2 id="ci"><span class="en">10. CI with GitHub Actions</span><span class="ar">10. الـ CI بـ GitHub Actions</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>A team lead with 20 developers cannot review every change by hand; <strong>CI</strong> enforces the standards automatically. Building blocks: a <strong>workflow</strong> (YAML in <code>.github/workflows/</code>) is triggered by an <strong>event</strong> (pull request, push, schedule, manual), runs <strong>jobs</strong> on <strong>runners</strong>, and each job has <strong>steps</strong> that either <code>uses</code> a ready action or <code>run</code>s a shell command.</p>
+    <p>Our pipeline on every pull request:</p>
+    <div class="flow">
+      <div class="step"><b>lint</b>ruff, pre-commit</div><span class="arrow">→</span>
+      <div class="step"><b>test</b>pytest, coverage ≥ 80%</div><span class="arrow">→</span>
+      <div class="step"><b>quality gate</b>10 golden questions, faithfulness ≥ threshold</div><span class="arrow">→</span>
+      <div class="step"><b>build &amp; push</b>image tagged with git SHA</div>
+    </div>
+    <p>A metric regression turns the check red and branch protection blocks the merge: "a CI pipeline with no failing condition is a green checkmark that means nothing." Secrets (OpenRouter key, Docker Hub token) live in GitHub Secrets, never in YAML. "Never echo a secret."</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الـ team lead اللي معاه 20 مطور مش هيقدر يراجع كل تغيير بإيده؛ الـ <strong>CI</strong> بيفرض القواعد لوحده. المكونات: الـ <strong>workflow</strong> (ملف YAML في <code>.github/workflows/</code>) بيشتغل مع <strong>event</strong> (pull request، push، جدول مواعيد، يدوي)، ويشغّل <strong>jobs</strong> على <strong>runners</strong>، وكل job فيه <strong>steps</strong> يا إما <code>uses</code> action جاهزة يا إما <code>run</code> أمر shell.</p>
+    <p>الـ pipeline بتاعنا مع كل pull request موضح في الرسمة.</p>
+    <p>لو مقياس الجودة نزل، الفحص يبقى أحمر والـ branch protection يمنع الـ merge: "CI مفيهوش شرط فشل هو علامة صح خضرا ملهاش معنى." والأسرار (مفتاح OpenRouter وتوكن Docker Hub) في GitHub Secrets، عمرها ما تتكتب في الـ YAML. "عمرك ما تطبع secret."</p>
+  </div>
+</div>
+
+<!-- 11 -->
+<h2 id="ct"><span class="en">11. Continuous training, RAG style</span><span class="ar">11. الـ Continuous training بطريقة الـ RAG</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>We do not train weights, but the same loop applies: <strong>rebuild → evaluate → compare with production → promote only if better</strong>. Software CI/CD is code → test → build → deploy; ML adds training, evaluation and comparison.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>إحنا مش بندرّب أوزان، بس نفس الدورة بتنطبق: <strong>نبني تاني ← نقيّم ← نقارن بالـ production ← نرقّي بس لو أحسن</strong>. الـ CI/CD بتاع السوفتوير: كود ← test ← build ← deploy؛ والـ ML بيزود التدريب والتقييم والمقارنة.</p>
+  </div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Trigger</th><th class="en">In this project</th><th class="ar">في مشروعنا</th></tr></thead>
+  <tbody>
+    <tr><td>Code change (PR)</td><td class="en">CI with the quality gate</td><td class="ar">الـ CI ومعاه بوابة الجودة</td></tr>
+    <tr><td>New data (law amended)</td><td class="en">DVC change → re-index workflow</td><td class="ar">تغيير في DVC ← workflow للـ re-index</td></tr>
+    <tr><td>Schedule</td><td class="en">Weekly re-evaluation (catches provider drift)</td><td class="ar">تقييم أسبوعي (بيمسك تغيير الـ provider للموديل)</td></tr>
+    <tr><td>Drift signal</td><td class="en">Airflow monitoring DAG fires <code>repository_dispatch</code></td><td class="ar">الـ DAG بتاع المراقبة في Airflow بيطلق <code>repository_dispatch</code></td></tr>
+    <tr><td>Manual</td><td class="en"><code>workflow_dispatch</code>: "your emergency lever"</td><td class="ar"><code>workflow_dispatch</code>: "ذراع الطوارئ بتاعك"</td></tr>
+  </tbody>
+</table></div>
+<div class="pair">
+  <div class="en"><p><strong>Never auto-promote to production.</strong> Staging is automatic; production needs a person to approve a GitHub Environment. Otherwise a silently broken index ships on a Friday. And not every drift alert means rebuild: a guard enforces a cooldown, a minimum amount of new evidence, and a daily cap ("retraining storms").</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p><strong>عمرك ما ترقّي للـ production أوتوماتيك.</strong> الـ staging أوتوماتيك؛ لكن الـ production محتاج شخص يوافق على GitHub Environment. وإلا index بايظ في صمت هينزل يوم الجمعة. ومش كل alert بـ drift معناه rebuild: فيه حماية بتفرض فترة تهدئة، وحد أدنى من الأدلة الجديدة، وحد أقصى في اليوم (عشان "عواصف إعادة التدريب").</p></div>
+</div>
+
+<!-- 12 -->
+<h2 id="airflow"><span class="en">12. Orchestration with Airflow</span><span class="ar">12. التنسيق بـ Airflow</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>"A cron job in a file is not a pipeline. A DAG is." A <strong>DAG</strong> (directed acyclic graph) is a set of tasks with one-way dependencies and no loops. Airflow schedules it, retries failed tasks, keeps history, and shows it in a UI.</p>
+    <ul>
+      <li><strong>Operators</strong> are task types (PythonOperator, BashOperator); <strong>BranchPythonOperator</strong> chooses a path (promote or skip).</li>
+      <li><strong>Sensors</strong> wait for something (a new PDF version in the bucket).</li>
+      <li><strong>XCom</strong> passes small values between tasks: pass the MLflow <code>run_id</code>, never a DataFrame.</li>
+      <li><strong>Retries</strong> and <strong>timeouts</strong> on every task; tasks are small and <strong>idempotent</strong>, so running twice for the same date does not break anything.</li>
+    </ul>
+    <p>Division of labour: <strong>Airflow</strong> runs data and evaluation work on a schedule (re-index, nightly drift checks). <strong>GitHub Actions</strong> runs code work on repository events (tests, builds, releases). Each tool does what it is built for.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>"cron job في فايل مش pipeline. الـ DAG هو الـ pipeline." الـ <strong>DAG</strong> مجموعة tasks بينهم اعتماديات في اتجاه واحد ومن غير دواير. Airflow بيجدوله، ويعيد الـ tasks اللي فشلت، ويحفظ التاريخ، ويعرضه في واجهة.</p>
+    <ul>
+      <li>الـ <strong>Operators</strong> أنواع الـ tasks (PythonOperator وBashOperator)؛ والـ <strong>BranchPythonOperator</strong> بيختار طريق (نرقّي ولا نعدّي).</li>
+      <li>الـ <strong>Sensors</strong> بتستنى حاجة (نسخة PDF جديدة في الـ bucket).</li>
+      <li>الـ <strong>XCom</strong> بينقل قيم صغيرة بين الـ tasks: ابعت <code>run_id</code> بتاع MLflow، عمرك ما تبعت DataFrame.</li>
+      <li><strong>Retries</strong> و<strong>timeouts</strong> على كل task؛ والـ tasks صغيرة و<strong>idempotent</strong>، يعني لو اشتغلت مرتين لنفس اليوم مفيش حاجة تبوظ.</li>
+    </ul>
+    <p>تقسيم الشغل: <strong>Airflow</strong> بيشغّل شغل الداتا والتقييم بجدول (re-index وفحص الـ drift كل ليلة). و<strong>GitHub Actions</strong> بيشغّل شغل الكود مع أحداث الريبو (tests وbuilds وreleases). كل أداة بتعمل اللي اتعملت عشانه.</p>
+  </div>
+</div>
+
+<!-- 13 -->
+<h2 id="terraform"><span class="en">13. Infrastructure as code with Terraform</span><span class="ar">13. البنية التحتية ككود بـ Terraform</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Clicking resources together in a console cannot be reviewed or repeated. <strong>Terraform</strong> describes infrastructure in files: a <strong>provider</strong> (AWS, or here the Docker provider), <strong>resources</strong> (the MinIO bucket container, the Postgres container, a network, volumes), and a <strong>state</strong> file recording what exists. The loop is <code>init → fmt → validate → plan → apply</code>, and <code>destroy</code> then <code>apply</code> must rebuild a working environment in one command.</p>
+    <p>The state file can contain secrets, so it is never committed; teams keep it in a remote backend (an S3 bucket with locking). We use the Docker provider because no cloud account is needed; the concepts transfer one-to-one to AWS.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>إنك تعمل الحاجات بالكليك في console مينفعش يتراجع ولا يتكرر. <strong>Terraform</strong> بيوصف البنية التحتية في فايلات: <strong>provider</strong> (AWS، أو هنا الـ Docker provider)، و<strong>resources</strong> (container الـ MinIO، container الـ Postgres، شبكة، volumes)، وفايل <strong>state</strong> بيسجل إيه الموجود. الدورة <code>init ← fmt ← validate ← plan ← apply</code>، ولازم <code>destroy</code> وبعدها <code>apply</code> يرجّعوا بيئة شغالة بأمر واحد.</p>
+    <p>فايل الـ state ممكن يبقى فيه أسرار، فعمره ما يتعمله commit؛ الفرق بتحطه في remote backend (bucket على S3 بـ locking). وإحنا بنستخدم Docker provider لأن مش محتاجين حساب cloud؛ والمفاهيم نفسها بالظبط على AWS.</p>
+  </div>
+</div>
+
+<div class="pager"><a href="00b-rag-jev.html">← Concepts 2 · RAG and JEV</a><a href="00d-serving-monitoring.html">Concepts 4 · Serving and monitoring →</a></div>
+</main>
+<script src="assets/toggle.js"></script>
+</body>
+</html>

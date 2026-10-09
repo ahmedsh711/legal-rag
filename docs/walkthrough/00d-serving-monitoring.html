@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Serving and Monitoring · legal-rag guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Fraunces:opsz,wght@9..144,600&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lang="both">
+<header class="topbar">
+  <div class="crumbs"><a href="index.html">legal-rag guide</a> / Concepts 4 · Serving and monitoring</div>
+  <div class="lang-toggle" role="group" aria-label="Language">
+    <button type="button" data-lang="en">EN</button>
+    <button type="button" data-lang="ar">عربي</button>
+    <button type="button" data-lang="both">Both · الاتنين</button>
+  </div>
+</header>
+<main>
+<p class="eyebrow">Concepts 4 of 4</p>
+<h1><span class="en">Serving, releasing and watching the system</span><span class="ar">تشغيل السيستم ونزوله ومراقبته</span></h1>
+
+<nav class="toc" aria-label="On this page">
+  <strong>On this page · في الصفحة دي</strong>
+  <ol>
+    <li><a href="#patterns">Inference patterns</a></li>
+    <li><a href="#serving">Serving vocabulary and layers</a></li>
+    <li><a href="#load">Load testing</a></li>
+    <li><a href="#release">Release strategies</a></li>
+    <li><a href="#k8s">Kubernetes essentials</a></li>
+    <li><a href="#monitoring">Monitoring tiers and the three pillars</a></li>
+    <li><a href="#prometheus">Prometheus</a></li>
+    <li><a href="#grafana">Grafana</a></li>
+    <li><a href="#alerts">Alerting people trust</a></li>
+    <li><a href="#drift">Drift</a></li>
+    <li><a href="#evidently">Drift reports and storage</a></li>
+    <li><a href="#langfuse">LLM observability with Langfuse</a></li>
+    <li><a href="#optimization">Optimization and cost</a></li>
+    <li><a href="#runbook">Runbooks and incidents</a></li>
+  </ol>
+</nav>
+
+<!-- 1 -->
+<h2 id="patterns"><span class="en">1. Inference patterns: online, batch, streaming</span><span class="ar">1. أنماط الـ inference: أونلاين، batch، streaming</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>"The most expensive ML mistake is deploying a good model the wrong way." The question to ask first: <em>when does the business need the prediction?</em></p>
+    <ul>
+      <li><strong>Online (web service):</strong> the user waits for the answer. Needs low latency.</li>
+      <li><strong>Batch:</strong> compute ahead of time on a schedule; cheapest per item.</li>
+      <li><strong>Streaming:</strong> react to events within seconds through a queue (Kafka, Redis Streams).</li>
+    </ul>
+    <p>Three failure modes: <strong>cost blowout</strong> (a live API for a nightly job), <strong>SLA breach</strong> (a nightly job for something users wait on), <strong>over-engineering</strong> (Kafka for a weekly report).</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>"أغلى غلطة في الـ ML إنك تنزّل موديل كويس بالطريقة الغلط." أول سؤال: <em>الـ business محتاج الـ prediction إمتى؟</em></p>
+    <ul>
+      <li><strong>أونلاين (web service):</strong> المستخدم مستني الإجابة. محتاج latency قليلة.</li>
+      <li><strong>Batch:</strong> بنحسب بدري بجدول مواعيد؛ الأرخص للحاجة الواحدة.</li>
+      <li><strong>Streaming:</strong> بنرد على أحداث في ثواني عن طريق طابور (Kafka، Redis Streams).</li>
+    </ul>
+    <p>تلات طرق للفشل: <strong>التكلفة تنفجر</strong> (API لايف لشغلانة بتتعمل بالليل)، <strong>الـ SLA يتكسر</strong> (شغلانة بالليل لحاجة الناس مستنياها)، <strong>تعقيد زيادة</strong> (Kafka لتقرير أسبوعي).</p>
+  </div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Need in this project</th><th>Pattern</th><th class="en">Why</th><th class="ar">ليه</th></tr></thead>
+  <tbody>
+    <tr><td>A lawyer asks a question</td><td>online + token streaming (SSE)</td><td class="en">A person is waiting; streaming makes the first words appear in about a second.</td><td class="ar">فيه شخص مستني؛ والـ streaming بيخلي أول كلام يظهر في حوالي ثانية.</td></tr>
+    <tr><td>Re-index after a law change</td><td>batch (DVC + Airflow)</td><td class="en">Rare, heavy, nobody waits on it.</td><td class="ar">نادر وتقيل ومحدش مستنيه.</td></tr>
+    <tr><td>Nightly scoring of sampled answers, drift checks</td><td>batch</td><td class="en">Results are needed by morning, not per request.</td><td class="ar">النتايج محتاجينها الصبح، مش مع كل طلب.</td></tr>
+    <tr><td>Event streams</td><td>not used</td><td class="en">No event source needs sub-second reaction here. SSE token streaming is a response format, not streaming inference.</td><td class="ar">مفيش مصدر أحداث محتاج رد في أقل من ثانية. والـ SSE طريقة لإرسال الرد، مش streaming inference.</td></tr>
+  </tbody>
+</table></div>
+
+<!-- 2 -->
+<h2 id="serving"><span class="en">2. Serving vocabulary and the layers of a serving stack</span><span class="ar">2. مصطلحات الـ serving وطبقاته</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>"Inference is a function call. Serving is everything you build around it." Words you must use precisely:</p>
+    <ul>
+      <li><strong>Latency</strong> (time per request) vs <strong>throughput</strong> (requests per second). A fast request does not mean a fast system.</li>
+      <li><strong>p50 / p95 / p99</strong>: the time under which 50/95/99% of requests finish. "The average lies; p99 breaks your SLA."</li>
+      <li><strong>Cold start</strong>: the first request after a start, while models load.</li>
+      <li><strong>TTFT</strong> and <strong>TBT</strong> (time between tokens, target under about 50 ms) for LLMs.</li>
+    </ul>
+    <p>Four layers: L1 transport/API, L2 scheduling (batching, queues, versions), L3 inference runtime, L4 hardware. FastAPI owns L1; BentoML L1+L2; Triton L1–L3; vLLM L1–L3 for LLMs. "Move to a heavier category only with a measured reason, never 'Triton will be faster'."</p>
+    <p>In this project: FastAPI is the application (auth, validation, pipeline, streaming); vLLM serves the local LLM; BentoML wraps the same pipeline in Phase 4 to show adaptive batching and its built-in health and metrics endpoints, and the Locust numbers decide which we keep.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>"الـ Inference مجرد function call. الـ Serving هو كل اللي بتبنيه حواليه." كلمات لازم تستخدمها بدقة:</p>
+    <ul>
+      <li><strong>Latency</strong> (وقت الطلب الواحد) قصاد <strong>throughput</strong> (طلبات في الثانية). الطلب السريع مش معناه سيستم سريع.</li>
+      <li><strong>p50 / p95 / p99</strong>: الوقت اللي 50/95/99% من الطلبات بتخلص قبله. "المتوسط بيكدب؛ وp99 هو اللي بيكسر الـ SLA."</li>
+      <li><strong>Cold start</strong>: أول طلب بعد التشغيل، والموديلات لسه بتتحمل.</li>
+      <li><strong>TTFT</strong> و<strong>TBT</strong> (الوقت بين كل token واللي بعده، المستهدف أقل من 50 ملي ثانية تقريبًا) في الـ LLMs.</li>
+    </ul>
+    <p>أربع طبقات: L1 النقل والـ API، L2 الجدولة (batching وطوابير وversions)، L3 الـ runtime، L4 الهاردوير. FastAPI بيمسك L1؛ BentoML بيمسك L1 وL2؛ Triton من L1 لـ L3؛ وvLLM من L1 لـ L3 للـ LLMs. "متنقلش لفئة أتقل غير بسبب متقاس بأرقام، عمرك ما تقول Triton هيبقى أسرع."</p>
+    <p>في مشروعنا: FastAPI هو التطبيق (الصلاحيات والـ validation والـ pipeline والـ streaming)؛ وvLLM بيخدّم الـ LLM المحلي؛ وBentoML بيلف نفس الـ pipeline في المرحلة 4 عشان نشوف الـ batching والـ endpoints الجاهزة للـ health والـ metrics، وأرقام Locust هي اللي تقرر نسيب مين.</p>
+  </div>
+</div>
+
+<!-- 3 -->
+<h2 id="load"><span class="en">3. Load testing with Locust</span><span class="ar">3. اختبار الحمل بـ Locust</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>A load test finds the maximum requests per second, the p50/p95/p99 at each load, the <strong>saturation point</strong> (where p95 starts climbing steeply), and which component breaks first. "1,000 users is not 1,000 requests per second": users think between requests.</p>
+    <ul>
+      <li><strong>Realistic traffic:</strong> a mix of Arabic and English questions, some streamed, some metadata calls, random waits. Sending the same question 10,000 times makes every cache lie.</li>
+      <li><strong>LLM-specific:</strong> measure TTFT under concurrency and test at the realistic (p95) question length.</li>
+      <li><strong>Diagnose with evidence:</strong> CPU-bound, memory-bound, I/O-bound (waiting on OpenRouter/Jev), or queue-bound. Change one parameter, re-run, compare.</li>
+    </ul>
+    <p>Honest limit: the load generator and the service share one laptop, so we measure the laptop too. The report says so.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>اختبار الحمل بيطلّع أقصى عدد طلبات في الثانية، وp50/p95/p99 عند كل حمل، و<strong>نقطة التشبع</strong> (لما p95 يبدأ يطلع بسرعة)، وأنهي جزء بيقع الأول. "1,000 مستخدم مش يعني 1,000 طلب في الثانية": المستخدمين بيفكروا بين كل طلب والتاني.</p>
+    <ul>
+      <li><strong>ترافيك واقعي:</strong> أسئلة عربي وإنجليزي مخلوطة، شوية streaming، شوية نداءات metadata، وانتظار عشوائي. لو بعت نفس السؤال 10,000 مرة كل cache هيكدب عليك.</li>
+      <li><strong>خاص بالـ LLM:</strong> نقيس TTFT مع الضغط، ونختبر بطول سؤال واقعي (p95).</li>
+      <li><strong>تشخيص بدليل:</strong> المشكلة في الـ CPU، ولا الذاكرة، ولا انتظار I/O (OpenRouter وJev)، ولا طابور. نغيّر parameter واحد ونعيد ونقارن.</li>
+    </ul>
+    <p>حد بصراحة: مولّد الحمل والخدمة على نفس اللابتوب، فإحنا بنقيس اللابتوب كمان. والتقرير بيقول كده.</p>
+  </div>
+</div>
+
+<!-- 4 -->
+<h2 id="release"><span class="en">4. Release strategies</span><span class="ar">4. طرق نزول نسخة جديدة</span></h2>
+<div class="pair">
+  <div class="en"><p>Deploying (starting new containers) is separate from routing traffic to them. "Test → Monitor → Gradual rollout → Roll back if needed", not "Deploy → Pray".</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p>الـ deploy (تشغيل containers جديدة) حاجة، وتوجيه الترافيك ليها حاجة تانية. "اختبر ← راقب ← نزّل بالتدريج ← ارجع لو احتجت"، مش "نزّل وادعي".</p></div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Strategy</th><th class="en">How it works</th><th class="ar">بيشتغل إزاي</th><th class="en">Use when</th><th class="ar">إمتى</th></tr></thead>
+  <tbody>
+    <tr><td>Recreate</td><td class="en">Stop old, start new.</td><td class="ar">وقّف القديم وشغّل الجديد.</td><td class="en">Dev only; causes downtime.</td><td class="ar">للتطوير بس؛ فيه وقت توقف.</td></tr>
+    <tr><td>Rolling</td><td class="en">Replace pods one by one (<code>maxUnavailable: 0</code>, <code>maxSurge: 1</code>).</td><td class="ar">بدّل الـ pods واحد واحد.</td><td class="en">The Kubernetes default.</td><td class="ar">الافتراضي في Kubernetes.</td></tr>
+    <tr><td>Blue/green</td><td class="en">Two full environments; switch all traffic at once.</td><td class="ar">بيئتين كاملتين؛ وتحوّل كل الترافيك مرة واحدة.</td><td class="en">Instant full rollback; costs double.</td><td class="ar">rollback كامل في لحظة؛ بس التكلفة الضعف.</td></tr>
+    <tr><td><strong>Canary</strong></td><td class="en">5% → 20% → 50% → 100%, watching p95, errors and quality at each step.</td><td class="ar">5% ← 20% ← 50% ← 100%، ومع كل خطوة بنراقب p95 والأخطاء والجودة.</td><td class="en">"The right default."</td><td class="ar">"الاختيار الافتراضي الصح."</td></tr>
+    <tr><td>A/B</td><td class="en">Route fixed user groups (hash of user id) to each version; measure business KPIs.</td><td class="ar">مجموعات مستخدمين ثابتة لكل نسخة؛ ونقيس مؤشرات الـ business.</td><td class="en">Comparing user outcomes, needs enough traffic.</td><td class="ar">مقارنة النتايج عند المستخدمين، ومحتاج ترافيك كفاية.</td></tr>
+    <tr><td><strong>Shadow</strong></td><td class="en">Copy live traffic to the new version, discard its answers, compare offline.</td><td class="ar">ننسخ الترافيك الحقيقي للنسخة الجديدة، ونرمي ردودها، ونقارن بعدين.</td><td class="en">Safest check of a change; users never see it.</td><td class="ar">أأمن طريقة نختبر بيها تغيير؛ المستخدم عمره ما يشوفه.</td></tr>
+  </tbody>
+</table></div>
+<div class="pair">
+  <div class="en"><p><strong>In this project:</strong> nginx sends 95/5 traffic to stable/canary API containers and tags every response with the serving version; <code>promote.sh</code> ramps the weight; <code>rollback.sh</code> returns to 100% stable in one command (and we time it); a watcher reads Prometheus and rolls back automatically if canary p95 or errors break the SLA twice in a row; nginx <code>mirror</code> gives shadow mode. Two cheaper rollbacks exist too: moving the Qdrant alias (index) and moving the Langfuse label (prompt).</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p><strong>في مشروعنا:</strong> nginx بيبعت 95/5 من الترافيك للنسخة المستقرة والـ canary، وكل رد عليه اسم النسخة اللي ردت؛ <code>promote.sh</code> بيزود النسبة؛ <code>rollback.sh</code> بيرجّع 100% للمستقرة بأمر واحد (وبنقيس وقته)؛ وفيه watcher بيقرا Prometheus ويعمل rollback لوحده لو p95 أو الأخطاء في الـ canary كسروا الـ SLA مرتين ورا بعض؛ وnginx <code>mirror</code> بيدينا الـ shadow mode. وفيه طريقتين rollback أرخص: نرجّع الـ alias في Qdrant (للـ index) ونرجّع الـ label في Langfuse (للـ prompt).</p></div>
+</div>
+
+<!-- 5 -->
+<h2 id="k8s"><span class="en">5. Kubernetes essentials</span><span class="ar">5. أساسيات Kubernetes</span></h2>
+<div class="pair">
+  <div class="en">
+    <ul>
+      <li><strong>Pod:</strong> one or more containers scheduled together. <strong>Deployment:</strong> keeps N identical pods running and handles rolling updates. <strong>Service:</strong> a stable address that load-balances to pods selected by <em>labels</em>. <strong>Ingress:</strong> routes outside HTTP traffic to services (and does canary weights with NGINX annotations).</li>
+      <li><strong>Labels are the routing contract</strong> (<code>app</code>, <code>version</code>, <code>track: stable|canary</code>); services select pods by labels, not names.</li>
+      <li><strong>Probes:</strong> liveness (restart if dead), readiness (send traffic only when ready), startup (still loading).</li>
+      <li><strong>Requests/limits</strong> reserve and cap CPU/memory. <strong>ConfigMap</strong> holds config; <strong>Secret</strong> holds secrets, but "Secrets are base64-encoded, not encrypted".</li>
+      <li><code>kubectl rollout status</code>, <code>rollout undo</code>, <code>get events</code> are the release checklist.</li>
+    </ul>
+    <p>We write real manifests and apply them to Docker Desktop's built-in Kubernetes. The course calls full Kubernetes operations "advanced"; we learn the objects and the rollout, not cluster administration.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <ul>
+      <li><strong>Pod:</strong> container أو أكتر بيتشغلوا مع بعض. <strong>Deployment:</strong> بيحافظ إن فيه N pods شبه بعض شغالين وبيعمل الـ rolling updates. <strong>Service:</strong> عنوان ثابت بيوزّع على الـ pods اللي بيختارها بالـ <em>labels</em>. <strong>Ingress:</strong> بيوجّه الترافيك اللي جاي من بره للـ services (وبيعمل نسب الـ canary بـ annotations في NGINX).</li>
+      <li><strong>الـ labels هي عقد التوجيه</strong> (<code>app</code> و<code>version</code> و<code>track: stable|canary</code>)؛ الـ service بيختار الـ pods بالـ labels مش بالأسماء.</li>
+      <li><strong>Probes:</strong> liveness (لو ميت اعمل restart)، readiness (ابعت ترافيك بس لما يبقى جاهز)، startup (لسه بيحمّل).</li>
+      <li><strong>Requests/limits</strong> بتحجز وبتحد الـ CPU والذاكرة. <strong>ConfigMap</strong> للإعدادات؛ <strong>Secret</strong> للأسرار، بس "الـ Secrets بتتعمل base64 مش تشفير".</li>
+      <li><code>kubectl rollout status</code> و<code>rollout undo</code> و<code>get events</code> هما checklist النزول.</li>
+    </ul>
+    <p>هنكتب manifests حقيقية ونطبقها على Kubernetes اللي جوه Docker Desktop. الكورس بيعتبر تشغيل Kubernetes الكامل "متقدم"؛ إحنا بنتعلم الـ objects والـ rollout، مش إدارة الكلاستر.</p>
+  </div>
+</div>
+
+<!-- 6 -->
+<h2 id="monitoring"><span class="en">6. Monitoring tiers and the three pillars</span><span class="ar">6. مستويات المراقبة والأعمدة التلاتة</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>You cannot watch everything, so decide what you watch when:</p>
+    <ul>
+      <li><strong>Watch now</strong> (every request, seconds): request rate, errors, p95, TTFT, tokens, refusals, gate probabilities.</li>
+      <li><strong>Watch today</strong> (scheduled, no labels): drift of questions against a frozen reference, distribution of retrieval scores, RAGAS on a 1–5% sample.</li>
+      <li><strong>Check later</strong> (needs people): human review, golden-set regressions.</li>
+    </ul>
+    <p>"The proxies are your alarm. The labels are your audit."</p>
+    <p>The three pillars: <strong>metrics</strong> answer "is something wrong right now, and how big?"; <strong>logs</strong> answer "what exactly happened in this request?"; <strong>traces</strong> answer "where did the time go across the steps?". The <code>request_id</code> joins all three.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>مينفعش تراقب كل حاجة، فقرر هتراقب إيه وإمتى:</p>
+    <ul>
+      <li><strong>راقب دلوقتي</strong> (مع كل طلب، بالثواني): عدد الطلبات، والأخطاء، وp95، وTTFT، والـ tokens، والرفض، واحتمالات الـ gate.</li>
+      <li><strong>راقب النهارده</strong> (بجدول، من غير labels): drift الأسئلة قصاد مرجع ثابت، وتوزيع درجات الـ retrieval، وRAGAS على عينة 1–5%.</li>
+      <li><strong>اتأكد بعدين</strong> (محتاج بشر): مراجعة بشرية، وأي تراجع في الأسئلة الذهبية.</li>
+    </ul>
+    <p>"المؤشرات هي جرس الإنذار، والـ labels هي المراجعة."</p>
+    <p>الأعمدة التلاتة: الـ <strong>metrics</strong> بتجاوب "فيه حاجة غلط دلوقتي؟ وقد إيه؟"؛ الـ <strong>logs</strong> بتجاوب "إيه اللي حصل بالظبط في الطلب ده؟"؛ والـ <strong>traces</strong> بتجاوب "الوقت راح فين بين الخطوات؟". والـ <code>request_id</code> بيربط التلاتة.</p>
+  </div>
+</div>
+
+<!-- 7 -->
+<h2 id="prometheus"><span class="en">7. Prometheus</span><span class="ar">7. Prometheus</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Prometheus <strong>pulls</strong>: our API exposes <code>/metrics</code> and Prometheus scrapes it every 15 seconds. A target that stops answering is itself a signal. Metric types:</p>
+    <ul>
+      <li><strong>Counter</strong>: only goes up (<code>rag_requests_total</code>); always query its <code>rate()</code>.</li>
+      <li><strong>Gauge</strong>: goes up and down (<code>rag_inflight_requests</code>).</li>
+      <li><strong>Histogram</strong>: counts values in buckets (<code>rag_stage_seconds{stage}</code>) so you can compute p95 across instances, which an average cannot.</li>
+    </ul>
+    <p><strong>Cardinality:</strong> each unique label combination is a separate time series. Never put <code>user_id</code>, <code>request_id</code> or question text in a label; "unbounded labels are the classic way to take down Prometheus". Those go in logs and traces. Buckets are chosen around our SLA (e.g. 0.1 s … 10 s), and units are base units: seconds, bytes.</p>
+    <pre><code>histogram_quantile(0.95, sum(rate(rag_stage_seconds_bucket[5m])) by (le, stage))   # p95 per stage
+sum(rate(rag_requests_total{status="error"}[5m])) / sum(rate(rag_requests_total[5m])) # error rate</code></pre>
+    <p><code>rate()</code> is per second, for graphs; <code>increase()</code> is a total over a window, for reports. With several worker processes each keeps its own counters, so we enable <strong>multiprocess mode</strong> or counters appear to go backwards. <strong>Exporters</strong> add the rest: node_exporter (host), cAdvisor (containers), blackbox (probe from outside), vLLM and Qdrant's own <code>/metrics</code>.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>Prometheus بـ <strong>يسحب</strong>: الـ API بتاعنا بيعرض <code>/metrics</code> وPrometheus بيقراها كل 15 ثانية. ولو الهدف بطّل يرد، ده في حد ذاته إشارة. أنواع الـ metrics:</p>
+    <ul>
+      <li><strong>Counter</strong>: بيزيد بس (<code>rag_requests_total</code>)؛ ودايمًا بنستعلم عن الـ <code>rate()</code> بتاعه.</li>
+      <li><strong>Gauge</strong>: بيطلع وينزل (<code>rag_inflight_requests</code>).</li>
+      <li><strong>Histogram</strong>: بيعد القيم في buckets (<code>rag_stage_seconds{stage}</code>) فنقدر نحسب p95 على كل النسخ، والمتوسط ميقدرش.</li>
+    </ul>
+    <p><strong>الـ Cardinality:</strong> كل تركيبة labels مختلفة = time series لوحدها. عمرك ما تحط <code>user_id</code> أو <code>request_id</code> أو نص السؤال في label؛ "الـ labels اللي ملهاش حد هي الطريقة الكلاسيكية لوقعان Prometheus". دول مكانهم الـ logs والـ traces. والـ buckets بنختارها حوالين الـ SLA بتاعنا (مثلاً من 0.1 لـ 10 ثانية)، والوحدات أساسية: ثواني وbytes.</p>
+    <p>الـ <code>rate()</code> لكل ثانية، للرسومات؛ والـ <code>increase()</code> إجمالي في فترة، للتقارير. ولو فيه كذا worker process كل واحد بيحسب لوحده، فبنشغّل <strong>multiprocess mode</strong> وإلا الـ counters هتبان كأنها بترجع لورا. والـ <strong>Exporters</strong> بتكمّل الصورة: node_exporter (الجهاز)، cAdvisor (الـ containers)، blackbox (فحص من بره)، و<code>/metrics</code> بتاعة vLLM وQdrant نفسهم.</p>
+  </div>
+</div>
+
+<!-- 8 -->
+<h2 id="grafana"><span class="en">8. Grafana dashboards as code</span><span class="ar">8. Dashboards في Grafana ككود</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>One dashboard, four rows: <strong>service health</strong> (rate, errors, p50/p95/p99, in-flight, uptime), <strong>resources</strong> (CPU, RAM, disk, GPU/VRAM, per container), <strong>RAG behaviour</strong> (stage latency, decisions by outcome, refusal rate, tokens and cost, serving version), <strong>quality and drift</strong> (faithfulness from sampled evaluation, drift scores from Postgres).</p>
+    <p>The dashboard JSON and data sources live in the repo and are <strong>provisioned</strong> at startup: "a dashboard built by clicking dies with the pod". <strong>Deploy annotations</strong> draw a line on every graph when a version ships; "half of all drift investigations end the moment you see the spike land on a release".</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>dashboard واحدة وأربع صفوف: <strong>صحة الخدمة</strong> (عدد الطلبات، الأخطاء، p50/p95/p99، الطلبات الشغالة، الـ uptime)، <strong>الموارد</strong> (CPU وRAM والديسك والـ GPU والـ VRAM، ولكل container)، <strong>سلوك الـ RAG</strong> (وقت كل مرحلة، القرارات ونتيجتها، نسبة الرفض، الـ tokens والتكلفة، النسخة الشغالة)، <strong>الجودة والـ drift</strong> (faithfulness من التقييم بالعينة، ودرجات الـ drift من Postgres).</p>
+    <p>ملف الـ dashboard JSON والـ data sources في الريبو وبيتعملهم <strong>provisioning</strong> وقت التشغيل: "الـ dashboard اللي اتعملت بالكليك بتموت مع الـ pod". و<strong>الـ deploy annotations</strong> بترسم خط على كل رسمة لما نسخة تنزل؛ "نص تحقيقات الـ drift بتخلص أول ما تشوف الارتفاع جه مع release".</p>
+  </div>
+</div>
+
+<!-- 9 -->
+<h2 id="alerts"><span class="en">9. Alerting people trust</span><span class="ar">9. Alerts الناس تثق فيها</span></h2>
+<div class="pair">
+  <div class="en">
+    <p><strong>Page on symptoms, ticket on causes.</strong> Symptoms are what users feel (service down, p95 above SLA, error rate above 1%, faithfulness below 0.80). Causes hurt later (drift score, VRAM near full, token budget burning fast, index older than allowed).</p>
+    <ul>
+      <li>Every rule has <code>for:</code> (e.g. 5 minutes) so one scrape blip never pages anyone.</li>
+      <li><strong>Alertmanager</strong> routes by severity (page channel vs ticket channel), <strong>groups</strong> related alerts, and <strong>inhibits</strong> the latency alert while "service down" is firing. One incident, one notification.</li>
+      <li>Every alert's text has an obvious first action and a link to its runbook section. "drift detected" alone gets muted by week two.</li>
+      <li>An <strong>SLO burn-rate</strong> alert uses two windows: the short one catches fast burns, the long one filters noise.</li>
+    </ul>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p><strong>صحّي الناس على الأعراض، وافتح تذكرة على الأسباب.</strong> الأعراض هي اللي المستخدم بيحس بيها (الخدمة واقعة، p95 فوق الـ SLA، الأخطاء فوق 1%، الـ faithfulness تحت 0.80). والأسباب بتأذي بعدين (درجة drift، الـ VRAM قرب يتملي، ميزانية الـ tokens بتخلص بسرعة، الـ index أقدم من المسموح).</p>
+    <ul>
+      <li>كل قاعدة فيها <code>for:</code> (مثلاً 5 دقايق) عشان غلطة scrape واحدة متصحّيش حد.</li>
+      <li><strong>Alertmanager</strong> بيوجّه حسب الخطورة (قناة طوارئ قصاد قناة تذاكر)، و<strong>يجمّع</strong> الـ alerts اللي ليها علاقة ببعض، و<strong>يكتم</strong> alert الـ latency طول ما "الخدمة واقعة" شغال. مشكلة واحدة، إشعار واحد.</li>
+      <li>نص كل alert فيه أول خطوة واضحة ولينك لجزء الـ runbook بتاعه. "فيه drift" لوحدها هتتكتم بعد أسبوعين.</li>
+      <li>alert الـ <strong>SLO burn-rate</strong> بيستخدم نافذتين: القصيرة بتمسك الاستهلاك السريع، والطويلة بتصفّي الدوشة.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- 10 -->
+<h2 id="drift"><span class="en">10. Drift: quality drops without an error</span><span class="ar">10. الـ Drift: الجودة بتقل من غير error</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Classic drift types: <strong>data</strong> (inputs change), <strong>concept</strong> (the right answer for the same input changes; for us, a law amendment), <strong>prediction</strong> (output distribution moves), <strong>label</strong> (class mix changes). RAG adds four:</p>
+    <ul>
+      <li><strong>Embedding drift:</strong> the index and the query encoder differ. Signals: zero-hit rate, mean top-1 similarity. Guard: refuse to start on mismatch.</li>
+      <li><strong>Corpus drift:</strong> documents changed but the index did not, or repealed text is still served. Signals: index vs source count, age of cited articles.</li>
+      <li><strong>Retrieval drift:</strong> a few articles dominate every answer, similarity decays. Signals: mean top-k similarity, concentration of reused articles, context precision by week.</li>
+      <li><strong>Query-intent drift:</strong> users start asking about something else (family law, criminal law). Signals: refusal rate, off-topic rate, embedding-based detectors.</li>
+    </ul>
+    <p>LLM apps add <strong>provider drift</strong> (same model name, different model: pin versions, run the golden set weekly), <strong>prompt drift</strong> ("a hundred small edits"), and <strong>evaluator drift</strong> (pin the judge).</p>
+    <p>"Drift does not automatically mean the model is broken." Check in order: an upstream bug ("most drift is this"), seasonality, real user change, and only then rebuild.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>أنواع الـ drift الكلاسيكية: <strong>data</strong> (المدخلات بتتغير)، <strong>concept</strong> (الإجابة الصح لنفس المدخل بتتغير؛ عندنا: تعديل في القانون)، <strong>prediction</strong> (توزيع المخرجات بيتحرك)، <strong>label</strong> (نسب الأصناف بتتغير). والـ RAG بيزود أربعة:</p>
+    <ul>
+      <li><strong>Embedding drift:</strong> الـ index وencoder الأسئلة مختلفين. الإشارات: نسبة البحث اللي مرجّعش حاجة، ومتوسط تشابه أول نتيجة. الحماية: نرفض نقوم لو مش متطابقين.</li>
+      <li><strong>Corpus drift:</strong> المستندات اتغيرت والـ index لأ، أو نص ملغي لسه بيتخدّم. الإشارات: عدد الـ index قصاد المصدر، وعمر المواد المذكورة.</li>
+      <li><strong>Retrieval drift:</strong> شوية مواد بيسيطروا على كل الإجابات، والتشابه بيقل. الإشارات: متوسط تشابه أول k، وتركيز المواد المتكررة، والـ context precision كل أسبوع.</li>
+      <li><strong>Query-intent drift:</strong> الناس بدأت تسأل عن حاجة تانية (أحوال شخصية، جنائي). الإشارات: نسبة الرفض، ونسبة الأسئلة اللي بره الموضوع، وكواشف مبنية على الـ embeddings.</li>
+    </ul>
+    <p>وتطبيقات الـ LLM بتزود <strong>provider drift</strong> (نفس اسم الموديل بس موديل مختلف: ثبّت النسخ وشغّل الأسئلة الذهبية كل أسبوع)، و<strong>prompt drift</strong> ("مية تعديل صغير")، و<strong>evaluator drift</strong> (ثبّت الحَكَم).</p>
+    <p>"الـ Drift مش معناه تلقائيًا إن الموديل باظ." اتأكد بالترتيب: bug في حاجة قبلنا ("أغلب الـ drift كده")، موسمية، تغيير حقيقي عند المستخدمين، وبعدين بس نعيد البناء.</p>
+  </div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Method</th><th>Use for</th><th class="en">Watch out</th><th class="ar">خد بالك</th></tr></thead>
+  <tbody>
+    <tr><td>KS test</td><td>numeric features (question length, top-1 similarity)</td><td class="en">With large samples tiny meaningless shifts become "significant".</td><td class="ar">مع عينات كبيرة أي فرق تافه بيبقى "مهم إحصائيًا".</td></tr>
+    <tr><td>Chi-square</td><td>categories (routed book, language)</td><td class="en">Needs enough counts per category.</td><td class="ar">محتاج أعداد كفاية في كل فئة.</td></tr>
+    <tr><td>Wasserstein</td><td>size of a shift</td><td class="en">Measures how far, not just whether. Preferred at high traffic.</td><td class="ar">بيقيس بعد قد إيه، مش بس فيه ولا لأ. الأفضل مع ترافيك عالي.</td></tr>
+    <tr><td>JS / KL divergence</td><td>probability distributions (gate probabilities)</td><td class="en">KL is asymmetric; JS is symmetric and bounded.</td><td class="ar">الـ KL مش متماثل؛ والـ JS متماثل وليه حد.</td></tr>
+    <tr><td>MMD, domain classifier</td><td>1024-dimensional embeddings</td><td class="en">Per-dimension tests collapse under multiple comparisons. A classifier that tells old from new queries (AUC ≈ 0.5 = no drift, → 1.0 = drift) also tells you what moved.</td><td class="ar">اختبار كل بُعد لوحده بيبوظ من كتر المقارنات. classifier بيفرّق الأسئلة القديمة من الجديدة (AUC ≈ 0.5 = مفيش drift، قرب 1.0 = فيه) وبيقولك كمان إيه اللي اتحرك.</td></tr>
+  </tbody>
+</table></div>
+<div class="pair">
+  <div class="en"><p>Every detector must stay silent on an undrifted control set; "a detector with no measured false-positive rate is not a detector". We build a simulator that creates drift on purpose (contract-law questions turning into family-law questions; swapping the embedding model) and check which detector fires, and after how many samples.</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p>كل كاشف لازم يفضل ساكت على مجموعة مفيهاش drift؛ "الكاشف اللي معندوش نسبة إنذار كاذب متقاسة مش كاشف". بنعمل simulator يعمل drift بقصد (أسئلة عقود بتتحول لأسئلة أحوال شخصية؛ تبديل موديل الـ embedding) ونشوف أنهي كاشف بيضرب، وبعد كام عينة.</p></div>
+</div>
+
+<!-- 11 -->
+<h2 id="evidently"><span class="en">11. Drift reports and where they are stored</span><span class="ar">11. تقارير الـ drift وبتتخزن فين</span></h2>
+<div class="pair">
+  <div class="en">
+    <p><strong>Evidently</strong> compares this window's data with a <strong>frozen reference</strong> (never roll the baseline forward). A <em>Report</em> is for humans; a <em>Test suite</em> with explicit conditions is for machines, so only tests can be a CI gate. Evidently's API changed at version 0.7, so we pin the version and read the current docs, not old blog posts.</p>
+    <p>A daily job writes one row per window, metric and feature into a <strong>Postgres</strong> table (<code>drift_metrics</code>). Prometheus is the wrong store for a number computed once a day and kept for a year; Postgres is right, and Grafana reads it with a SQL data source. When drift passes the threshold and the guards allow it, the Airflow branch triggers re-index and re-evaluation; a human still approves production.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p><strong>Evidently</strong> بيقارن داتا الفترة دي بـ <strong>مرجع ثابت</strong> (عمرك ما تحرّك المرجع لقدام). الـ <em>Report</em> للبشر؛ والـ <em>Test suite</em> بشروط واضحة للماكينات، فالـ tests بس هي اللي تنفع بوابة في الـ CI. والـ API بتاع Evidently اتغير من نسخة 0.7، فبنثبت النسخة ونقرا الـ docs الحالية مش بوستات قديمة.</p>
+    <p>شغلانة يومية بتكتب صف لكل فترة ومقياس وخاصية في جدول <strong>Postgres</strong> اسمه <code>drift_metrics</code>. Prometheus مش المكان الصح لرقم بيتحسب مرة في اليوم ونحتفظ بيه سنة؛ Postgres هو الصح، وGrafana بيقراه بـ SQL. ولما الـ drift يعدي الحد والحمايات تسمح، فرع في Airflow بيشغّل re-index وتقييم من جديد؛ وبرضه بني آدم هو اللي يوافق على الـ production.</p>
+  </div>
+</div>
+
+<!-- 12 -->
+<h2 id="langfuse"><span class="en">12. LLM observability with Langfuse</span><span class="ar">12. مراقبة الـ LLM بـ Langfuse</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Langfuse answers three questions: <em>what happened</em> (tracing), <em>which version produced it</em> (prompt management), and <em>was it good</em> (scores). Its objects:</p>
+    <ul>
+      <li><strong>Trace:</strong> one question, end to end, with <code>user_id</code>, <code>session_id</code>, release and tags.</li>
+      <li><strong>Observations</strong> inside it: <strong>spans</strong> (route, retrieve, rerank, gate, validate), <strong>generations</strong> (an LLM call with tokens and cost), events.</li>
+      <li><strong>Scores</strong> attached afterwards: gate probability, supported-claim ratio, RAGAS faithfulness, user feedback.</li>
+      <li><strong>Datasets</strong>: the golden set, run as experiments and compared item by item.</li>
+    </ul>
+    <p>Every trace carries the same metadata as our logs: <code>request_id</code>, prompt version, index version, top-k, decider. Test: can you list every answer that made a legal claim with zero retrieved articles in under a minute? Cost is tracked <strong>per trace</strong>, including a custom price for our own vLLM (from GPU hourly price ÷ measured throughput). Langfuse is self-hosted (web, worker, Postgres, ClickHouse, Redis, MinIO) so legal questions never leave our infrastructure.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>Langfuse بيجاوب على تلات أسئلة: <em>إيه اللي حصل</em> (tracing)، و<em>أنهي نسخة طلّعته</em> (إدارة الـ prompts)، و<em>كان كويس ولا لأ</em> (scores). الـ objects بتاعته:</p>
+    <ul>
+      <li><strong>Trace:</strong> سؤال واحد من أوله لآخره، ومعاه <code>user_id</code> و<code>session_id</code> والـ release والـ tags.</li>
+      <li><strong>Observations</strong> جواه: <strong>spans</strong> (route وretrieve وrerank وgate وvalidate)، و<strong>generations</strong> (نداء LLM بالـ tokens والتكلفة)، وevents.</li>
+      <li><strong>Scores</strong> بتتضاف بعدين: احتمال الـ gate، ونسبة الجمل اللي ليها دليل، وfaithfulness من RAGAS، ورأي المستخدم.</li>
+      <li><strong>Datasets</strong>: الأسئلة الذهبية، بتتشغل كتجارب ونقارن سؤال سؤال.</li>
+    </ul>
+    <p>كل trace شايل نفس الـ metadata اللي في الـ logs: <code>request_id</code> ونسخة الـ prompt ونسخة الـ index والـ top-k والـ decider. الاختبار: تقدر تطلّع كل إجابة قالت معلومة قانونية من غير ولا مادة راجعة في أقل من دقيقة؟ والتكلفة بتتحسب <strong>لكل trace</strong>، حتى سعر vLLM بتاعنا (سعر ساعة الـ GPU ÷ الـ throughput المتقاس). وLangfuse متشغّل عندنا (web وworker وPostgres وClickHouse وRedis وMinIO) فالأسئلة القانونية عمرها ما تخرج بره البنية بتاعتنا.</p>
+  </div>
+</div>
+
+<!-- 13 -->
+<h2 id="optimization"><span class="en">13. Optimization and cost</span><span class="ar">13. الـ Optimization والتكلفة</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>"An unmeasured optimization is a rumour." Before optimizing we state one objective and one constraint (for example: minimize p95 subject to faithfulness drop ≤ 0.03), and build a benchmark harness with warm-up runs, enough repetitions, the same evaluation set every time, and a hardware column, because a laptop CPU number must never sit next to a cloud GPU number unlabelled.</p>
+    <p>Where RAG cost really goes, usually in this order: <strong>too much context</strong> (top-k too high), <strong>a model bigger than the task needs</strong>, and <strong>retry loops</strong>. Levers: fewer, better chunks (rerank + gate); a quantized local model (AWQ 4-bit) for easy questions; caching repeated questions; exporting the CPU reranker to ONNX if it is the bottleneck. Every row of the final table gets an accuracy column and a cost per month at a stated traffic level.</p>
+    <p><strong>The honesty clause:</strong> "I tried X, quality dropped 4%, so I shipped Y" scores higher than a flawless table with no accuracy column. Fabricated numbers fail the project outright.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>"الـ optimization اللي متقاسش إشاعة." قبل ما نحسّن بنحدد هدف واحد وقيد واحد (مثلاً: قلّل p95 بشرط الـ faithfulness ميقلش أكتر من 0.03)، ونبني أداة قياس فيها تسخين قبل القياس، وتكرار كفاية، ونفس أسئلة التقييم كل مرة، وعمود للهاردوير، لأن رقم CPU لابتوب عمره ما يتحط جنب رقم GPU سحابي من غير ما نوضح.</p>
+    <p>تكلفة الـ RAG بتروح فين فعلاً، غالبًا بالترتيب ده: <strong>context كتير</strong> (top-k عالي)، و<strong>موديل أكبر من اللازم</strong>، و<strong>loops إعادة المحاولة</strong>. الأدوات: chunks أقل وأحسن (rerank وgate)؛ موديل محلي مضغوط (AWQ 4-bit) للأسئلة السهلة؛ cache للأسئلة المتكررة؛ وتصدير الـ reranker لـ ONNX لو هو اللي معطّل الـ CPU. وكل صف في الجدول النهائي فيه عمود دقة وتكلفة شهرية عند ترافيك محدد.</p>
+    <p><strong>شرط الأمانة:</strong> "جربت X والجودة قلت 4% فنزّلت Y" بتاخد درجة أعلى من جدول مثالي مفيهوش عمود دقة. والأرقام المتألفة بتسقّط المشروع على طول.</p>
+  </div>
+</div>
+
+<!-- 14 -->
+<h2 id="runbook"><span class="en">14. Runbooks and incidents</span><span class="ar">14. الـ Runbooks والحوادث</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>A <strong>runbook</strong> lets an on-call engineer who has never seen the code act at 3 am. One section per alert: what it means in one sentence, the first command to run, how to tell a real problem from a data-pipeline failure, the rollback command, and when to escalate. "An alert without a runbook is noise."</p>
+    <p>The instructor's degraded-model runbook: is it the model at all? → the data pipeline → the deploy timeline (<strong>roll back first, investigate second</strong>) → localize → check real quality → decide and write it down. Incidents are written in five sentences: context, signal, action, outcome, lesson. Across every real incident she showed, "the model was never the root cause", and the missing signal was always cheap.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الـ <strong>runbook</strong> بيخلي المهندس المناوب، اللي عمره ما شاف الكود، يتصرف الساعة 3 الفجر. جزء لكل alert: معناه في جملة، أول أمر يشغّله، يفرّق إزاي بين مشكلة حقيقية وعطل في pipeline الداتا، أمر الـ rollback، وإمتى يصعّد. "alert من غير runbook دوشة."</p>
+    <p>الـ runbook بتاع المهندسة لما الموديل يسوء: هو الموديل أصلاً؟ ← pipeline الداتا ← تاريخ الـ deploys (<strong>ارجع الأول، وحقق بعدين</strong>) ← حدد المكان ← اتأكد من الجودة الحقيقية ← قرر واكتب اللي حصل. والحوادث بتتكتب في خمس جمل: السياق، الإشارة، اللي عملناه، النتيجة، الدرس. وفي كل الحوادث الحقيقية اللي عرضتها، "الموديل عمره ما كان السبب"، والإشارة اللي كانت ناقصة كانت دايمًا رخيصة.</p>
+  </div>
+</div>
+
+<div class="pager"><a href="00c-eval-tracking.html">← Concepts 3 · Evaluation and tracking</a><a href="index.html">Guide index →</a></div>
+</main>
+<script src="assets/toggle.js"></script>
+</body>
+</html>

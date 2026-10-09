@@ -1,0 +1,141 @@
+/* Walkthrough design tokens.
+   Layout: single reading column (~70ch) with a sticky top bar holding the language toggle.
+   Palette: ink on warm paper, with a deep "Nile" blue accent for links/labels and a gold for Arabic headings. */
+:root {
+  --bg: #faf8f3;
+  --surface: #ffffff;
+  --fg: #1f2429;
+  --muted: #5d6670;
+  --line: #e2ddd2;
+  --accent: #0f4c81;
+  --accent-soft: #e4eef8;
+  --gold: #a66d1c;
+  --ok: #2e7d4f;
+  --warn: #b5541c;
+  --code-bg: #f1efe8;
+  --font-body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
+  --font-arabic: "Cairo", "Noto Naskh Arabic", "Segoe UI", Tahoma, sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, "Courier New", monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15181c; --surface: #1d2126; --fg: #e8e6e1; --muted: #a2a8b0; --line: #2d333b;
+    --accent: #7fb3e6; --accent-soft: #1d2d3f; --gold: #d9a85a; --ok: #6ccf93; --warn: #e8905a;
+    --code-bg: #23282e; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15181c; --surface: #1d2126; --fg: #e8e6e1; --muted: #a2a8b0; --line: #2d333b;
+  --accent: #7fb3e6; --accent-soft: #1d2d3f; --gold: #d9a85a; --ok: #6ccf93; --warn: #e8905a;
+  --code-bg: #23282e; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 17px; line-height: 1.6;
+  padding-block: 0 4rem; padding-inline: 16px;
+}
+.topbar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; justify-content: space-between;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+  margin-inline: -16px; padding: 0.6rem 16px;
+}
+.topbar .crumbs { font-size: 0.9rem; color: var(--muted); }
+.topbar .crumbs a { color: var(--accent); text-decoration: none; }
+.lang-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.lang-toggle button {
+  font: inherit; font-size: 0.85rem; padding: 0.3rem 0.9rem; border: 0; background: transparent; color: var(--muted); cursor: pointer;
+}
+.lang-toggle button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.lang-toggle button:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+
+main { max-width: 74ch; margin: 0 auto; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 600; line-height: 1.2; text-wrap: balance; }
+h1 { font-size: 2.1rem; margin: 2rem 0 0.5rem; }
+h2 { font-size: 1.55rem; margin: 2.6rem 0 0.6rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+h3 { font-size: 1.15rem; margin: 1.6rem 0 0.4rem; }
+.eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.75rem; color: var(--accent); font-weight: 600; }
+.lede { font-size: 1.1rem; color: var(--muted); }
+a { color: var(--accent); }
+
+/* bilingual blocks */
+.en, .ar { margin: 0 0 1rem; }
+.ar { font-family: var(--font-arabic); direction: rtl; text-align: right; font-size: 1.05em; line-height: 1.9; }
+.ar code, .ar .kw { direction: ltr; unicode-bidi: embed; font-size: 0.9em; }
+.ar h3, .ar strong { color: var(--gold); }
+body[data-lang="en"] .ar { display: none; }
+body[data-lang="ar"] .en { display: none; }
+/* Both: paragraphs are written in EN/AR pairs; on wide screens they sit side by side, row by row */
+body[data-lang="both"] main { max-width: 128ch; }
+body[data-lang="both"] div.ar { border-inline-start: 3px solid var(--gold); padding-inline-start: 0.8rem; }
+@media (min-width: 980px) {
+  body[data-lang="both"] .pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.6rem; align-items: start; }
+  body[data-lang="both"] .pair > div.ar { border-inline-start: 0; border-inline-end: 3px solid var(--gold); padding-inline-start: 0; padding-inline-end: 0.8rem; }
+}
+.pair > .en, .pair > .ar { min-width: 0; }
+/* bilingual headings: <h2><span class="en">..</span><span class="ar">..</span></h2> */
+h1 .ar, h2 .ar, h3 .ar { display: block; margin: 0.15rem 0 0; font-family: var(--font-arabic); font-weight: 700; }
+body[data-lang="both"] h1 .ar, body[data-lang="both"] h2 .ar, body[data-lang="both"] h3 .ar { font-size: 0.78em; color: var(--gold); }
+body[data-lang="en"] h1 .ar, body[data-lang="en"] h2 .ar, body[data-lang="en"] h3 .ar { display: none; }
+/* bilingual tables: one row per idea, EN and AR cells side by side */
+td.ar, th.ar { font-family: var(--font-arabic); direction: rtl; text-align: right; }
+
+code, pre { font-family: var(--font-mono); font-size: 0.86em; }
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 4px; }
+pre { background: var(--code-bg); padding: 0.9rem 1rem; border-radius: 8px; overflow-x: auto; line-height: 1.5; direction: ltr; text-align: left; }
+pre code { background: none; padding: 0; }
+
+table { border-collapse: collapse; width: 100%; margin: 0.8rem 0 1.2rem; font-size: 0.93rem; }
+th, td { border: 1px solid var(--line); padding: 0.45rem 0.6rem; vertical-align: top; text-align: start; }
+th { background: var(--accent-soft); font-weight: 600; }
+.tablewrap { overflow-x: auto; }
+.ar table { direction: rtl; }
+
+.callout { border: 1px solid var(--line); border-inline-start: 4px solid var(--accent); background: var(--surface); padding: 0.8rem 1rem; border-radius: 6px; margin: 1rem 0; }
+.callout.quote { border-inline-start-color: var(--gold); font-style: italic; }
+.callout.warn { border-inline-start-color: var(--warn); }
+.decision { display: grid; grid-template-columns: 1fr; gap: 0.6rem; margin: 1rem 0; }
+.decision .pick, .decision .skip { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 0.7rem 0.9rem; }
+.decision .pick { border-inline-start: 4px solid var(--ok); }
+.decision .skip { border-inline-start: 4px solid var(--warn); }
+.decision .tag { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+@media (min-width: 720px) { .decision.two { grid-template-columns: 1fr 1fr; } }
+
+nav.toc { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 0.8rem 1.2rem; margin: 1.2rem 0; }
+nav.toc ol { margin: 0.3rem 0 0; padding-inline-start: 1.2rem; columns: 1; }
+@media (min-width: 720px) { nav.toc ol { columns: 2; } }
+nav.toc li { margin: 0.15rem 0; }
+.file { font-family: var(--font-mono); font-size: 0.85em; color: var(--accent); }
+.pager { display: flex; justify-content: space-between; gap: 1rem; margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line); flex-wrap: wrap; }
+figure { margin: 1rem 0; }
+figure svg { max-width: 100%; height: auto; }
+figcaption { font-size: 0.85rem; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { .lang-toggle button { transition: background 0.15s; } }
+
+/* pipeline flow: boxes with arrows, wraps on phones */
+.flow { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 1rem 0; }
+.flow .step { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 0.45rem 0.7rem; font-size: 0.88rem; }
+.flow .step b { display: block; color: var(--accent); }
+.flow .step.jev { border-color: var(--gold); }
+.flow .step.jev b { color: var(--gold); }
+.flow .arrow { color: var(--muted); }
+.legend { font-size: 0.85rem; color: var(--muted); }
+.term { font-weight: 600; color: var(--accent); }
+dl.glossary { display: grid; grid-template-columns: minmax(0, 14rem) minmax(0, 1fr); gap: 0.4rem 1rem; }
+dl.glossary dt { font-weight: 600; }
+dl.glossary dd { margin: 0; }
+@media (max-width: 640px) { dl.glossary { grid-template-columns: 1fr; } dl.glossary dd { margin-bottom: 0.6rem; } }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0.8rem; margin: 1rem 0; }
+.cards a.card { display: block; text-decoration: none; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 0.9rem 1rem; }
+.cards a.card:hover, .cards a.card:focus-visible { border-color: var(--accent); }
+.cards .card .k { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--accent); }
+.cards .card .t { font-family: var(--font-display); font-size: 1.1rem; margin: 0.2rem 0; }
+.cards .card .ar { font-size: 0.95rem; }
+
+/* Arabic inside code spans: keep letters joined (monospace fonts break Arabic shaping) */
+code.arw { font-family: var(--font-arabic); direction: rtl; unicode-bidi: isolate; font-size: 0.95em; }

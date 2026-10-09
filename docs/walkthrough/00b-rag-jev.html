@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG and JEV · legal-rag guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Fraunces:opsz,wght@9..144,600&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lang="both">
+<header class="topbar">
+  <div class="crumbs"><a href="index.html">legal-rag guide</a> / Concepts 2 · RAG and JEV</div>
+  <div class="lang-toggle" role="group" aria-label="Language">
+    <button type="button" data-lang="en">EN</button>
+    <button type="button" data-lang="ar">عربي</button>
+    <button type="button" data-lang="both">Both · الاتنين</button>
+  </div>
+</header>
+<main>
+<p class="eyebrow">Concepts 2 of 4</p>
+<h1><span class="en">RAG and JEV: how a question becomes a cited answer</span><span class="ar">الـ RAG وJEV: السؤال بيتحول لإجابة بالمصدر إزاي</span></h1>
+
+<nav class="toc" aria-label="On this page">
+  <strong>On this page · في الصفحة دي</strong>
+  <ol>
+    <li><a href="#llm">LLM basics: tokens and embeddings</a></li>
+    <li><a href="#rag">What RAG is, and why not fine-tuning</a></li>
+    <li><a href="#corpus">The corpus: PDF to structured records</a></li>
+    <li><a href="#chunking">Chunking</a></li>
+    <li><a href="#normalize">Arabic normalization</a></li>
+    <li><a href="#embeddings">Choosing the embedding model</a></li>
+    <li><a href="#vectordb">The vector database</a></li>
+    <li><a href="#hybrid">Hybrid search</a></li>
+    <li><a href="#rerank">Reranking</a></li>
+    <li><a href="#jev">JEV-RAG: decisions by Jev</a></li>
+    <li><a href="#generate">Generation and the prompt</a></li>
+    <li><a href="#vllm">Serving our own LLM with vLLM</a></li>
+    <li><a href="#guardrails">Guardrails and rate limits</a></li>
+    <li><a href="#cache">Semantic cache</a></li>
+  </ol>
+</nav>
+
+<!-- 1 -->
+<h2 id="llm"><span class="en">1. LLM basics: tokens, context and embeddings</span><span class="ar">1. أساسيات الـ LLM: الـ tokens والـ context والـ embeddings</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>An LLM reads and writes <strong>tokens</strong>: pieces of words. "contract" may be one token; an Arabic word with prefixes like <code class="arw">والمتعاقدين</code> is often several. You pay per token and every model has a <strong>context window</strong>: the maximum tokens it can read at once (question + retrieved text + answer).</p>
+    <p>A <strong>token ID</strong> is just a number in a vocabulary. An <strong>embedding</strong> is different: a vector of hundreds of numbers that represents <em>meaning</em>. Two sentences with the same meaning get vectors pointing in a similar direction, even with different words. "Token ID مش هو الـ Embedding."</p>
+    <p>LLMs <strong>hallucinate</strong>: they produce fluent text whether or not they know the answer. In law that is dangerous. Retrieval plus citations is our main defence.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الـ LLM بيقرا ويكتب <strong>tokens</strong>: حتت من الكلمات. "contract" ممكن تبقى token واحد؛ لكن كلمة عربي بالسوابق زي <code class="arw">والمتعاقدين</code> غالبًا كذا token. بتدفع على كل token، وكل موديل ليه <strong>context window</strong>: أقصى عدد tokens يقدر يقراه مرة واحدة (السؤال + النصوص اللي رجعناها + الإجابة).</p>
+    <p>الـ <strong>token ID</strong> مجرد رقم في قاموس. لكن الـ <strong>embedding</strong> حاجة تانية: vector فيه مئات الأرقام بيمثل <em>المعنى</em>. جملتين ليهم نفس المعنى بياخدوا vectors في نفس الاتجاه تقريبًا حتى لو الكلمات مختلفة. "الـ Token ID مش هو الـ Embedding."</p>
+    <p>الـ LLMs بـ <strong>تهلوس</strong>: بتطلع كلام سلس سواء عارفة الإجابة أو لأ. وفي القانون ده خطر. الـ retrieval مع ذكر المصدر هو دفاعنا الأساسي.</p>
+  </div>
+</div>
+
+<!-- 2 -->
+<h2 id="rag"><span class="en">2. What RAG is, and why not fine-tuning</span><span class="ar">2. يعني إيه RAG، وليه مش fine-tuning</span></h2>
+<div class="pair">
+  <div class="en">
+    <p><strong>Retrieval-Augmented Generation</strong> = an open-book exam. Before answering, we look up the relevant pages (articles) and give them to the LLM with the rule "answer only from these". Two halves:</p>
+    <ul>
+      <li><strong>Offline (indexing):</strong> extract → clean → chunk → embed → store in a vector database.</li>
+      <li><strong>Online (per question):</strong> embed the question → retrieve candidates → rerank → keep the best few → generate an answer with citations.</li>
+    </ul>
+    <p>The instructor's rule for agents applies here too: "the least context possible, but the right context, not the biggest context." Five correct articles beat twenty half-relevant ones: cheaper, faster, and the model is less distracted.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الـ <strong>Retrieval-Augmented Generation</strong> زي امتحان open book. قبل ما نجاوب، بنفتح على الصفحات (المواد) اللي تخص السؤال وبنديها للـ LLM ومعاها قاعدة "جاوب من دول بس". وليه نصين:</p>
+    <ul>
+      <li><strong>أوفلاين (الفهرسة):</strong> نطلّع النص ← ننضفه ← نقسّمه ← نعمل embedding ← نخزّنه في vector database.</li>
+      <li><strong>أونلاين (مع كل سؤال):</strong> embedding للسؤال ← نجيب مرشحين ← نرتبهم ← ناخد أحسن كام واحد ← نكتب إجابة بالمصادر.</li>
+    </ul>
+    <p>قاعدة المهندسة في الـ agents بتنطبق هنا كمان: "أقل context ممكن، بس يكون هو الصح، مش أكبر context." خمس مواد صح أحسن من عشرين نص نص: أرخص، وأسرع، والموديل مبيتشتتش.</p>
+  </div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Option</th><th>Verdict</th><th class="en">Why</th><th class="ar">ليه</th></tr></thead>
+  <tbody>
+    <tr><td><strong>RAG</strong></td><td>chosen</td><td class="en">Answers point to article numbers a lawyer can check; updating the law means re-indexing, not retraining; works with any LLM.</td><td class="ar">الإجابات بتشاور على أرقام مواد المحامي يقدر يراجعها؛ تحديث القانون = re-index مش إعادة تدريب؛ وبيشتغل مع أي LLM.</td></tr>
+    <tr><td>Fine-tune an LLM on the code</td><td>rejected</td><td class="en">Knowledge baked into weights cannot be cited, is expensive to update, and still hallucinates.</td><td class="ar">المعرفة اللي جوه الأوزان مينفعش نستشهد بيها، وتحديثها غالي، وبرضه بيهلوس.</td></tr>
+    <tr><td>Put the whole code in the prompt</td><td>rejected</td><td class="en">About 300K tokens per question: too slow and too costly, and quality drops with very long context.</td><td class="ar">حوالي 300 ألف token مع كل سؤال: بطيء وغالي جدًا، والجودة بتقل مع الـ context الطويل أوي.</td></tr>
+  </tbody>
+</table></div>
+
+<!-- 3 -->
+<h2 id="corpus"><span class="en">3. The corpus: from PDF to structured records</span><span class="ar">3. الداتا: من PDF لسجلات منظمة</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>The handbook is clear: "This PDF is not your corpus. It is your raw input." Raw page text cannot cite an article. So our first deliverable converts the PDF into one JSON record per article:</p>
+    <pre><code>{"article_number": 147, "book": "...", "chapter": "...", "section": "...",
+ "text_ar": "العقد شريعة المتعاقدين ...", "text_en": "The contract makes the law of the parties ...",
+ "is_repealed": false, "source_page": 34, "citation": "Egyptian Civil Code, Article 147"}</code></pre>
+    <p>What we found when inspecting the PDF (170 pages, 1,149 articles, about 300K tokens):</p>
+    <ul>
+      <li>Three extractors behave differently. <strong>pypdf</strong> keeps Arabic word order and the lam-alef ligature (<code class="arw">لا</code>) correct; PyMuPDF breaks lam-alef; pdfplumber reverses Arabic.</li>
+      <li>Multi-digit Arabic-Indic numbers come out <strong>reversed</strong> (<code class="arw">٨٢</code> for 28). So we take article numbers from the English <code>Article N</code> lines, which are reliable.</li>
+      <li>Articles 55–80 and 389–417 are <strong>repealed</strong>. We keep them as records with <code>is_repealed=true</code>: "that article no longer exists" is a correct answer, and a silent gap invites hallucination.</li>
+      <li>Article 452 has no English text; paragraph markers come out as mirrored brackets <code class="arw">)١ (</code>.</li>
+    </ul>
+    <p><strong>Validate before you embed.</strong> Tests check that numbers are contiguous apart from known gaps, no Arabic text is empty, no record is suspiciously long. "A silent parsing bug becomes a hallucination three steps later, and by then you will blame the model."</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الهاندبوك واضح: "الـ PDF ده مش الداتا بتاعتك. ده المادة الخام." النص الخام بتاع الصفحات مينفعش يستشهد بمادة. فأول حاجة بنسلّمها إننا نحوّل الـ PDF لسجل JSON لكل مادة (زي المثال).</p>
+    <p>اللي لقيناه لما فحصنا الـ PDF (170 صفحة، 1,149 مادة، حوالي 300 ألف token):</p>
+    <ul>
+      <li>تلات مكتبات استخراج بتتصرف مختلف. <strong>pypdf</strong> بيحافظ على ترتيب الكلام العربي وعلى حرف "لا" سليم؛ PyMuPDF بيكسر "لا"؛ وpdfplumber بيقلب العربي.</li>
+      <li>الأرقام العربي اللي أكتر من خانة بتطلع <strong>مقلوبة</strong> (<code class="arw">٨٢</code> بدل 28). عشان كده بناخد رقم المادة من سطور <code>Article N</code> الإنجليزي لأنها مظبوطة.</li>
+      <li>المواد من 55 لـ 80 ومن 389 لـ 417 <strong>ملغية</strong>. بنسيبهم كسجلات وعليهم <code>is_repealed=true</code>: لأن "المادة دي اتلغت" إجابة صح، والفجوة الصامتة بتفتح باب للهلوسة.</li>
+      <li>المادة 452 ملهاش ترجمة إنجليزي؛ وعلامات الفقرات بتطلع أقواس مقلوبة <code class="arw">)١ (</code>.</li>
+    </ul>
+    <p><strong>اتأكد قبل ما تعمل embedding.</strong> الـ tests بتشيك إن الأرقام متتالية ماعدا الفجوات المعروفة، ومفيش نص عربي فاضي، ومفيش سجل طويل بشكل مريب. "bug صغير في الـ parsing بيتحول لهلوسة بعد تلات خطوات، ووقتها هتلوم الموديل."</p>
+  </div>
+</div>
+
+<!-- 4 -->
+<h2 id="chunking"><span class="en">4. Chunking: one article per chunk</span><span class="ar">4. التقسيم: كل مادة chunk لوحدها</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>A <strong>chunk</strong> is the unit we embed and retrieve. Too big and it carries noise; too small and it loses meaning. A legal article is a self-contained unit with a natural citation, so <strong>one article = one chunk</strong>. Articles are short (about 180–270 tokens with Arabic and English together). An unusually long article is split by its numbered paragraphs, and every piece keeps the article number.</p>
+    <p>Each article is indexed twice, once as Arabic text and once as English, sharing the same metadata. An Arabic question can then match Arabic text directly, and the bilingual corpus gives us a free test: the same question in both languages should retrieve the same article.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الـ <strong>chunk</strong> هو الوحدة اللي بنعملها embedding ونرجّعها. لو كبيرة فيها دوشة؛ ولو صغيرة المعنى بيضيع. المادة القانونية وحدة كاملة لوحدها وليها استشهاد طبيعي، فـ <strong>مادة واحدة = chunk واحد</strong>. المواد قصيرة (حوالي 180–270 token عربي وإنجليزي مع بعض). ولو مادة طويلة بزيادة بنقسمها على فقراتها المرقمة، وكل حتة بتشيل رقم المادة.</p>
+    <p>كل مادة بتتخزن مرتين: مرة بالنص العربي ومرة بالإنجليزي، وبنفس الـ metadata. كده السؤال العربي يلاقي النص العربي مباشرة، والداتا ثنائية اللغة بتدينا اختبار ببلاش: نفس السؤال باللغتين المفروض يرجّع نفس المادة.</p>
+  </div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Strategy</th><th>Verdict</th><th class="en">Why</th><th class="ar">ليه</th></tr></thead>
+  <tbody>
+    <tr><td><strong>By article (+ paragraph split for long ones)</strong></td><td>chosen</td><td class="en">Keeps the citation unit intact; required by the handbook.</td><td class="ar">بيحافظ على وحدة الاستشهاد؛ والهاندبوك طالبه.</td></tr>
+    <tr><td>Fixed 512-token windows</td><td>rejected</td><td class="en">Cuts provisions mid-sentence and mixes two articles in one chunk, so citations break.</td><td class="ar">بيقطع النص في نص الجملة ويخلط مادتين في chunk واحد، فالاستشهاد يبوظ.</td></tr>
+    <tr><td>Semantic chunking</td><td>rejected</td><td class="en">Slowest and scored worst on Arabic in the study (66.9 vs 74.8 for sentence-aware).</td><td class="ar">الأبطأ، وجاب أوحش نتيجة على العربي في الدراسة (66.9 قصاد 74.8 للتقسيم بالجمل).</td></tr>
+  </tbody>
+</table></div>
+<div class="pair">
+  <div class="en"><p class="legend">Study: <em>Optimizing RAG Pipelines for Arabic</em> (arXiv 2506.06339), six Arabic datasets, RAGAS scores. Chunking is still an experiment we log in MLflow (article vs paragraph split) and let the numbers decide.</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p class="legend">الدراسة: <em>Optimizing RAG Pipelines for Arabic</em> على ست مجموعات بيانات عربي بدرجات RAGAS. ورغم كده التقسيم تجربة بنسجلها في MLflow (مادة كاملة قصاد تقسيم بالفقرات) والأرقام هي اللي تقرر.</p></div>
+</div>
+
+<!-- 5 -->
+<h2 id="normalize"><span class="en">5. Arabic normalization</span><span class="ar">5. توحيد شكل الحروف العربي</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>The same Arabic word can be written several ways. Without normalization, keyword search treats them as different words. We normalize a <em>search copy</em> of the text and keep the original for display and citation:</p>
+    <ul>
+      <li>alef forms <code class="arw">أ إ آ</code> → <code class="arw">ا</code></li>
+      <li>alef maqsura <code class="arw">ى</code> → <code class="arw">ي</code> (the code writes <code class="arw">فى</code>, users type <code class="arw">في</code>)</li>
+      <li>taa marbuta <code class="arw">ة</code> → <code class="arw">ه</code>, tatweel <code class="arw">ـ</code> and diacritics removed</li>
+      <li>Arabic-Indic digits <code class="arw">٠–٩</code> → <code>0–9</code></li>
+    </ul>
+    <p>The rules have a version (<code>normalization_version</code>) stored with the index. Changing them means re-indexing; the API checks the version at startup.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>نفس الكلمة العربي ممكن تتكتب بأكتر من شكل. من غير توحيد، البحث بالكلمات هيعتبرهم كلمات مختلفة. بنوحّد <em>نسخة البحث</em> من النص، وبنسيب الأصلي للعرض والاستشهاد:</p>
+    <ul>
+      <li>أشكال الألف <code class="arw">أ إ آ</code> ← <code class="arw">ا</code></li>
+      <li>الألف المقصورة <code class="arw">ى</code> ← <code class="arw">ي</code> (القانون كاتب <code class="arw">فى</code> والناس بتكتب <code class="arw">في</code>)</li>
+      <li>التاء المربوطة <code class="arw">ة</code> ← <code class="arw">ه</code>، وبنشيل التطويل <code class="arw">ـ</code> والتشكيل</li>
+      <li>الأرقام الهندي <code class="arw">٠–٩</code> ← <code>0–9</code></li>
+    </ul>
+    <p>القواعد دي ليها version (<code>normalization_version</code>) متخزنة مع الـ index. لو غيرناها لازم re-index، والـ API بيشيك على الـ version وهو بيقوم.</p>
+  </div>
+</div>
+
+<!-- 6 -->
+<h2 id="embeddings"><span class="en">6. Choosing the embedding model</span><span class="ar">6. اختيار موديل الـ embedding</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>The embedding model decides what "similar" means, so it sets the ceiling of retrieval quality. Our choice: <strong>BAAI/bge-m3</strong>. It handles 100+ languages, gives a dense vector (meaning) <em>and</em> a sparse vector (weighted words) from one pass, reads up to 8,192 tokens, and is MIT-licensed.</p>
+    <p>It runs on the <strong>CPU</strong>. Indexing about 2,300 texts once takes minutes; one question takes a fraction of a second. The 4 GB GPU is reserved for vLLM, and both would not fit together.</p>
+    <p>An incident the instructor shared: after a nightly rebuild with a new embedding model, the app kept encoding questions with the old one and 18% of Arabic answers became "not enough information", with no error anywhere. Our guard: the index stores its embedding model name and normalization version, and the API <strong>refuses to start</strong> on a mismatch.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>موديل الـ embedding هو اللي بيحدد يعني إيه "شبه بعض"، فهو اللي بيحط السقف لجودة الـ retrieval. اخترنا <strong>BAAI/bge-m3</strong>: بيدعم أكتر من 100 لغة، وبيطلع vector كثيف (المعنى) <em>و</em>vector متفرّق (كلمات بأوزان) في مرة واحدة، وبيقرا لحد 8,192 token، ورخصته MIT.</p>
+    <p>شغال على الـ <strong>CPU</strong>. فهرسة حوالي 2,300 نص مرة واحدة بتاخد دقايق؛ والسؤال الواحد جزء من ثانية. كارت الشاشة (4 جيجا) محجوز لـ vLLM، والاتنين مش هيدخلوا مع بعض.</p>
+    <p>حادثة حكتها المهندسة: بعد rebuild بالليل بموديل embedding جديد، التطبيق فضل يعمل encoding للأسئلة بالموديل القديم، و18% من الإجابات العربي بقت "مفيش معلومات كفاية"، ومن غير أي error. الحماية عندنا: الـ index بيخزن اسم موديل الـ embedding ونسخة التوحيد، والـ API <strong>يرفض يقوم</strong> لو مش متطابقين.</p>
+  </div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Model</th><th>Arabic RAG score*</th><th>Verdict</th><th class="en">Why</th><th class="ar">ليه</th></tr></thead>
+  <tbody>
+    <tr><td><strong>bge-m3</strong></td><td>70.99</td><td>chosen</td><td class="en">Best in the study; dense + sparse in one model; open license; runs locally.</td><td class="ar">الأحسن في الدراسة؛ dense وsparse في موديل واحد؛ رخصة مفتوحة؛ بيشتغل عندنا.</td></tr>
+    <tr><td>multilingual-e5-large</td><td>70.31</td><td>ablation</td><td class="en">Close second; we compare it in MLflow to confirm on our corpus.</td><td class="ar">تاني قريب جدًا؛ هنقارنه في MLflow عشان نتأكد على الداتا بتاعتنا.</td></tr>
+    <tr><td>Arabic-only models (Matryoshka, mpnet)</td><td>66.46 / 45.92</td><td>rejected</td><td class="en">Lower scores; weaker on the English half of the corpus.</td><td class="ar">درجاتهم أقل؛ وأضعف في النص الإنجليزي من الداتا.</td></tr>
+    <tr><td>Hosted embedding API</td><td>—</td><td>rejected</td><td class="en">Every document and question leaves our machine; per-call cost; vendor can change the model under the same name.</td><td class="ar">كل مستند وكل سؤال بيخرج بره جهازنا؛ تكلفة مع كل نداء؛ والـ vendor ممكن يغيّر الموديل بنفس الاسم.</td></tr>
+  </tbody>
+</table></div>
+<div class="pair"><div class="en"><p class="legend">* Overall RAGAS-based score averaged over six Arabic datasets, arXiv 2506.06339.</p></div><div class="ar" lang="ar" dir="rtl"><p class="legend">* متوسط درجة RAGAS على ست مجموعات بيانات عربي.</p></div></div>
+
+<!-- 7 -->
+<h2 id="vectordb"><span class="en">7. The vector database</span><span class="ar">7. الـ vector database</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>A vector database stores vectors plus a <strong>payload</strong> (article number, book, chapter, is_repealed) and finds the nearest vectors to a query quickly. Payload <strong>filters</strong> let us search only Book 2, or exclude repealed articles.</p>
+    <p><strong>Aliases</strong> make re-indexing safe. We build a new collection (<code>articles_v&lt;hash&gt;</code>), evaluate it, then move the alias <code>articles</code> to it in one atomic step. Rolling back is moving the alias back. This is the "docs_v3 alias swap" from Session 2.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الـ vector database بتخزن الـ vectors ومعاها <strong>payload</strong> (رقم المادة، الكتاب، الباب، ملغية ولا لأ) وبتلاقي أقرب vectors للسؤال بسرعة. والـ <strong>filters</strong> على الـ payload بتخلينا ندوّر في الكتاب التاني بس، أو نستبعد المواد الملغية.</p>
+    <p>الـ <strong>aliases</strong> بتخلي الـ re-index آمن. بنبني collection جديدة (<code>articles_v&lt;hash&gt;</code>)، نقيّمها، وبعدين ننقل الاسم المستعار <code>articles</code> عليها في خطوة واحدة. والـ rollback إننا نرجّع الـ alias مكانه. ده "الـ alias swap" اللي في السيشن التانية.</p>
+  </div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Option</th><th>Verdict</th><th class="en">Why</th><th class="ar">ليه</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Qdrant</strong></td><td>chosen</td><td class="en">Native dense + sparse hybrid search, payload filters, aliases and snapshots, one Docker container, Prometheus metrics built in.</td><td class="ar">hybrid search جاهز، وfilters، وaliases وsnapshots، وcontainer واحد، وmetrics لـ Prometheus جاهزة.</td></tr>
+    <tr><td>pgvector</td><td>rejected</td><td class="en">Great if your rows already live in Postgres; hybrid search and alias swaps would be hand-built SQL.</td><td class="ar">ممتاز لو الداتا أصلاً في Postgres؛ بس الـ hybrid والـ alias swap هنكتبهم SQL بإيدينا.</td></tr>
+    <tr><td>Chroma</td><td>rejected</td><td class="en">Simplest start, weaker filtering and operations story.</td><td class="ar">أسهل بداية، بس الـ filters والتشغيل أضعف.</td></tr>
+    <tr><td>FAISS</td><td>rejected</td><td class="en">A library, not a server: no payload filters, no API, no snapshots.</td><td class="ar">مكتبة مش سيرفر: مفيش filters ولا API ولا snapshots.</td></tr>
+  </tbody>
+</table></div>
+
+<!-- 8 -->
+<h2 id="hybrid"><span class="en">8. Hybrid search</span><span class="ar">8. البحث الهجين</span></h2>
+<div class="pair">
+  <div class="en">
+    <p><strong>Dense</strong> search matches meaning ("how long before a debt expires" finds the prescription articles). <strong>Sparse</strong> search matches exact terms, which matters in law: "Article 147", "الشفعة", "amodiation". We run both and merge with <strong>Reciprocal Rank Fusion</strong>:</p>
+    <pre><code>score(doc) = Σ over result lists  1 / (60 + rank_in_that_list)</code></pre>
+    <p>RRF only looks at ranks, so we never have to compare a cosine score with a keyword score. Documents ranked well by both lists rise to the top.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>البحث الـ <strong>dense</strong> بيطابق المعنى ("الدين بيسقط بعد قد إيه" يلاقي مواد التقادم). والبحث الـ <strong>sparse</strong> بيطابق الكلمات بالظبط، وده مهم في القانون: "المادة 147"، "الشفعة"، "amodiation". بنشغّل الاتنين وندمجهم بـ <strong>Reciprocal Rank Fusion</strong> (المعادلة فوق).</p>
+    <p>الـ RRF بيبص على الترتيب بس، فعمرنا ما هنضطر نقارن درجة cosine بدرجة كلمات. والمستند اللي الاتنين حاطينه فوق بيطلع الأول.</p>
+  </div>
+</div>
+
+<!-- 9 -->
+<h2 id="rerank"><span class="en">9. Reranking</span><span class="ar">9. إعادة الترتيب (Reranking)</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Retrieval is fast because it compares precomputed vectors (a <em>bi-encoder</em>). It is also rough. A <strong>reranker</strong> reads the question and each candidate <em>together</em> and scores relevance more carefully. We retrieve 12 candidates, rerank, and keep the best 5.</p>
+    <p>Three ways to rerank: a <strong>cross-encoder</strong> model (bge-reranker-v2-m3, local, about a second on CPU for 12 pairs), an <strong>LLM</strong> asked to score each chunk (accurate but slow and costly), or <strong>Jev</strong> scoring all 12 in one parallel request (next section). In the Arabic study, adding bge-reranker-v2-m3 raised the average score from 70.99 to 74.15 and faithfulness most on hard datasets.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الـ retrieval سريع لأنه بيقارن vectors محسوبة من قبل (<em>bi-encoder</em>). بس هو تقريبي. الـ <strong>reranker</strong> بيقرا السؤال وكل مرشح <em>مع بعض</em> ويدي درجة صلة أدق. بنجيب 12 مرشح، نرتبهم، وناخد أحسن 5.</p>
+    <p>فيه تلات طرق: موديل <strong>cross-encoder</strong> (bge-reranker-v2-m3، محلي، حوالي ثانية على الـ CPU لـ 12 زوج)، أو <strong>LLM</strong> نطلب منه يدي درجة لكل chunk (دقيق بس بطيء وغالي)، أو <strong>Jev</strong> يدي درجة للـ 12 في طلب واحد بالتوازي (الجزء الجاي). وفي الدراسة العربي، إضافة bge-reranker-v2-m3 رفعت المتوسط من 70.99 لـ 74.15، وأكتر حاجة اتحسنت الـ faithfulness في الداتا الصعبة.</p>
+  </div>
+</div>
+
+<!-- 10 -->
+<h2 id="jev"><span class="en">10. JEV-RAG: let a decision model do the deciding</span><span class="ar">10. JEV-RAG: خلّي موديل القرارات ياخد القرارات</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Look at a RAG pipeline closely and most steps are not writing, they are <strong>deciding</strong>: is this question in scope? which part of the law? is this article relevant? can these articles answer the question? is this sentence supported? Many systems ask a big LLM each of these, paying for generated text they then parse.</p>
+    <p><strong>Jev</strong> (by TypeSafe AI) is a model built only for decisions. You send a <em>state</em> (text) and typed questions; it returns probabilities, never free text:</p>
+    <ul>
+      <li><code>noul</code>: yes/no → a probability from 0 to 1;</li>
+      <li><code>choice</code>: pick one of up to 255 options → the choice plus a probability for each;</li>
+      <li><code>score</code>: an ordered scale of 2–10 levels → a probability-weighted score.</li>
+    </ul>
+    <p>It answers in about 70–500 ms, costs $0.042 per million input tokens (output is free), and can't return a shape your code doesn't expect. That is the <strong>JEV-RAG</strong> pattern: "Jev does classification, the LLM does generation."</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>لو بصيت على pipeline الـ RAG كويس، هتلاقي أغلب الخطوات مش كتابة، دي <strong>قرارات</strong>: السؤال ده في نطاقنا؟ يخص أنهي جزء في القانون؟ المادة دي ليها علاقة؟ المواد دي تكفي للإجابة؟ الجملة دي ليها دليل؟ سيستمات كتير بتسأل LLM كبير في كل خطوة من دول، وبتدفع تمن كلام مكتوب وبعدين تحلله.</p>
+    <p><strong>Jev</strong> (من TypeSafe AI) موديل معمول للقرارات بس. بتبعتله <em>state</em> (نص) وأسئلة محددة النوع؛ وهو بيرجّع احتمالات، عمره ما بيكتب كلام حر:</p>
+    <ul>
+      <li><code>noul</code>: آه/لأ ← احتمال من 0 لـ 1؛</li>
+      <li><code>choice</code>: اختار واحد من لحد 255 اختيار ← الاختيار واحتمال كل واحد؛</li>
+      <li><code>score</code>: مقياس مترتب من 2 لـ 10 مستويات ← درجة موزونة بالاحتمالات.</li>
+    </ul>
+    <p>بيرد في حوالي 70–500 ملي ثانية، وتكلفته 0.042 دولار لكل مليون token داخل (والطالع ببلاش)، ومستحيل يرجّع شكل الكود بتاعك مش مستنيه. ده نمط <strong>JEV-RAG</strong>: "Jev بيصنّف، والـ LLM بيكتب."</p>
+  </div>
+</div>
+
+<h3><span class="en">Where Jev sits in our pipeline</span><span class="ar">Jev قاعد فين في الـ pipeline بتاعنا</span></h3>
+<div class="tablewrap"><table>
+  <thead><tr><th>Step</th><th>Type</th><th class="en">Question we ask Jev</th><th class="ar">السؤال اللي بنسأله لـ Jev</th><th class="en">What we do with the answer</th><th class="ar">بنعمل إيه بالإجابة</th></tr></thead>
+  <tbody>
+    <tr><td>Route</td><td>choice</td><td class="en">Which book of the Civil Code does this question belong to, or is it off-topic?</td><td class="ar">السؤال ده يخص أنهي كتاب في القانون المدني، ولا هو بره الموضوع؟</td><td class="en">Off-topic → polite refusal without retrieval. Confident book → payload filter.</td><td class="ar">بره الموضوع ← نعتذر بأدب من غير بحث. كتاب واضح ← filter على الـ payload.</td></tr>
+    <tr><td>Rerank</td><td>score ×12</td><td class="en">How relevant is article N to the question? (irrelevant / tangential / relevant / directly answers)</td><td class="ar">المادة N ليها علاقة بالسؤال قد إيه؟ (ملهاش / من بعيد / ليها / بتجاوب مباشرة)</td><td class="en">Sort, keep the top 5 above a minimum score.</td><td class="ar">نرتب وناخد أحسن 5 فوق حد معين.</td></tr>
+    <tr><td>Gate</td><td>noul</td><td class="en">Can the question be fully answered from these articles alone?</td><td class="ar">ينفع نجاوب السؤال كامل من المواد دي بس؟</td><td class="en">Low → widen the search once, then refuse with the closest articles.</td><td class="ar">لو قليل ← نوسّع البحث مرة، وبعدين نعتذر ونعرض أقرب مواد.</td></tr>
+    <tr><td>Validate</td><td>noul per sentence</td><td class="en">Is this sentence of the answer supported by the articles?</td><td class="ar">الجملة دي من الإجابة ليها دليل في المواد؟</td><td class="en">Supported ratio becomes a live faithfulness score; unsupported sentences are flagged.</td><td class="ar">نسبة الجمل اللي ليها دليل بتبقى درجة faithfulness لحظية؛ والجمل اللي ملهاش بتتعلّم.</td></tr>
+  </tbody>
+</table></div>
+<div class="pair">
+  <div class="en">
+    <p><strong>Thresholds become policy</strong> (all in <code>settings.py</code>): probability above 0.9 → act; 0.6–0.9 → ask the local decider for a second opinion; below 0.6 → refuse or escalate. The probabilities are logged, so every decision is auditable later.</p>
+    <p><strong>Honest risks.</strong> Jev is new (launched September 2026) with vendor benchmarks only; it is hosted, so article text and questions leave the machine; it is English-first ("other languages are handled but not equally well"). Mitigations: we send the <em>English</em> article text in the state, we measure Arabic vs English agreement on our golden set, and a <code>LocalDecider</code> (bge-reranker-v2-m3 + the LLM for yes/no) takes over on any timeout or error, or completely with <code>DECIDER_BACKEND=local</code>. "A badly designed list of choices still produces confident wrong answers", so our criteria are written and versioned like prompts.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p><strong>الحدود بتبقى سياسة</strong> (كلها في <code>settings.py</code>): الاحتمال فوق 0.9 ← ننفذ؛ بين 0.6 و0.9 ← ناخد رأي تاني من الـ decider المحلي؛ تحت 0.6 ← نرفض أو نصعّد. والاحتمالات بتتسجل، فكل قرار نقدر نراجعه بعدين.</p>
+    <p><strong>المخاطر بصراحة.</strong> Jev جديد (نزل سبتمبر 2026) والأرقام من الشركة بس؛ وهو على السحابة، فنص المواد والأسئلة بيخرجوا من الجهاز؛ وهو إنجليزي في الأساس ("اللغات التانية شغالة بس مش بنفس الكفاءة"). الحلول: بنبعت النص <em>الإنجليزي</em> للمادة في الـ state، وبنقيس اتفاق العربي مع الإنجليزي على الأسئلة الذهبية، و<code>LocalDecider</code> (bge-reranker-v2-m3 + الـ LLM لأسئلة آه/لأ) بياخد مكانه مع أي timeout أو error، أو بالكامل لو <code>DECIDER_BACKEND=local</code>. "ليستة اختيارات متصممة وحش برضه بتطلع إجابات غلط وواثقة"، فالمعايير بتاعتنا مكتوبة وليها versions زي الـ prompts.</p>
+  </div>
+</div>
+<pre><code>{"model": "jev-1.13.0",
+ "state": "Question: ما مدة تقادم الالتزام؟\n[Art. 374] (Book 1 / Extinction of obligations)\nAn obligation is prescribed on the expiry of fifteen years ...",
+ "questions": {
+   "rel_374": {"type": "score", "instructions": "How relevant is the article to the question?",
+               "criteria": ["Irrelevant", "Tangential", "Relevant", "Directly answers"]},
+   "can_answer": {"type": "noul", "instructions": "Can the question be fully answered from these articles alone?",
+                  "criteria": {"true": "The articles state the rule asked about", "false": "Same topic but the specific point is missing"}}}}</code></pre>
+<div class="tablewrap"><table>
+  <thead><tr><th>Option</th><th>Verdict</th><th class="en">Why</th><th class="ar">ليه</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Jev decisions + LocalDecider fallback</strong></td><td>chosen</td><td class="en">Cheap, fast, typed and auditable decisions; runs keyless; gives a clean A/B (none vs local vs Jev) measured with RAGAS.</td><td class="ar">قرارات رخيصة وسريعة ومحددة الشكل ونقدر نراجعها؛ والمشروع يشتغل من غير مفتاح؛ ومقارنة A/B نظيفة (من غير / محلي / Jev) بنقيسها بـ RAGAS.</td></tr>
+    <tr><td>One big LLM for every step</td><td>rejected</td><td class="en">Slow and expensive for yes/no questions, and free-text answers must be parsed and can break.</td><td class="ar">بطيء وغالي على أسئلة آه/لأ، والإجابات الحرة لازم تتحلل وممكن تبوظ.</td></tr>
+    <tr><td>Cross-encoder only, no gate</td><td>rejected as default, kept as fallback</td><td class="en">Good ranking but no "can we answer?" decision and no claim check, which is where hallucination is stopped.</td><td class="ar">ترتيب كويس، بس مفيش قرار "نقدر نجاوب؟" ولا فحص للجمل، ودي الأماكن اللي بنوقف فيها الهلوسة.</td></tr>
+  </tbody>
+</table></div>
+
+<!-- 11 -->
+<h2 id="generate"><span class="en">11. Generation and the prompt</span><span class="ar">11. الكتابة والـ prompt</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>The LLM receives the top articles and strict rules:</p>
+    <ol>
+      <li>Answer only from the given articles.</li>
+      <li>Cite every claim as <code>[Art. N]</code>.</li>
+      <li>If the articles do not contain the answer, say so. Never guess.</li>
+      <li>If an article is repealed, say it was repealed.</li>
+      <li>Answer in the language of the question.</li>
+    </ol>
+    <p><strong>Temperature 0</strong> keeps answers as repeatable as possible. Citations are checked after generation: a cited number must be one of the articles we actually passed in.</p>
+    <p>"A different prompt is a different model." The prompt has a version, is logged with every MLflow run and Langfuse trace, and later lives in Langfuse with <code>production</code> and <code>canary</code> labels so a rollback is a label move, not a deploy.</p>
+    <p>All LLM calls use the <strong>OpenAI-compatible API</strong>. OpenRouter (hosted models) and vLLM (our own GPU) both speak it, so switching backends is one setting: <code>LLM_BACKEND=openrouter|vllm</code>.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الـ LLM بياخد أحسن مواد ومعاها قواعد صارمة:</p>
+    <ol>
+      <li>جاوب من المواد اللي معاك بس.</li>
+      <li>اذكر المصدر لكل معلومة بالشكل <code>[Art. N]</code>.</li>
+      <li>لو المواد مفيهاش الإجابة، قول كده. متخمّنش أبدًا.</li>
+      <li>لو المادة ملغية، قول إنها اتلغت.</li>
+      <li>جاوب بنفس لغة السؤال.</li>
+    </ol>
+    <p><strong>Temperature 0</strong> بتخلي الإجابات تتكرر بنفس الشكل قدر الإمكان. وبعد الكتابة بنشيك على المصادر: أي رقم مادة مذكور لازم يكون من المواد اللي إحنا بعتناها فعلاً.</p>
+    <p>"prompt مختلف = موديل مختلف." الـ prompt ليه version، وبيتسجل مع كل run في MLflow وكل trace في Langfuse، وبعدين بيتنقل لـ Langfuse بـ labels زي <code>production</code> و<code>canary</code>، فالـ rollback بيبقى نقل label مش deploy.</p>
+    <p>كل نداءات الـ LLM بتستخدم <strong>API متوافق مع OpenAI</strong>. OpenRouter (موديلات على السحابة) وvLLM (على كارتنا) الاتنين بيتكلموه، فالتبديل setting واحدة: <code>LLM_BACKEND=openrouter|vllm</code>.</p>
+  </div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Option</th><th>Verdict</th><th class="en">Why</th><th class="ar">ليه</th></tr></thead>
+  <tbody>
+    <tr><td><strong>OpenRouter (default)</strong></td><td>chosen</td><td class="en">One key for generation models, the judge model and Jev; large models with good Arabic; pay per use.</td><td class="ar">مفتاح واحد لموديلات الكتابة وموديل التقييم وJev؛ موديلات كبيرة عربيها كويس؛ بتدفع على قد استخدامك.</td></tr>
+    <tr><td><strong>vLLM + Qwen2.5-1.5B-AWQ (switchable)</strong></td><td>chosen as second backend</td><td class="en">Fully offline option, satisfies the handbook's vLLM/AWQ/TTFT items, and teaches serving. Too small to be the default for legal Arabic; we measure the quality gap honestly.</td><td class="ar">اختيار offline بالكامل، وبيغطي بنود الهاندبوك في vLLM وAWQ وTTFT، وبيعلّمنا الـ serving. بس صغير قوي يبقى الافتراضي للعربي القانوني؛ وهنقيس فرق الجودة بأمانة.</td></tr>
+    <tr><td>Larger local model</td><td>rejected</td><td class="en">A 7B model does not fit 4 GB of VRAM with any useful context.</td><td class="ar">موديل 7B مش هيدخل في 4 جيجا VRAM مع context مفيد.</td></tr>
+  </tbody>
+</table></div>
+
+<!-- 12 -->
+<h2 id="vllm"><span class="en">12. Serving our own LLM with vLLM</span><span class="ar">12. نخدّم الـ LLM بتاعنا بـ vLLM</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Generating text is a loop: each new token needs the model to look at all previous tokens. The <strong>KV cache</strong> stores those intermediate results so they are not recomputed. It is the real memory limit of an LLM server.</p>
+    <ul>
+      <li><strong>PagedAttention</strong> stores the KV cache in small pages, like an operating system's virtual memory, so little VRAM is wasted and more requests fit.</li>
+      <li><strong>Continuous batching</strong> adds new requests to the running batch at every step instead of waiting for a whole batch to finish.</li>
+      <li>A plain "FastAPI + transformers" loop has neither, so it serves one request at a time and wastes the GPU.</li>
+    </ul>
+    <p><strong>Quantization</strong> stores weights in fewer bits. <strong>AWQ 4-bit</strong> protects the most important weights (found from activations) and squeezes the rest. Qwen2.5-1.5B in AWQ needs about 1.1 GB for weights; with <code>--gpu-memory-utilization 0.78</code> (Windows reserves some VRAM) the rest of our 4 GB becomes KV cache.</p>
+    <p>What users feel: <strong>TTFT</strong> (time to first token, perceived speed) and <strong>tokens per second</strong> (reading speed). We measure both at 1, 5 and 20 concurrent users.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>كتابة النص عبارة عن loop: كل token جديد محتاج الموديل يبص على كل الـ tokens اللي قبله. الـ <strong>KV cache</strong> بيخزن النتايج الوسطانية دي عشان متتحسبش تاني. وده الحد الحقيقي للذاكرة في أي سيرفر LLM.</p>
+    <ul>
+      <li><strong>PagedAttention</strong> بيخزن الـ KV cache في صفحات صغيرة، زي الـ virtual memory في نظام التشغيل، فالـ VRAM مبيضيعش وطلبات أكتر بتدخل.</li>
+      <li><strong>Continuous batching</strong> بيضيف الطلبات الجديدة للـ batch الشغالة في كل خطوة، بدل ما يستنى الـ batch كلها تخلص.</li>
+      <li>الـ loop البسيط "FastAPI + transformers" مفيهوش الحاجتين دول، فبيخدم طلب واحد في المرة وبيضيّع كارت الشاشة.</li>
+    </ul>
+    <p>الـ <strong>Quantization</strong> إننا نخزن الأوزان بعدد bits أقل. <strong>AWQ 4-bit</strong> بيحمي أهم الأوزان (بيعرفها من الـ activations) ويضغط الباقي. Qwen2.5-1.5B بـ AWQ محتاج حوالي 1.1 جيجا للأوزان؛ ومع <code>--gpu-memory-utilization 0.78</code> (ويندوز بيحجز حتة من الـ VRAM) الباقي من الـ 4 جيجا بيبقى KV cache.</p>
+    <p>اللي المستخدم بيحس بيه: <strong>TTFT</strong> (الوقت لحد أول token، الإحساس بالسرعة) و<strong>tokens في الثانية</strong> (سرعة القراية). هنقيس الاتنين مع 1 و5 و20 مستخدم في نفس الوقت.</p>
+  </div>
+</div>
+
+<!-- 13 -->
+<h2 id="guardrails"><span class="en">13. Guardrails and rate limits</span><span class="ar">13. الـ Guardrails وحدود الطلبات</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>A <strong>guardrail</strong> is a check before or after the model. Each one is also a <em>metric</em> (<code>guardrail_decisions_total{guardrail, decision}</code>) with measured latency and false-positive rate on clean traffic, so we know what it costs.</p>
+    <ul>
+      <li><strong>Input:</strong> PII detection and masking (Arabic names, Egyptian 11-digit mobile numbers <code>01X…</code>, 14-digit national IDs); prompt-injection detection ("ignore previous instructions"); off-topic routing (Jev route step).</li>
+      <li><strong>Indirect injection:</strong> an instruction hidden <em>inside a document</em>. For RAG this is the one that matters (OWASP LLM01). We scan articles at index time and treat retrieved text as data, never as instructions.</li>
+      <li><strong>Output:</strong> groundedness (Jev validate step), citation check, schema check, PII leakage.</li>
+    </ul>
+    <p>Cheap checks run inline and block; expensive checks run asynchronously and only log. Off-the-shelf PII tools often misread Arabic names and Egyptian ID formats, so we test them with real Arabic inputs and report what we find.</p>
+    <p><strong>Rate limiting</strong> protects the token budget: a Redis <strong>token bucket</strong> per API key. When it is empty we return an honest <code>429</code> with <code>Retry-After</code>, so clients can back off; a silent drop turns a limit into an outage. When OpenRouter rate-limits <em>us</em>, we retry with exponential backoff plus jitter, and the dashboard shows "we throttled them" separately from "we got throttled".</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الـ <strong>guardrail</strong> فحص قبل أو بعد الموديل. وكل واحد برضه <em>metric</em> (<code>guardrail_decisions_total{guardrail, decision}</code>) ومعاه الوقت اللي بياخده ونسبة الإنذار الكاذب على ترافيك سليم، عشان نعرف تمنه.</p>
+    <ul>
+      <li><strong>المدخلات:</strong> اكتشاف البيانات الشخصية وإخفاؤها (أسماء عربي، موبايلات مصري 11 رقم <code>01X…</code>، رقم قومي 14 رقم)؛ اكتشاف الـ prompt injection ("تجاهل التعليمات اللي فاتت")؛ والأسئلة اللي بره الموضوع (خطوة الـ route في Jev).</li>
+      <li><strong>الحقن غير المباشر:</strong> تعليمات مستخبية <em>جوه مستند</em>. ودي الأهم في الـ RAG (OWASP LLM01). بنفحص المواد وقت الفهرسة، وبنعامل النص اللي رجع على إنه داتا، عمره ما يبقى أوامر.</li>
+      <li><strong>المخرجات:</strong> الأمانة للمصدر (خطوة validate في Jev)، وفحص المصادر المذكورة، وفحص الشكل، وتسريب بيانات شخصية.</li>
+    </ul>
+    <p>الفحوصات الرخيصة بتشتغل في نفس الطلب وتمنع؛ والغالية بتشتغل في الخلفية وتسجل بس. وأدوات الـ PII الجاهزة كتير بتغلط في الأسامي العربي وشكل الرقم القومي المصري، فبنختبرها بمدخلات عربي حقيقية ونكتب اللي لقيناه.</p>
+    <p><strong>حدود الطلبات</strong> بتحمي ميزانية الـ tokens: <strong>token bucket</strong> في Redis لكل API key. لما يفضى بنرجّع <code>429</code> صريح ومعاه <code>Retry-After</code> عشان الـ client يستنى؛ لكن لو رمينا الطلب في صمت، الحد هيتحول لعطل. ولما OpenRouter يحدّ <em>علينا</em>، بنعيد المحاولة بـ exponential backoff مع jitter، والـ dashboard بيفصل "إحنا وقفناهم" عن "حد وقفنا".</p>
+  </div>
+</div>
+
+<!-- 14 -->
+<h2 id="cache"><span class="en">14. Semantic cache (optional, Phase 7)</span><span class="ar">14. الـ Semantic cache (اختياري، المرحلة 7)</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>Many users ask the same thing in different words. A <strong>semantic cache</strong> stores answers keyed by the question's embedding; a new question with cosine similarity above about 0.95 reuses the stored answer. It saves tokens and latency. The key also includes the index version and prompt version, so a re-index or a prompt change never serves a stale answer. We add it only if the measured hit rate justifies it.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>ناس كتير بتسأل نفس السؤال بكلام مختلف. الـ <strong>semantic cache</strong> بيخزن الإجابات بمفتاح هو الـ embedding بتاع السؤال؛ وأي سؤال جديد التشابه بتاعه فوق 0.95 تقريبًا بياخد الإجابة المتخزنة. بيوفّر tokens ووقت. والمفتاح فيه كمان نسخة الـ index ونسخة الـ prompt، فأي re-index أو تعديل prompt عمره ما يرجّع إجابة قديمة. وهنضيفه بس لو نسبة الـ hits اللي هنقيسها تستاهل.</p>
+  </div>
+</div>
+
+<div class="pager"><a href="00a-foundations.html">← Concepts 1 · Foundations</a><a href="00c-eval-tracking.html">Concepts 3 · Evaluation and tracking →</a></div>
+</main>
+<script src="assets/toggle.js"></script>
+</body>
+</html>

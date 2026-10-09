@@ -11,19 +11,41 @@
 Request / response:
 ```python
 from typesafe import TypeSafeClient
+
 client = TypeSafeClient(api_key=...)
 r = client.evaluate(
     state="<plain text or structured object/array: question + candidate chunks>",
     model="jev-1.13.0",
     questions={
-        "rel_0": {"type": "score", "instructions": "How relevant is item_0 to the query?",
-                   "criteria": ["Irrelevant", "Loosely related", "Same subject, different matter", "Directly answers"]},
-        "can_answer": {"type": "noul", "instructions": "Can the question be fully answered from these items alone?",
-                        "criteria": {"true": "Items directly state the rule/condition", "false": "Same topic but the specific point is missing"}},
-        "route": {"type": "choice", "instructions": "Which book of the code does this question belong to?",
-                   "criteria": {"book_1": "...", "off_topic": "Not about Egyptian civil law"}},
-    })
-r.answers["rel_0"]["score"]; r.answers["can_answer"]["noul"]; r.answers["route"]["choice"]; r.usage
+        "rel_0": {
+            "type": "score",
+            "instructions": "How relevant is item_0 to the query?",
+            "criteria": [
+                "Irrelevant",
+                "Loosely related",
+                "Same subject, different matter",
+                "Directly answers",
+            ],
+        },
+        "can_answer": {
+            "type": "noul",
+            "instructions": "Can the question be fully answered from these items alone?",
+            "criteria": {
+                "true": "Items directly state the rule/condition",
+                "false": "Same topic but the specific point is missing",
+            },
+        },
+        "route": {
+            "type": "choice",
+            "instructions": "Which book of the code does this question belong to?",
+            "criteria": {"book_1": "...", "off_topic": "Not about Egyptian civil law"},
+        },
+    },
+)
+r.answers["rel_0"]["score"]
+r.answers["can_answer"]["noul"]
+r.answers["route"]["choice"]
+r.usage
 ```
 POST `/v1/systemone` body = `{model, state, questions}`; response `{model, answers{id: {...}}, usage{input_tokens, output_tokens}}`.
 

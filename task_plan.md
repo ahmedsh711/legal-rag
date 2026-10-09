@@ -6,7 +6,7 @@ Ship a production-style, fully observable RAG service over the Egyptian Civil Co
 
 ## Next Step
 
-Phase 0: scaffold the package (uv, pyproject, ruff, pre-commit, pytest gate, settings, compose skeleton) and write the concept walkthrough page.
+Phase 0: push branch module-0-bootstrap, open PR #1, wait for green CI, merge. Then start Phase 1 (corpus parser, TDD).
 
 ## Current Phase
 
@@ -19,10 +19,11 @@ Full detail (tasks, acceptance checks, decisions, risks) lives in `docs/PLAN.md`
 ### Phase 0: Bootstrap + concept walkthrough (branch module-0-bootstrap)
 
 - [x] Repo created, corpus + research digests in place, Docker Desktop, gh auth
-- [ ] uv project (py3.12, src layout), ruff, pre-commit, pytest cov gate 80%, settings.py, .env.example
-- [ ] docker/compose.yaml skeleton with profiles core/tracking/llm/monitoring/llm-observability/airflow/serving
-- [ ] CLAUDE.md, README skeleton, planning files
-- [ ] docs/walkthrough/assets + 00-concepts.html (EN/AR toggle) covering all concepts + chosen/rejected tables
+- [x] uv project (py3.12, src layout), ruff, pre-commit, pytest cov gate 80%, settings.py, .env.example
+- [x] docker/compose.yaml skeleton with profiles (core, tracking now; others added in their phases)
+- [x] CLAUDE.md, README skeleton, planning files
+- [x] docs/walkthrough: index + 4 concept pages (00a foundations, 00b rag-jev, 00c eval-tracking, 00d serving-monitoring), EN/AR/Both toggle, chosen/rejected tables
+- [x] minimal CI (lint + tests) added early so PR #1 has a real check
 - [ ] PR #1 merged
 - **Status:** in_progress
 
