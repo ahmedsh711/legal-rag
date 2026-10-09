@@ -50,7 +50,7 @@ class Answer:
 
 
 @dataclass
-class _Context:
+class Context:
     chunks: list[Chunk]  # what the model is (or would be) shown, best first
     decision: Decision | None
     gated: bool  # the decider said "not answerable from these articles"
@@ -75,7 +75,9 @@ class RagPipeline:
         self.context_size, self.top_n = context_size, top_n
         self.decider, self.gate_threshold = decider, gate_threshold
 
-    async def _context(self, question: str, book: str | None) -> _Context:
+    async def select_context(self, question: str, book: str | None = None) -> Context:
+        """Everything before the LLM: retrieve, rerank + gate (decider). Also used on its own
+        to evaluate retrieval without spending LLM tokens."""
         t0 = time.perf_counter()
         chunks = await asyncio.to_thread(self.retriever.retrieve, question, self.top_n, book)
         timings = {"retrieve": _ms(t0)}
@@ -91,7 +93,7 @@ class RagPipeline:
         # a question that names an article is answerable by definition: no gate
         gated = decision is not None and not named and decision.answerable < self.gate_threshold
         keep = chunks[: max(self.context_size, len(named), 1)]
-        return _Context(keep, decision, gated, timings)
+        return Context(keep, decision, gated, timings)
 
     async def _decide(self, question: str, chunks: list[Chunk]) -> Decision | None:
         if self.decider is None or not chunks:
@@ -129,7 +131,7 @@ class RagPipeline:
     async def ask(self, question: str, book: str | None = None) -> Answer:
         t0 = time.perf_counter()
         language = detect_language(question)
-        ctx = await self._context(question, book)
+        ctx = await self.select_context(question, book)
         context = ctx.chunks
         timings = dict(ctx.timings)
         if not context or ctx.gated:  # nothing to ground an answer on: refuse, spend no tokens
@@ -180,7 +182,7 @@ class RagPipeline:
         """Server-sent events: {"type": "token", "text": ...} ... then one {"type": "done", ...}."""
         t0 = time.perf_counter()
         language = detect_language(question)
-        ctx = await self._context(question, book)
+        ctx = await self.select_context(question, book)
         context = ctx.chunks
         if not context or ctx.gated:
             yield {"type": "token", "text": refusal_for(language)}

@@ -32,6 +32,17 @@ def test_active_llm_base_url_follows_backend(monkeypatch):
     assert s.active_llm_model == s.vllm_model
 
 
+def test_gemini_backend_for_generation_and_judge(monkeypatch):
+    gem, orr = "fake-gemini", "fake-openrouter"  # dummy test values, not secrets
+    s = Settings(_env_file=None, llm_backend="gemini", judge_backend="gemini",
+                 gemini_api_key=gem, openrouter_api_key=orr)  # fmt: skip
+    assert s.active_llm_base_url == s.gemini_base_url and s.active_llm_model == s.gemini_model
+    assert s.active_llm_api_key == gem
+    assert s.judge_base_url == s.gemini_base_url and s.judge_api_key == gem
+    default = Settings(_env_file=None, openrouter_api_key=orr)
+    assert default.judge_base_url == default.llm_base_url and default.judge_api_key == orr
+
+
 def test_secrets_are_not_printed():
     s = Settings(_env_file=None, openrouter_api_key="sk-secret")
     assert "sk-secret" not in repr(s)

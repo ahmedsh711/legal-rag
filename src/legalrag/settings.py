@@ -22,17 +22,23 @@ class Settings(BaseSettings):
     environment: Literal["dev", "staging", "prod"] = "dev"
     log_level: str = "INFO"
 
-    # --- generation backend (OpenAI-compatible everywhere: OpenRouter or local vLLM) ---
-    llm_backend: Literal["openrouter", "vllm"] = "openrouter"
+    # --- generation backend: OpenAI-compatible everywhere (OpenRouter, Gemini API, local vLLM) ---
+    llm_backend: Literal["openrouter", "gemini", "vllm"] = "openrouter"
     openrouter_api_key: SecretStr = SecretStr("")
     llm_base_url: str = "https://openrouter.ai/api/v1"
     llm_model: str = "qwen/qwen3-235b-a22b-2507"  # strong multilingual, cheap
-    # USD per million tokens for llm_model (OpenRouter /models, checked 2026-10-09); eval cost
+    # USD per million tokens of the active model (eval cost; 0 on a free tier)
     llm_price_in_per_m: float = 0.09
     llm_price_out_per_m: float = 0.55
-    judge_model: str = (
-        "anthropic/claude-haiku-5.5"  # different family from the generator (self-preference bias)
-    )
+    # Google's Gemini API has a free tier and an OpenAI-compatible endpoint
+    gemini_api_key: SecretStr = SecretStr("")
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    gemini_model: str = "gemini-2.5-flash"
+    # RAGAS judge: a different family from the generator if possible (self-preference bias);
+    # needs JSON mode. judge_backend picks the endpoint + key (openrouter | gemini).
+    judge_backend: Literal["openrouter", "gemini"] = "openrouter"
+    judge_model: str = "anthropic/claude-haiku-5.5"
+    judge_embedding_model: str = "baai/bge-m3"  # for answer relevancy (same endpoint)
     vllm_base_url: str = "http://127.0.0.1:8001/v1"
     vllm_model: str = "Qwen/Qwen2.5-1.5B-Instruct-AWQ"
     llm_timeout_s: float = 60.0
@@ -48,6 +54,7 @@ class Settings(BaseSettings):
     gate_threshold: float = Field(0.75, ge=0, le=1)  # below this: refuse without calling the LLM
     rerank_keep_top: int = 5  # articles shown to the LLM
     retrieve_top_n: int = 12  # articles retrieved and scored by the decider
+    retrieval_mode: Literal["hybrid", "dense", "sparse"] = "hybrid"  # dense/sparse: ablations
 
     # --- retrieval ---
     embedding_model: str = "BAAI/bge-m3"
@@ -72,6 +79,7 @@ class Settings(BaseSettings):
     # --- infra ---
     redis_url: str = "redis://127.0.0.1:6379/0"
     mlflow_tracking_uri: str = "http://127.0.0.1:5000"
+    mlflow_experiment: str = "legal-rag-eval"
     mlflow_config_model_name: str = "legal-rag-config"
     mlflow_config_alias: str = "production"
     langfuse_host: str = "http://127.0.0.1:3000"
@@ -79,18 +87,35 @@ class Settings(BaseSettings):
     langfuse_secret_key: SecretStr = SecretStr("")
     rate_limit_per_minute: int = 60
 
-    @property
-    def active_llm_base_url(self) -> str:
-        return self.vllm_base_url if self.llm_backend == "vllm" else self.llm_base_url
+    def _endpoint(self, backend: str) -> tuple[str, str]:
+        """(base_url, api_key) of a backend. vLLM ignores the key, but the client needs one."""
+        if backend == "gemini":
+            return self.gemini_base_url, self.gemini_api_key.get_secret_value()
+        if backend == "vllm":
+            return self.vllm_base_url, "none"
+        return self.llm_base_url, self.openrouter_api_key.get_secret_value() or "none"
 
     @property
-    def active_llm_model(self) -> str:
-        return self.vllm_model if self.llm_backend == "vllm" else self.llm_model
+    def active_llm_base_url(self) -> str:
+        return self._endpoint(self.llm_backend)[0]
 
     @property
     def active_llm_api_key(self) -> str:
-        # vLLM ignores the key but the OpenAI client requires a non-empty string
-        return self.openrouter_api_key.get_secret_value() or "none"
+        return self._endpoint(self.llm_backend)[1]
+
+    @property
+    def active_llm_model(self) -> str:
+        return {"vllm": self.vllm_model, "gemini": self.gemini_model}.get(
+            self.llm_backend, self.llm_model
+        )
+
+    @property
+    def judge_base_url(self) -> str:
+        return self._endpoint(self.judge_backend)[0]
+
+    @property
+    def judge_api_key(self) -> str:
+        return self._endpoint(self.judge_backend)[1]
 
 
 @lru_cache

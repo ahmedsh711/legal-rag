@@ -95,7 +95,11 @@ def build_components(settings: Settings) -> Components:
         revision=settings.embedding_revision,
     )
     retriever = Retriever(
-        client, settings.qdrant_collection_alias, embedder, top_n=settings.retrieve_top_n
+        client,
+        settings.qdrant_collection_alias,
+        embedder,
+        top_n=settings.retrieve_top_n,
+        mode=settings.retrieval_mode,
     )
     generator = Generator(
         make_client(

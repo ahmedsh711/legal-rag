@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from legalrag.generation import detect_language
+from legalrag.retrieval import article_numbers_in
 
 UNANSWERABLE = {"off_topic", "injection"}
 
@@ -39,6 +40,8 @@ class Prediction(BaseModel):
     completion_tokens: int = 0
     context_texts: list[str] = []  # for RAGAS
     reference: str = ""
+    answerable_score: float | None = None  # the decider's gate score, when one ran
+    decider_cost_usd: float = 0.0
 
     @property
     def answerable(self) -> bool:
@@ -86,8 +89,10 @@ def _block(preds: Sequence[Prediction], price_in: float, price_out: float) -> di
         "latency_p95_ms": round(_percentile(latencies, 95), 1) if latencies else None,
         "prompt_tokens_mean": _mean([p.prompt_tokens for p in preds]),
         "completion_tokens_mean": _mean([p.completion_tokens for p in preds]),
-        "cost_usd": round(
-            sum(p.prompt_tokens * price_in + p.completion_tokens * price_out for p in preds) / 1e6,
+        "decider_cost_usd": round(sum(p.decider_cost_usd for p in preds), 6),
+        "cost_usd": round(  # LLM tokens + decider calls
+            sum(p.prompt_tokens * price_in + p.completion_tokens * price_out for p in preds) / 1e6
+            + sum(p.decider_cost_usd for p in preds),
             6,
         ),
     }
@@ -98,6 +103,25 @@ def _percentile(values: Sequence[float], q: float) -> float:
     k = (len(ordered) - 1) * q / 100
     lo, hi = int(k), min(int(k) + 1, len(ordered) - 1)
     return ordered[lo] + (ordered[hi] - ordered[lo]) * (k - lo)
+
+
+def gate_sweep(preds: Sequence[Prediction], thresholds: Sequence[float]) -> list[dict[str, float]]:
+    """Replay the gate offline: an item counts as refused if the run refused it or its decider
+    score is below the threshold (questions naming an article are never gated, as in the
+    pipeline). One row per threshold: the trade-off between the two refusal rates."""
+    answerable = [p for p in preds if p.answerable]
+    unanswerable = [p for p in preds if not p.answerable]
+    rows = []
+    for t in thresholds:
+
+        def refused(p: Prediction, t: float = t) -> bool:
+            gated = p.answerable_score is not None and p.answerable_score < t
+            return p.refused or (gated and not article_numbers_in(p.question))
+
+        rows.append({"threshold": t,
+                     "false_refusal_rate": _rate(answerable, refused),
+                     "correct_refusal_rate": _rate(unanswerable, refused)})  # fmt: skip
+    return rows
 
 
 def summarize(
