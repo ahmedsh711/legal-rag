@@ -1,0 +1,6 @@
+# Parameters tracked by DVC: changing one re-runs only the stages that depend on it.
+corpus:
+  expected_articles: 1149   # the Egyptian Civil Code has 1,149 articles
+  max_chars: 2500           # per language; a longer record means an article split failed
+  known_anomalies:          # source-PDF problems we flag instead of hiding (see reports/module-1.md)
+    1022: "Arabic text of Article 1022 is merged into Article 1021's Arabic block in the source PDF"

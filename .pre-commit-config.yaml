@@ -23,4 +23,5 @@ repos:
     hooks:
       - id: detect-secrets
         args: [--baseline, .secrets.baseline]
-        exclude: ^(uv\.lock|docs/research/.*)$
+        # lock files and DVC pointers hold content hashes, which look random but are not secrets
+        exclude: ^(uv\.lock|dvc\.lock|.*\.dvc|docs/research/.*)$
