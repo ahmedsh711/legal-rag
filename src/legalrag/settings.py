@@ -27,8 +27,12 @@ class Settings(BaseSettings):
     llm_backend: Literal["openrouter", "vllm"] = "openrouter"
     openrouter_api_key: SecretStr = SecretStr("")
     llm_base_url: str = "https://openrouter.ai/api/v1"
-    llm_model: str = "qwen/qwen-2.5-72b-instruct"
-    judge_model: str = "anthropic/claude-sonnet-5-5"
+    llm_model: str = (
+        "qwen/qwen3-235b-a22b-2507"  # strong multilingual, $0.09/M input tokens (Oct 2026)
+    )
+    judge_model: str = (
+        "anthropic/claude-haiku-5.5"  # different family from the generator (self-preference bias)
+    )
     vllm_base_url: str = "http://localhost:8001/v1"
     vllm_model: str = "Qwen/Qwen2.5-1.5B-Instruct-AWQ"
     llm_timeout_s: float = 60.0
@@ -51,8 +55,11 @@ class Settings(BaseSettings):
 
     # --- retrieval ---
     embedding_model: str = "BAAI/bge-m3"
+    # pinned commit (the safetensors conversion of bge-m3); must match params.yaml -> index
+    # (a public git commit sha, not a secret)
+    embedding_revision: str = "9a0624b896d81da7492a910ffa53731274b6cf3d"  # pragma: allowlist secret
     embedding_device: Literal["cpu", "cuda"] = "cpu"
-    normalization_version: str = "v1"
+    query_max_length: int = 512  # questions are short; shorter max length = faster query embedding
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection_alias: str = "articles"
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
@@ -61,6 +68,7 @@ class Settings(BaseSettings):
     raw_pdf_path: str = "data/raw/egyptian_civil_code.pdf"
     articles_path: str = "data/processed/articles.json"
     golden_set_path: str = "data/golden/golden_set.jsonl"
+    feedback_path: str = "data/feedback/feedback.jsonl"
 
     # --- infra ---
     redis_url: str = "redis://localhost:6379/0"

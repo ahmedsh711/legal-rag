@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAG API Code Tour · legal-rag guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Fraunces:opsz,wght@9..144,600&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lang="both">
+<header class="topbar">
+  <div class="crumbs"><a href="index.html">legal-rag guide</a> / Phase 2 · RAG API code tour</div>
+  <div class="lang-toggle" role="group" aria-label="Language">
+    <button type="button" data-lang="en">EN</button>
+    <button type="button" data-lang="ar">عربي</button>
+    <button type="button" data-lang="both">Both · الاتنين</button>
+  </div>
+</header>
+<main>
+<p class="eyebrow">Phase 2 · code tour</p>
+<h1><span class="en">From articles to a cited answer over HTTP</span><span class="ar">من المواد لإجابة بالمصدر عبر HTTP</span></h1>
+
+<div class="pair">
+  <div class="en"><p class="lede">Phase 2 turns <code>articles.json</code> into a searchable index and puts a FastAPI service in front of it. This page explains each new file and function, the decisions behind them, and the problems we hit on the way. The concepts are in <a href="00b-rag-jev.html">Concepts 2</a> (embeddings, hybrid search, prompt) and <a href="00a-foundations.html#api">Concepts 1 · APIs</a>.</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p class="lede">المرحلة 2 بتحوّل <code>articles.json</code> لـ index نقدر ندوّر فيه، وبتحط خدمة FastAPI قدامه. الصفحة دي بتشرح كل فايل وكل function جديدة، والقرارات اللي وراها، والمشاكل اللي قابلناها في السكة. المفاهيم في صفحة المفاهيم 2 (الـ embeddings والبحث الهجين والـ prompt) وصفحة المفاهيم 1 (الـ APIs).</p></div>
+</div>
+
+<nav class="toc" aria-label="On this page">
+  <strong>On this page · في الصفحة دي</strong>
+  <ol>
+    <li><a href="#flow">The request, end to end</a></li>
+    <li><a href="#embedder">index/embedder.py</a></li>
+    <li><a href="#store">index/store.py</a></li>
+    <li><a href="#build">index/build.py and the DVC index stage</a></li>
+    <li><a href="#retrieval">retrieval.py</a></li>
+    <li><a href="#generation">generation.py</a></li>
+    <li><a href="#pipeline">pipeline.py</a></li>
+    <li><a href="#api">api/ (schemas, middleware, main)</a></li>
+    <li><a href="#docker">Dockerfile, entrypoint, compose</a></li>
+    <li><a href="#tests">The tests</a></li>
+    <li><a href="#lessons">Problems we hit</a></li>
+  </ol>
+</nav>
+
+<h2 id="flow"><span class="en">1. The request, end to end</span><span class="ar">1. الطلب من أوله لآخره</span></h2>
+<div class="flow" aria-label="Request flow">
+  <div class="step"><b>middleware</b>request id, timing, safe 500</div><span class="arrow">→</span>
+  <div class="step"><b>schemas</b>validate question → 422</div><span class="arrow">→</span>
+  <div class="step"><b>retrieval</b>"Article N" lookup + hybrid search</div><span class="arrow">→</span>
+  <div class="step" style="border-color:var(--accent)"><b>generation</b>prompt → LLM → answer</div><span class="arrow">→</span>
+  <div class="step"><b>pipeline</b>check citations, refusal</div><span class="arrow">→</span>
+  <div class="step"><b>response</b>answer + sources + request_id</div>
+</div>
+<div class="pair">
+  <div class="en"><p>The decision steps (route, rerank, gate, validate) are added between retrieval and generation in Phases 3–4. Phase 2 is the plain "vanilla" RAG baseline: every later improvement is measured against it.</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p>خطوات القرار (route وrerank وgate وvalidate) هتتضاف بين الـ retrieval والكتابة في المرحلتين 3 و4. المرحلة 2 هي الـ RAG العادي "الأساسي": وأي تحسين بعد كده بيتقاس قصاده.</p></div>
+</div>
+
+<h2 id="embedder"><span class="en">2. <code>index/embedder.py</code></span><span class="ar">2. <code>index/embedder.py</code></span></h2>
+<div class="pair">
+  <div class="en">
+    <p><code>BgeM3Embedder</code> runs bge-m3 with plain <code>transformers</code>. One forward pass gives both signals:</p>
+    <ul>
+      <li><strong>dense</strong>: the hidden state of the first token, L2-normalized (<code>l2_normalize</code>) → meaning;</li>
+      <li><strong>sparse</strong>: <code>relu(sparse_linear(hidden))</code> per token; <code>sparse_from_token_weights</code> keeps the highest weight per token id and drops special tokens → keywords.</li>
+    </ul>
+    <p>Why not the official <code>FlagEmbedding</code> package? It pulls six heavy libraries (datasets, accelerate, peft…) into the API image for a ~40-line computation. We wrote the computation ourselves and prove it matches with <code>scripts/parity_bge_m3.py</code>, the same idea as the course's pickle-vs-ONNX parity test. The small <code>sparse_linear.pt</code> head is loaded with <code>torch.load(..., weights_only=True)</code> so a downloaded pickle can never run code.</p>
+    <p>Methods are tiny on purpose: <code>Embedding.sparse_indices_values()</code> turns the dict into the two lists Qdrant wants; <code>encode()</code> batches texts under <code>torch.inference_mode()</code> (no gradients, less memory). <code>length_sorted_batches()</code> puts long texts together and short texts together: a batch is padded to its longest text, so mixing a 600-token article with 40-token ones wastes most of the compute on padding. Results go back in the caller's order.</p>
+    <p>The model is loaded at a <strong>pinned commit</strong> (<code>revision=</code>), so every machine and every rebuild uses the same weights.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p><code>BgeM3Embedder</code> بيشغّل bge-m3 بـ <code>transformers</code> عادي. لفة واحدة في الموديل بتدي إشارتين:</p>
+    <ul>
+      <li><strong>dense</strong>: الـ hidden state بتاع أول token بعد ما نعمله normalize (<code>l2_normalize</code>) ← المعنى؛</li>
+      <li><strong>sparse</strong>: <code>relu(sparse_linear(hidden))</code> لكل token؛ و<code>sparse_from_token_weights</code> بتاخد أعلى وزن لكل token وبتشيل الـ tokens الخاصة ← الكلمات المهمة.</li>
+    </ul>
+    <p>ليه مش مكتبة <code>FlagEmbedding</code> الرسمية؟ لأنها بتجيب ست مكتبات تقيلة (datasets وaccelerate وpeft…) جوه الـ image عشان حساب حوالي 40 سطر. كتبنا الحساب بنفسنا وأثبتنا إنه نفس النتيجة بـ <code>scripts/parity_bge_m3.py</code>، نفس فكرة اختبار الـ pickle قصاد ONNX في الكورس. والـ head الصغير <code>sparse_linear.pt</code> بيتحمّل بـ <code>weights_only=True</code> عشان أي pickle متحمّل من النت عمره ما يشغّل كود.</p>
+    <p>الـ methods صغيرة بقصد: <code>sparse_indices_values()</code> بتحوّل الـ dict للستتين اللي Qdrant عايزهم؛ و<code>encode()</code> بتمشي على النصوص batches جوه <code>torch.inference_mode()</code> (من غير gradients وذاكرة أقل). و<code>length_sorted_batches()</code> بتحط النصوص الطويلة مع بعض والقصيرة مع بعض: الـ batch بيتعمله padding على طول أطول نص فيه، فلو خلطنا مادة 600 token مع مواد 40 token أغلب الحساب بيروح على الـ padding. والنتايج بترجع بنفس ترتيب اللي طلبها.</p>
+    <p>الموديل بيتحمّل من <strong>commit متثبّت</strong> (<code>revision=</code>)، فكل جهاز وكل إعادة بناء بيستخدموا نفس الأوزان بالظبط.</p>
+  </div>
+</div>
+
+<h2 id="store"><span class="en">3. <code>index/store.py</code></span><span class="ar">3. <code>index/store.py</code></span></h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>Function</th><th class="en">What it does and why</th><th class="ar">بتعمل إيه وليه</th></tr></thead>
+  <tbody>
+    <tr><td><code>article_texts()</code></td><td class="en">The text to embed per language. A short header is prepended ("المادة 147 - section / topic", "Article 147 - heading path") so a question about "sale" can match an article whose own text never says "sale". Repealed articles become one "note" text.</td><td class="ar">النص اللي هيتعمله embedding لكل لغة. بنحط عنوان قصير في الأول ("المادة 147 - الفصل / الموضوع") عشان سؤال عن "البيع" يلاقي مادة نصها نفسه مفيهوش كلمة "البيع". والمادة الملغية بتبقى نص "ملاحظة" واحد.</td></tr>
+    <tr><td><code>point_id()</code></td><td class="en"><code>article × 10 + {ar:1, en:2, note:3}</code>: deterministic ids, so re-running the build overwrites points instead of duplicating them.</td><td class="ar">أرقام ثابتة للنقط، فإعادة البناء بتكتب فوق النقط بدل ما تكررها.</td></tr>
+    <tr><td><code>payload()</code></td><td class="en">What is stored next to the vectors: both texts, hierarchy, citations, repeal status, quality flags, language.</td><td class="ar">اللي بيتخزن جنب الـ vectors: النصين والتسلسل والاستشهاد وحالة الإلغاء وعلامات الجودة واللغة.</td></tr>
+    <tr><td><code>create_collection()</code></td><td class="en">Named vectors <code>dense</code> (1024-d, cosine) and <code>sparse</code>, plus payload indexes on the fields we filter.</td><td class="ar">vectors بأسماء: <code>dense</code> (1024 بُعد، cosine) و<code>sparse</code>، وفهارس على الحقول اللي بنفلتر بيها.</td></tr>
+    <tr><td><code>upsert_points()</code></td><td class="en">Writes points in batches of 128 and waits for each batch.</td><td class="ar">بيكتب النقط على دفعات 128 ويستنى كل دفعة تخلص.</td></tr>
+    <tr><td><code>swap_alias()</code>, <code>alias_target()</code></td><td class="en">Move the alias <code>articles</code> to a new collection in one atomic call and return the old one: deployment and rollback of the index.</td><td class="ar">ينقلوا الـ alias <code>articles</code> لـ collection جديدة في نداء واحد ذري ويرجّعوا القديمة: ده نزول الـ index والرجوع عنه.</td></tr>
+    <tr><td><code>write_metadata()</code>, <code>read_metadata()</code></td><td class="en">One record per collection in a tiny side collection <code>index_meta</code>: embedding model, normalization version, source hash, git SHA. Kept outside the article collection so it never pollutes search.</td><td class="ar">سجل لكل collection في collection صغيرة جنبها اسمها <code>index_meta</code>: موديل الـ embedding ونسخة التوحيد وhash المصدر والـ git SHA. بره collection المواد عشان عمرها ما تبوّظ البحث.</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="build"><span class="en">4. <code>index/build.py</code> and the DVC <code>index</code> stage</span><span class="ar">4. <code>index/build.py</code> ومرحلة <code>index</code> في DVC</span></h2>
+<div class="pair">
+  <div class="en">
+    <p><code>build_index()</code>: texts → embeddings → new collection → metadata → move the alias. The collection name is a hash of everything that changes the vectors (<code>collection_name()</code>: articles.json md5, model, pinned model revision, max length, normalization version). Same inputs give the same name; new inputs never overwrite what is serving, and the old collection stays for rollback.</p>
+    <p>In <code>dvc.yaml</code> the stage depends on <code>reports/corpus_metrics.json</code>, the output of <code>validate</code>, so the order is <code>parse → validate → index</code> and an invalid corpus is never embedded. Its parameters live in <code>params.yaml → index</code>; the manifest it writes is deterministic (no timings), and timings go to <code>reports/index_metrics.json</code>.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p><code>build_index()</code>: نصوص ← embeddings ← collection جديدة ← metadata ← ننقل الـ alias. اسم الـ collection عبارة عن hash لكل حاجة بتغيّر الـ vectors (<code>collection_name()</code>: الـ md5 بتاع articles.json، والموديل والـ revision المتثبّتة بتاعته، والطول الأقصى، ونسخة التوحيد). نفس المدخلات تدي نفس الاسم؛ والمدخلات الجديدة عمرها ما تكتب فوق اللي شغال، والقديمة بتفضل موجودة للـ rollback.</p>
+    <p>في <code>dvc.yaml</code> المرحلة دي معتمدة على <code>reports/corpus_metrics.json</code> اللي بيطلعه <code>validate</code>، فالترتيب بيبقى <code>parse ← validate ← index</code> ومستحيل نعمل embedding لداتا فشلت في المراجعة. والـ params بتاعتها في <code>params.yaml</code> تحت <code>index</code>.</p>
+  </div>
+</div>
+
+<h2 id="retrieval"><span class="en">5. <code>retrieval.py</code></span><span class="ar">5. <code>retrieval.py</code></span></h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>Piece</th><th class="en">What it does and why</th><th class="ar">بيعمل إيه وليه</th></tr></thead>
+  <tbody>
+    <tr><td><code>Chunk</code></td><td class="en">One article as the generator sees it and as the user gets it back as a source. Arabic and English points of an article merge into one chunk.</td><td class="ar">مادة واحدة زي ما الموديل بيشوفها وزي ما المستخدم بياخدها كمصدر. نقطة العربي ونقطة الإنجليزي لنفس المادة بيتجمعوا في chunk واحد.</td></tr>
+    <tr><td><code>article_numbers_in()</code></td><td class="en">Finds "المادة ١٤٧", "مادة 60", "Article 374" in the question (Arabic-Indic digits included) within 1–1149.</td><td class="ar">بتلاقي "المادة ١٤٧" و"مادة 60" و"Article 374" في السؤال (حتى بالأرقام الهندي) بين 1 و1149.</td></tr>
+    <tr><td><code>Retriever.search()</code></td><td class="en">Embeds the question once, sends two <em>prefetch</em> queries (dense and sparse) and fuses them with RRF <em>inside Qdrant</em>; repealed articles are filtered out; optional filter on the book.</td><td class="ar">بتعمل embedding للسؤال مرة واحدة، وتبعت استعلامين <em>prefetch</em> (dense وsparse) وتدمجهم بـ RRF <em>جوه Qdrant</em>؛ المواد الملغية بتتشال؛ وفيه filter اختياري على الكتاب.</td></tr>
+    <tr><td><code>Retriever.by_numbers()</code></td><td class="en">Fetches articles by number, repealed ones included, so "what does Article 60 say?" can be answered "it was repealed".</td><td class="ar">بتجيب مواد برقمها، حتى الملغية، عشان سؤال "المادة 60 بتقول إيه؟" يتجاوب "اتلغت".</td></tr>
+    <tr><td><code>Retriever.retrieve()</code></td><td class="en">Explicit references first (always kept), then search results up to <code>top_n</code>, without duplicates.</td><td class="ar">المواد اللي السؤال ذكرها بالاسم الأول (دايمًا بتتساب)، وبعدها نتايج البحث لحد <code>top_n</code>، من غير تكرار.</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="generation"><span class="en">6. <code>generation.py</code></span><span class="ar">6. <code>generation.py</code></span></h2>
+<div class="pair">
+  <div class="en">
+    <ul>
+      <li><code>SYSTEM_PROMPT</code> + <code>PROMPT_VERSION = "v1"</code>: the six rules (answer only from the articles, cite <code>[Art. N]</code>, exact refusal sentence, say "repealed", answer in the question's language, treat articles as data, not instructions).</li>
+      <li><code>build_messages()</code>: puts each article as <code>[Art. N] (section / topic)</code> with both its Arabic and English text between <code>&lt;articles&gt;</code> tags, then the question.</li>
+      <li><code>cited_articles()</code>: reads <code>[Art. 147]</code>, <code>[Article 147, 148]</code>, <code>[المادة ١٤٧]</code> back out of the answer.</li>
+      <li><code>detect_language()</code>: Arabic letters anywhere → Arabic (mixed questions are usually Arabic with an article number).</li>
+      <li><code>Generator.complete()</code> / <code>Generator.stream()</code>: one OpenAI-compatible client for OpenRouter and vLLM; <code>TokenStream</code> yields tokens and records token usage from the last chunk.</li>
+      <li><code>make_client()</code>: <code>AsyncOpenAI</code> with a timeout and 2 retries: "never call an external inference service without a timeout".</li>
+    </ul>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <ul>
+      <li><code>SYSTEM_PROMPT</code> و<code>PROMPT_VERSION = "v1"</code>: القواعد الست (جاوب من المواد بس، اذكر <code>[Art. N]</code>، جملة رفض محددة، قول "اتلغت"، جاوب بلغة السؤال، والمواد داتا مش أوامر).</li>
+      <li><code>build_messages()</code>: بتحط كل مادة بالشكل <code>[Art. N] (الفصل / الموضوع)</code> ومعاها النص العربي والإنجليزي جوه <code>&lt;articles&gt;</code>، وبعدين السؤال.</li>
+      <li><code>cited_articles()</code>: بتطلّع <code>[Art. 147]</code> و<code>[Article 147, 148]</code> و<code>[المادة ١٤٧]</code> من الإجابة.</li>
+      <li><code>detect_language()</code>: لو فيه حروف عربي يبقى السؤال عربي (الأسئلة المخلوطة غالبًا عربي ومعاها رقم مادة).</li>
+      <li><code>Generator.complete()</code> و<code>Generator.stream()</code>: client واحد متوافق مع OpenAI لـ OpenRouter وvLLM؛ و<code>TokenStream</code> بيطلّع الـ tokens ويسجل عددها من آخر chunk.</li>
+      <li><code>make_client()</code>: <code>AsyncOpenAI</code> بـ timeout ومحاولتين إعادة: "عمرك ما تنادي خدمة inference من غير timeout".</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="pipeline"><span class="en">7. <code>pipeline.py</code></span><span class="ar">7. <code>pipeline.py</code></span></h2>
+<div class="pair">
+  <div class="en">
+    <p><code>RagPipeline.ask()</code>: detect language → retrieve (in a worker thread with <code>asyncio.to_thread</code>, because embedding is CPU work) → keep the top <code>context_size</code> → if nothing was found, refuse <em>without</em> calling the LLM → generate → check citations. The <code>Answer</code> it returns carries:</p>
+    <ul>
+      <li><code>sources</code>: retrieved articles the answer actually cites;</li>
+      <li><code>invalid_citations</code>: numbers the model cited but was never shown, which is a hallucinated citation and is logged as a warning;</li>
+      <li><code>refused</code>, <code>usage</code> (tokens), <code>timings_ms</code> (retrieve, generate, total), <code>prompt_version</code>, <code>model</code>.</li>
+    </ul>
+    <p><code>ask_stream()</code> yields <code>token</code> events then one <code>done</code> event with sources, usage and <strong>TTFT</strong> (time to first token).</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p><code>RagPipeline.ask()</code>: تعرف اللغة ← تجيب المواد (في thread منفصل بـ <code>asyncio.to_thread</code> لأن الـ embedding شغل CPU) ← تاخد أول <code>context_size</code> ← لو ملقيناش حاجة نرفض <em>من غير</em> ما ننادي الـ LLM ← نكتب الإجابة ← نراجع الاستشهادات. والـ <code>Answer</code> اللي بترجع فيها:</p>
+    <ul>
+      <li><code>sources</code>: المواد اللي رجعت والإجابة ذكرتها فعلًا؛</li>
+      <li><code>invalid_citations</code>: أرقام الموديل ذكرها وهو عمره ما شافها، يعني استشهاد متألّف، وبيتسجل كتحذير؛</li>
+      <li><code>refused</code> و<code>usage</code> (الـ tokens) و<code>timings_ms</code> (retrieve وgenerate وtotal) و<code>prompt_version</code> و<code>model</code>.</li>
+    </ul>
+    <p><code>ask_stream()</code> بتبعت أحداث <code>token</code> وبعدين حدث <code>done</code> واحد فيه المصادر والـ usage والـ <strong>TTFT</strong>.</p>
+  </div>
+</div>
+
+<h2 id="api"><span class="en">8. <code>api/</code>: schemas, middleware, main</span><span class="ar">8. <code>api/</code>: الـ schemas والـ middleware والـ main</span></h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>Piece</th><th class="en">What it does and why</th><th class="ar">بيعمل إيه وليه</th></tr></thead>
+  <tbody>
+    <tr><td><code>AskRequest</code></td><td class="en">3–2000 characters, must contain Arabic or English words, no unknown fields. Bad input → 422 with readable messages, before any token is spent.</td><td class="ar">من 3 لـ 2000 حرف، ولازم فيه كلام عربي أو إنجليزي، ومفيش حقول غريبة. أي مدخل غلط ← 422 برسالة مفهومة، قبل ما نصرف أي token.</td></tr>
+    <tr><td><code>AskResponse</code>, <code>Source</code></td><td class="en">The response contract: answer, sources (number, English and Arabic citation, repealed, quality flags), refusal flag, invalid citations, request id, prompt version, model, usage, timings.</td><td class="ar">عقد الرد: الإجابة، والمصادر (الرقم والاستشهاد بالإنجليزي والعربي والإلغاء وعلامات الجودة)، والرفض، والاستشهادات الغلط، والـ request id، ونسخة الـ prompt، والموديل، والـ usage، والأوقات.</td></tr>
+    <tr><td><code>RequestIdMiddleware</code></td><td class="en">Reuses a safe incoming <code>X-Request-ID</code> or creates one, logs one line per request with duration, returns the id in headers, and turns any unexpected error into a clean 500 carrying the id but no traceback.</td><td class="ar">بياخد <code>X-Request-ID</code> اللي جاي لو آمن أو يعمل واحد جديد، ويسجل سطر لكل طلب بوقته، ويرجّع الـ id في الـ headers، ويحوّل أي خطأ مش متوقع لـ 500 نضيف فيه الـ id ومن غير traceback.</td></tr>
+    <tr><td><code>create_app(build=...)</code></td><td class="en">App factory. The <em>lifespan</em> calls <code>build(settings)</code> once at startup and keeps the components on <code>app.state</code>. Tests pass a <code>build</code> that returns fakes.</td><td class="ar">مصنع التطبيق. الـ <em>lifespan</em> بينادي <code>build(settings)</code> مرة واحدة وقت التشغيل ويحفظ المكونات على <code>app.state</code>. والـ tests بتبعت <code>build</code> بيرجّع حاجات مزيفة.</td></tr>
+    <tr><td><code>build_components()</code></td><td class="en">Connects to Qdrant, finds the collection behind the alias, <strong>refuses to start</strong> if the index metadata does not match the API's embedding model or normalization (<code>check_index_compatible</code>), then loads bge-m3 and the LLM client.</td><td class="ar">بيتصل بـ Qdrant، ويلاقي الـ collection اللي ورا الـ alias، و<strong>يرفض يقوم</strong> لو الـ metadata بتاعة الـ index مش متطابقة مع موديل الـ embedding أو التوحيد بتوع الـ API، وبعدين يحمّل bge-m3 والـ client بتاع الـ LLM.</td></tr>
+    <tr><td><code>/live</code>, <code>/health</code></td><td class="en">Liveness ("the process answers") vs readiness ("the index is reachable and not empty"; 503 otherwise). Docker's HEALTHCHECK uses <code>/health</code>.</td><td class="ar">Liveness ("البروسيس بترد") قصاد readiness ("الـ index موجود ومش فاضي"؛ وإلا 503). والـ HEALTHCHECK بتاع Docker بيستخدم <code>/health</code>.</td></tr>
+    <tr><td><code>/metadata</code></td><td class="en">What is serving now: app, prompt, LLM, embedding model and index versions.</td><td class="ar">إيه اللي شغال دلوقتي: نسخ التطبيق والـ prompt والـ LLM وموديل الـ embedding والـ index.</td></tr>
+    <tr><td><code>/ask</code></td><td class="en">JSON answer, or <code>?stream=true</code> for Server-Sent Events (<code>data: {...}\n\n</code>). An LLM provider error becomes <strong>503 with Retry-After</strong>, not 500: their outage is not our bug.</td><td class="ar">إجابة JSON، أو <code>?stream=true</code> للـ Server-Sent Events. وأي خطأ من مزود الـ LLM بيبقى <strong>503 ومعاه Retry-After</strong> مش 500: عطلهم مش bug عندنا.</td></tr>
+    <tr><td><code>/feedback</code></td><td class="en">Thumbs up/down keyed by request id, appended to a JSONL file (becomes a Langfuse score in Phase 5).</td><td class="ar">لايك أو ديسلايك بالـ request id، بيتضاف لفايل JSONL (وهيبقى score في Langfuse في المرحلة 5).</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="docker"><span class="en">9. Dockerfile, entrypoint and compose</span><span class="ar">9. الـ Dockerfile والـ entrypoint والـ compose</span></h2>
+<div class="pair">
+  <div class="en">
+    <ul>
+      <li><strong>builder stage</strong>: uv installs exactly what <code>uv.lock</code> says, dependencies first (cached until the lock changes), then our code non-editable; no dev tools.</li>
+      <li><strong>runtime stage</strong>: only the virtualenv on <code>python:3.12-slim</code>, user <code>app</code> (uid 1000), HEALTHCHECK on <code>/health</code> with a 3-minute start period for loading bge-m3.</li>
+      <li><strong>torch from the CPU-only index</strong> (<code>[tool.uv.sources]</code> in pyproject): the default Linux wheel bundles CUDA libraries worth gigabytes; the GPU belongs to vLLM.</li>
+      <li><strong>The model is not baked in</strong>: bge-m3 (~2.3 GB) goes to the named volume <code>hf_cache</code> on first start.</li>
+      <li><strong>HTTPS inspection</strong> (this laptop runs Avast's TLS scanning): its root CA is passed as an optional BuildKit <em>secret</em> during the build and mounted at <code>/run/local-ca.pem</code> at runtime, where <code>entrypoint.sh</code> adds it to a private copy of the trust bundle. Nothing machine-specific is baked into the image.</li>
+    </ul>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <ul>
+      <li><strong>مرحلة الـ builder</strong>: uv بيسطّب بالظبط اللي في <code>uv.lock</code>، المكتبات الأول (متخزنة لحد ما الـ lock يتغير)، وبعدين الكود بتاعنا؛ ومن غير أدوات التطوير.</li>
+      <li><strong>مرحلة الـ runtime</strong>: الـ virtualenv بس على <code>python:3.12-slim</code>، والـ user اسمه <code>app</code> (uid 1000)، وHEALTHCHECK على <code>/health</code> ومعاه 3 دقايق في الأول عشان bge-m3 يتحمّل.</li>
+      <li><strong>torch من index الـ CPU بس</strong>: الـ wheel العادي على لينكس جواه مكتبات CUDA بالجيجات؛ وكارت الشاشة بتاع vLLM.</li>
+      <li><strong>الموديل مش جوه الـ image</strong>: bge-m3 (حوالي 2.3 جيجا) بيتنزل في volume اسمه <code>hf_cache</code> أول مرة.</li>
+      <li><strong>فحص HTTPS</strong> (اللابتوب ده عليه Avast بيفحص الـ TLS): شهادة الـ root بتاعته بتتبعت كـ <em>secret</em> اختياري وقت الـ build، وبتتعمل mount على <code>/run/local-ca.pem</code> وقت التشغيل و<code>entrypoint.sh</code> بيضيفها لنسخة خاصة من الشهادات. ومفيش أي حاجة خاصة بالجهاز ده جوه الـ image.</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="tests"><span class="en">10. The tests</span><span class="ar">10. الـ Tests</span></h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>File</th><th class="en">What it proves</th><th class="ar">بيثبت إيه</th></tr></thead>
+  <tbody>
+    <tr><td class="file">tests/conftest.py, tests/fakes.py</td><td class="en">A deterministic bag-of-words <code>FakeEmbedder</code>, an in-memory Qdrant index of five articles, and a <code>FakeLLM</code> that mimics the OpenAI client (normal and streaming).</td><td class="ar"><code>FakeEmbedder</code> ثابت مبني على الكلمات، وindex في الذاكرة فيه خمس مواد، و<code>FakeLLM</code> بيقلّد client الـ OpenAI (عادي وstreaming).</td></tr>
+    <tr><td class="file">test_embedder.py</td><td class="en">Normalization and the sparse rule, without downloading the model.</td><td class="ar">الـ normalization وقاعدة الـ sparse، من غير ما ننزّل الموديل.</td></tr>
+    <tr><td class="file">test_store_retrieval.py</td><td class="en">Point ids, note points, metadata and alias round-trips, hybrid search, one chunk per article, repealed handling, book filter, explicit references.</td><td class="ar">أرقام النقط، ونقط الملاحظات، والـ metadata والـ alias، والبحث الهجين، وchunk واحد لكل مادة، والمواد الملغية، وفلتر الكتاب، والمواد المذكورة بالاسم.</td></tr>
+    <tr><td class="file">test_index_build.py</td><td class="en">Collection names change only with inputs; a rebuild moves the alias and keeps the old collection.</td><td class="ar">اسم الـ collection بيتغير مع المدخلات بس؛ وإعادة البناء بتنقل الـ alias وبتسيب القديمة.</td></tr>
+    <tr><td class="file">test_generation_pipeline.py</td><td class="en">Language detection, citation parsing (both scripts), prompt contents, usage tracking, invalid citations, refusal without an LLM call, streaming.</td><td class="ar">معرفة اللغة، وقراية الاستشهادات (بالخطين)، ومحتوى الـ prompt، وعدّ الـ tokens، والاستشهادات الغلط، والرفض من غير نداء LLM، والـ streaming.</td></tr>
+    <tr><td class="file">tests/integration/test_api.py</td><td class="en">Every API promise: answer with sources, readable 422s, SSE, request ids, health 200/503, feedback, 503 on LLM outage, 500 without traceback, refusing a mismatched index.</td><td class="ar">كل وعد في الـ API: إجابة بالمصادر، و422 مفهومة، والـ SSE، والـ request ids، والـ health 200/503، والـ feedback، و503 لما الـ LLM يقع، و500 من غير traceback، ورفض index مختلف.</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="lessons"><span class="en">11. Problems we hit</span><span class="ar">11. مشاكل قابلناها</span></h2>
+<div class="pair">
+  <div class="en">
+    <ul>
+      <li><strong>HTTPS inspection broke every download</strong> (Python and inside Docker builds) with "unknown issuer". Root cause: Avast's TLS scanning. Fix: <code>truststore</code> (use the OS store) on the host, and the CA as a build secret / runtime mount for containers.</li>
+      <li><strong>The official embedding package was too heavy</strong>; we re-implemented its math and proved parity.</li>
+      <li><strong>transformers 5 avoids pickle</strong>: it silently fetched a safetensors conversion of bge-m3 from a pull-request branch instead of loading <code>pytorch_model.bin</code>. Safer format, but "which weights did we load?" had no written answer. Fix: <code>embedding_revision</code> in <code>params.yaml</code> and settings pins one commit; it is part of the collection hash, stored in the index metadata, and the API refuses an index built from another revision.</li>
+      <li><strong>The disk filled up</strong>: the parity script let FlagEmbedding download the whole model repo (weights twice plus a 2.2 GB ONNX copy). Fix: download only the files we need at the pinned commit and give FlagEmbedding that local folder; compose can reuse the host's model cache (<code>HF_CACHE</code>) instead of downloading 2.3 GB again inside Docker.</li>
+      <li><strong>DVC hashes dependencies when a stage <em>finishes</em></strong>: we edited <code>build.py</code> and <code>params.yaml</code> while the 17-minute index build ran, so <code>dvc.lock</code> recorded the new code as if it had produced the old output and the next <code>dvc repro</code> skipped the stage. Rule: never edit a running stage's dependencies; if you did, <code>dvc repro -f -s index</code>.</li>
+      <li><strong>Windows line endings changed DVC hashes</strong>: Python on Windows writes text files with CRLF, so <code>articles.json</code> had different bytes, a different md5 and a different collection name than the same run on Linux (CI, Docker, Airflow). Fix: every writer passes <code>newline="\n"</code>, a test asserts no <code>\r</code> in the outputs, ruff formats with LF, and a pre-commit hook converts CRLF to LF.</li>
+      <li><strong>The first DAG let <code>index</code> run beside <code>validate</code></strong>; adding the validation metrics as a dependency forces the right order.</li>
+    </ul>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <ul>
+      <li><strong>فحص الـ HTTPS بوّظ أي تنزيل</strong> (في بايثون وجوه الـ Docker build) برسالة "unknown issuer". السبب: Avast بيفحص الـ TLS. الحل: <code>truststore</code> (نستخدم شهادات نظام التشغيل) على الجهاز، والشهادة كـ secret وقت الـ build وmount وقت التشغيل للـ containers.</li>
+      <li><strong>مكتبة الـ embedding الرسمية كانت تقيلة قوي</strong>؛ فكتبنا الحساب بنفسنا وأثبتنا إنه نفس النتيجة.</li>
+      <li><strong>transformers 5 بيتجنب الـ pickle</strong>: نزّل من غير ما يقول نسخة safetensors من bge-m3 من branch بتاع pull request بدل ما يحمّل <code>pytorch_model.bin</code>. صيغة أأمن، بس سؤال "إحنا حمّلنا أنهي أوزان؟" ملوش إجابة مكتوبة. الحل: <code>embedding_revision</code> في <code>params.yaml</code> والـ settings بيثبّت commit واحد؛ وهو جزء من الـ hash بتاع الـ collection، ومتخزن في الـ metadata، والـ API بيرفض index اتبنى من revision تانية.</li>
+      <li><strong>الهارد اتملى</strong>: سكريبت الـ parity خلّى FlagEmbedding ينزّل الـ repo بتاع الموديل كله (الأوزان مرتين ونسخة ONNX بـ 2.2 جيجا). الحل: ننزّل الفايلات اللي محتاجينها بس من الـ commit المتثبّت ونديها لـ FlagEmbedding كفولدر محلي؛ والـ compose يقدر يستخدم الـ cache بتاع الجهاز (<code>HF_CACHE</code>) بدل ما ينزّل 2.3 جيجا تاني جوه Docker.</li>
+      <li><strong>DVC بيحسب الـ hash بتاع الاعتمادات لما المرحلة <em>تخلص</em></strong>: عدّلنا <code>build.py</code> و<code>params.yaml</code> والـ build بتاع الـ index (17 دقيقة) شغال، فـ <code>dvc.lock</code> سجّل الكود الجديد كأنه هو اللي طلّع الناتج القديم، و<code>dvc repro</code> اللي بعده عدّى المرحلة. القاعدة: متعدّلش اعتمادات مرحلة وهي شغالة؛ ولو حصل، <code>dvc repro -f -s index</code>.</li>
+      <li><strong>نهايات السطور في ويندوز غيّرت الـ hash بتاع DVC</strong>: بايثون على ويندوز بيكتب الفايلات بـ CRLF، فـ <code>articles.json</code> بقى ليه bytes وmd5 واسم collection مختلفين عن نفس التشغيل على لينكس (الـ CI وDocker وAirflow). الحل: كل كتابة لفايل بتستخدم <code>newline="\n"</code>، وفيه test بيتأكد إن مفيش <code>\r</code> في النواتج، وruff بيعمل format بـ LF، وhook في الـ pre-commit بيحوّل CRLF لـ LF.</li>
+      <li><strong>أول DAG كان سايب <code>index</code> يشتغل جنب <code>validate</code></strong>؛ ولما حطينا أرقام المراجعة كاعتماد الترتيب اتظبط.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="pager"><a href="01-corpus.html">← Phases 0–1 · Corpus</a><a href="index.html">Guide index →</a></div>
+</main>
+<script src="assets/toggle.js"></script>
+</body>
+</html>

@@ -6,11 +6,11 @@ Ship a production-style, fully observable RAG service over the Egyptian Civil Co
 
 ## Next Step
 
-Phase 1: push branch module-1-corpus, open PR #2, wait for green CI, merge. Then Phase 2 (verify qdrant-client/FlagEmbedding APIs by installing them, then TDD the index builder).
+Phase 2: after `dvc repro` (LF outputs, sorted batching) finishes → parity check, retrieval spot check, alias rollback demo, rebuild image, fix reviewer findings, real /ask once the key is in .env, report, PR #3, tag v0.1.0. Do not edit DVC stage deps while a stage runs.
 
 ## Current Phase
 
-Phase 1
+Phase 2
 
 ## Phases
 
@@ -33,17 +33,20 @@ Full detail (tasks, acceptance checks, decisions, risks) lives in `docs/PLAN.md`
 - [x] dvc init + MinIO remote + dvc.yaml parse→validate; dvc repro idempotent; wipe-and-pull restores identical hashes; 20-article spot check in reports/module-1.md
 - [x] python-reviewer + mle-reviewer findings fixed (see reports/module-1.md "Code review")
 - [x] walkthrough 01-corpus.html
-- [ ] PR #2 merged
-- **Status:** in_progress
+- [x] PR #2 merged (CI green: lint 8s, test 21s)
+- **Status:** complete
 
 ### Phase 2: Vanilla RAG + FastAPI + Docker (tag v0.1.0)
 
-- [ ] index/build.py (bge-m3 CPU dense+sparse → Qdrant alias + index metadata), retrieval.py hybrid RRF + filters
-- [ ] generation.py (OpenAI-compatible, OpenRouter default), pipeline.ask(), prompt with [Art. N] citations + refusal rule
-- [ ] FastAPI /ask (+SSE), /health, /metadata, /feedback; lifespan load-once; correlation-id; JSON logs; 422/500 handlers
-- [ ] tests ≥80% cov; multi-stage non-root Dockerfile; compose profile core; push image; README 3 commands
-- [ ] walkthrough 02-rag-api.html; reports/module-1.md; PR; tag v0.1.0
-- **Status:** pending
+- [x] index/build.py (bge-m3 CPU dense+sparse, pinned revision → Qdrant alias + index metadata), retrieval.py hybrid RRF + filters; real index 2,241 points
+- [x] generation.py (OpenAI-compatible, OpenRouter default), pipeline.ask(), prompt with [Art. N] citations + refusal rule
+- [x] FastAPI /ask (+SSE), /health, /metadata, /feedback; lifespan load-once; correlation-id; JSON logs; 422/500 handlers
+- [x] tests ≥80% cov (142 passed, 92.8%); multi-stage non-root Dockerfile; compose profile core; README 3 commands
+- [ ] bge-m3 parity vs FlagEmbedding; retrieval spot check on the real index; alias rollback demo
+- [ ] real /ask end to end (needs OPENROUTER_API_KEY in .env), local + compose; push image to Docker Hub (ahmedshobaki)
+- [x] walkthrough 02-rag-api.html
+- [ ] reports/module-2.md; reviewers (python, fastapi, security) fixed; PR; tag v0.1.0
+- **Status:** in_progress
 
 ### Phase 3: Eval, MLflow, Decider + JEV ablation (tag v0.2.0)
 
@@ -115,6 +118,11 @@ Full detail (tasks, acceptance checks, decisions, risks) lives in `docs/PLAN.md`
 | minio/minio and quay.io MinIO images no longer pullable | 1 | switched to frozen `bitnamilegacy/minio:2025.7.23` (auto-creates buckets); noted in report |
 | plain `dvc push/pull` skipped the PDF pointer | 2 | root cause: root .gitignore `data/raw/*` made DVC treat the folder as ignored; removed it, DVC writes per-file .gitignore; wipe-and-pull test passes |
 | parser: tanween-ending words broke AR/EN line split | 1 | `_LAST_ARABIC` includes diacritics; regression test added |
+| C: drive full (FlagEmbedding pulled the whole bge-m3 repo incl. 2.2 GB ONNX) | 1 | stopped it; deleted only own caches (partial ONNX, duplicate .bin, uv prune, builder image); parity now loads a pinned local snapshot; compose can bind the host HF cache (`HF_CACHE`) |
+| transformers 5 silently loaded bge-m3 safetensors from a PR branch | 1 | pinned `embedding_revision` (params + settings), in collection hash + index metadata; API refuses a mismatch |
+| `dvc repro` skipped index after code/params edits | 1 | root cause: deps were edited while the stage ran and DVC hashed them at the end; `dvc repro -f -s index`; rule: no dep edits during a run |
+| CRLF on Windows → DVC output md5 differs from Linux | 1 | `newline="\n"` in every writer + tests; ruff `line-ending = "lf"`; pre-commit `mixed-line-ending --fix=lf` |
+| heredoc/sed escapes turned `\r`/`\n` into real control chars | 2 | edit files with the Edit tool or a scratchpad script, never escapes inside heredocs |
 
 ## Notes
 

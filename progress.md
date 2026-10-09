@@ -21,7 +21,7 @@
 
 ### Phase 1: Corpus pipeline
 
-- **Status:** in_progress (awaiting PR merge)
+- **Status:** complete (PR #2 merged)
 - Actions taken:
   - Surveyed pypdf output (header counts, reversed digits, layouts); TDD parser on 3 synthetic samples; 4 audit rounds on the real PDF
   - DVC with MinIO (bitnamilegacy image); wipe-and-pull test exposed .gitignore bug, fixed
@@ -32,6 +32,25 @@
   - Ruling: truststore injected in legalrag/__init__.py — Python's certifi fails behind this machine's HTTPS inspection — cost if wrong: none
   - Ruling: docs-lookup agent had no Context7 access; Phase 2 APIs will be verified by installing and testing the libraries
 - Files: src/legalrag/ingest/{normalize,schema,params,parse,validate}.py, tests/unit/*, tests/integration/test_corpus_real.py, params.yaml, dvc.yaml, dvc.lock, reports/module-1.md, docs/walkthrough/01-corpus.html
+
+### Phase 2: Vanilla RAG + FastAPI + Docker
+
+- **Status:** in_progress (branch module-2-rag-api)
+- Actions taken:
+  - TDD index (embedder, store, build), retrieval (hybrid RRF + explicit refs), generation, pipeline, API (schemas, middleware, main); Dockerfile + entrypoint + compose core
+  - Verified qdrant-client by experiment (in-memory hybrid RRF + aliases) because docs-lookup had no Context7
+  - First real index: 2,241 points, 1,028 s embedding; second (pinned revision): 3,764 s; power scheme "Silent" observed during the third run (cause of the variance not verified)
+  - Disk full (C: 300 MB free): stopped the parity run that pulled the whole bge-m3 repo; removed only own caches; asked user, who chose "decide later" for Phases 4–6 disk space
+  - Pinned bge-m3 revision 9a0624b8 (params + settings + index metadata + startup check)
+  - DVC skipped a stage after mid-run dep edits → forced rerun; rule recorded
+  - CRLF outputs on Windows → `newline="\n"` in every writer + tests; ruff LF; pre-commit mixed-line-ending
+  - Docker Hub user is `ahmedshobaki` (from the Docker Desktop login), not the GitHub handle
+  - Reviews (python, fastapi, security): no CRITICAL. Fixed: SSE error event, provider 4xx → 502, stream closed on disconnect + lazy request, /health off the event loop, /feedback sync + id pattern, lifespan cleanup, middleware finally/fullmatch, regex boundaries, explicit refs kept in context, empty choices, volume dirs owned by app, entrypoint -f, CA placeholder tracked, ports on 127.0.0.1, required passwords, qdrant healthcheck, .env.* ignored
+  - Ruling: HEALTHCHECK stays on /health (readiness) — Docker does not restart unhealthy containers, so "unhealthy" honestly means "cannot serve"; k8s gets separate probes in Phase 6 — cost if wrong: low
+  - Ruling: api keeps `env_file: ../.env` — all services are local and loopback-only; per-service secrets come with k8s Secrets in Phase 6 — cost if wrong: low
+  - Ruling: /ask and /feedback throttling + auth deferred to Phase 4 (Redis token bucket) — ports are loopback-only now — cost if wrong: low
+  - Ruling: pinned revision kept in IndexParams default + Settings + params.yaml — the startup check refuses any drift — cost if wrong: none
+  - Ruling: Docker base images pinned by tag, not digest — course scale; Phase 4 CI builds are reproducible from uv.lock — cost if wrong: low
 
 ## Test Results
 

@@ -10,7 +10,10 @@ dist/
 *.egg-info/
 # secrets & local
 .env
+.env.*
+!.env.example
 *.pem
+!docker/no-local-ca.pem
 # data files are git-ignored by DVC itself (it writes a .gitignore next to each tracked file)
 # course copyright material (local reference only)
 /docs/research/course_materials/

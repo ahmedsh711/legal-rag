@@ -99,7 +99,7 @@ Rubric rows: 01 packaging · 02 API · 03 Docker · 04 MLflow · 05 DVC · 06 CI
 - `retrieval.py` hybrid RRF + payload filters (`book`, `is_repealed=false` default) → `Chunk` objects. `generation.py` OpenAI-compatible client (`LLM_BASE_URL/LLM_MODEL/LLM_API_KEY`), timeout, prompt with inline `[Art. N]` citations and "refuse if not in context" rule; `pipeline.py` `ask()` retrieve → generate.
 - FastAPI: `/ask` (JSON; `stream=true` SSE), `/health` (`{status, documents_indexed, index_version}`), `/metadata`, `/feedback`; Pydantic `Field(min_length=3, max_length=2000)` → 422; lifespan load-once (Qdrant client, embedder, config); `run_in_threadpool` for CPU embed; correlation-id middleware; JSON logs (structlog) with `request_id, stage, duration_ms, model_version`; exception handlers (422 clean, 500 no traceback leak).
 - Tests: conftest fixtures (sample articles, fake Qdrant, mocked LLM), `test_parse`, `test_normalize`, `test_retrieval`, `test_api` (200/422/health/schema contract), parametrize edge cases; coverage ≥80%.
-- Multi-stage `Dockerfile` (uv, non-root, HEALTHCHECK), `.dockerignore`, compose profile `core` (qdrant, redis, api); push `shobaki/legal-rag-api:0.1.0` + `latest`; README 3 commands.
+- Multi-stage `Dockerfile` (uv, non-root, HEALTHCHECK), `.dockerignore`, compose profile `core` (qdrant, redis, api); push `ahmedshobaki/legal-rag-api:0.1.0` + `latest`; README 3 commands.
 - Walkthrough `02-rag-api.html`: every file + function, Pydantic/lifespan/async/logging/Docker choices.
 
 ### Phase 3 — Evaluation, MLflow, Decider + JEV ablation (rubric 04) — tag v0.2.0
