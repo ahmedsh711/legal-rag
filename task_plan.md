@@ -6,11 +6,11 @@ Ship a production-style, fully observable RAG service over the Egyptian Civil Co
 
 ## Next Step
 
-Phase 2: open PR #3 (module-2-rag-api), wait for CI, merge, tag v0.1.0. Then Phase 3: golden set + to_label.csv, RAGAS 0.4 (check docs first), MLflow stack, Decider (Jev via OpenRouter `typesafe/jev-router` — verify the API), reranker ablation vs the Phase 2 baseline numbers in reports/module-2.md. Do not edit DVC stage deps while a stage runs.
+Phase 3 (branch module-3-eval-mlflow-jev): golden set + to_label.csv, RAGAS 0.4 (check docs first), MLflow stack, Decider (Jev via OpenRouter `typesafe/jev-router` — verify the API), reranker ablation vs the Phase 2 baseline numbers in reports/module-2.md. Do not edit DVC stage deps while a stage runs.
 
 ## Current Phase
 
-Phase 2
+Phase 3
 
 ## Phases
 
@@ -46,17 +46,17 @@ Full detail (tasks, acceptance checks, decisions, risks) lives in `docs/PLAN.md`
 - [x] real /ask end to end through the container (prompt v1→v3, 8/9 correct, $0.00014/question); image pushed as ahmedshobaki/legal-rag-api:0.1.0
 - [x] walkthrough 02-rag-api.html
 - [x] reports/module-2.md; reviewers (python, fastapi, security) fixed
-- [ ] PR #3 green + merged; tag v0.1.0
-- **Status:** in_progress
+- [x] PR #3 green (lint + test) + merged; tag v0.1.0
+- **Status:** complete
 
-### Phase 3: Eval, MLflow, Decider + JEV ablation (tag v0.2.0)
+### Phase 3: Eval, MLflow, Decider + JEV ablation (tag v0.2.0, branch module-3-eval-mlflow-jev)
 
 - [ ] golden_set.jsonl ≥50 Q (25 AR + 25 EN mirrored, categories) + to_label.csv for 20 human faithfulness labels
 - [ ] eval/ragas_run.py (RAGAS 0.4, per-language) → MLflow; eval/judge.py calibration + bias tests
 - [ ] MLflow stack (tracking profile); ≥6 runs: chunking, top-k, embedding, prompt; rag_config artifact; registry alias production
 - [ ] decider/base.py, jev.py, local.py + tests; eval/ablation.py none/local/jev; AR-vs-EN agreement test
-- [ ] walkthrough 03-eval-mlflow-jev.html; reports/module-2.md; PR; tag v0.2.0
-- **Status:** pending
+- [ ] walkthrough 03-eval-mlflow-jev.html; reports/module-3.md; PR; tag v0.2.0
+- **Status:** in_progress
 
 ### Phase 4: Production serving, CI/CD, load (tag v0.3.0)
 

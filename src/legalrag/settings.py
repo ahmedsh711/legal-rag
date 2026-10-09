@@ -26,9 +26,10 @@ class Settings(BaseSettings):
     llm_backend: Literal["openrouter", "vllm"] = "openrouter"
     openrouter_api_key: SecretStr = SecretStr("")
     llm_base_url: str = "https://openrouter.ai/api/v1"
-    llm_model: str = (
-        "qwen/qwen3-235b-a22b-2507"  # strong multilingual, $0.09/M input tokens (Oct 2026)
-    )
+    llm_model: str = "qwen/qwen3-235b-a22b-2507"  # strong multilingual, cheap
+    # USD per million tokens for llm_model (OpenRouter /models, checked 2026-10-09); eval cost
+    llm_price_in_per_m: float = 0.09
+    llm_price_out_per_m: float = 0.55
     judge_model: str = (
         "anthropic/claude-haiku-5.5"  # different family from the generator (self-preference bias)
     )
@@ -38,19 +39,15 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 800
     llm_temperature: float = 0.0
 
-    # --- Jev decision model ---
-    decider_backend: Literal["jev", "local"] = "jev"
-    typesafe_api_key: SecretStr = SecretStr("")
-    jev_model: str = "jev-1.13.0"
-    jev_timeout_s: float = 2.0
-    # tiers from the JEV-RAG pattern: act / second opinion / refuse
-    tier_act: float = Field(0.90, ge=0, le=1)
-    tier_second_opinion: float = Field(0.60, ge=0, le=1)
-    gate_threshold: float = Field(0.75, ge=0, le=1)
-    validate_threshold: float = Field(0.75, ge=0, le=1)
-    rerank_keep_top: int = 5
-    retrieve_top_n: int = 12
-    jev_translate_query: bool = False
+    # --- decider: rerank + "can we answer?" gate (none | jev | local) ---
+    decider_backend: Literal["none", "jev", "local"] = "none"
+    # Jev through OpenRouter's /systemone endpoint (same key as generation; one bill)
+    jev_base_url: str = "https://openrouter.ai/api/v1"
+    jev_model: str = "jev-1.13"
+    jev_timeout_s: float = 10.0  # first call measured 2.9 s
+    gate_threshold: float = Field(0.75, ge=0, le=1)  # below this: refuse without calling the LLM
+    rerank_keep_top: int = 5  # articles shown to the LLM
+    retrieve_top_n: int = 12  # articles retrieved and scored by the decider
 
     # --- retrieval ---
     embedding_model: str = "BAAI/bge-m3"
@@ -63,7 +60,8 @@ class Settings(BaseSettings):
     # "localhost" tries IPv6 (::1) first -> every Qdrant call waited ~2 s (measured 2,069 vs 17 ms)
     qdrant_url: str = "http://127.0.0.1:6333"
     qdrant_collection_alias: str = "articles"
-    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"  # the local decider (cross-encoder)
+    reranker_revision: str = "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"  # pragma: allowlist secret
 
     # --- data paths (relative to repo root) ---
     raw_pdf_path: str = "data/raw/egyptian_civil_code.pdf"

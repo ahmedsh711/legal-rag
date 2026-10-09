@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from legalrag.decider.base import Decider, DeciderUnavailableError, Decision
 from legalrag.generation import (
     PROMPT_VERSION,
     Generator,
@@ -45,6 +46,15 @@ class Answer:
     model: str = ""
     usage: dict[str, int] = field(default_factory=dict)
     timings_ms: dict[str, float] = field(default_factory=dict)
+    decision: Decision | None = None  # rerank + gate, when a decider ran
+
+
+@dataclass
+class _Context:
+    chunks: list[Chunk]  # what the model is (or would be) shown, best first
+    decision: Decision | None
+    gated: bool  # the decider said "not answerable from these articles"
+    timings: dict[str, float]
 
 
 def _ms(start: float) -> float:
@@ -58,14 +68,41 @@ class RagPipeline:
         generator: Generator,
         context_size: int = 5,
         top_n: int = 12,
+        decider: Decider | None = None,
+        gate_threshold: float = 0.75,
     ):
         self.retriever, self.generator = retriever, generator
         self.context_size, self.top_n = context_size, top_n
+        self.decider, self.gate_threshold = decider, gate_threshold
 
-    async def _context(self, question: str, book: str | None) -> list[Chunk]:
+    async def _context(self, question: str, book: str | None) -> _Context:
+        t0 = time.perf_counter()
         chunks = await asyncio.to_thread(self.retriever.retrieve, question, self.top_n, book)
-        # articles the user names come first and are always shown to the model
-        return chunks[: max(self.context_size, len(article_numbers_in(question)), 1)]
+        timings = {"retrieve": _ms(t0)}
+        named = article_numbers_in(question)
+        t1 = time.perf_counter()
+        decision = await self._decide(question, chunks)
+        if self.decider is not None:
+            timings["decide"] = _ms(t1)
+        if decision:  # rerank; articles the user names stay first, in retrieval order
+            rest = [c for c in chunks if c.article_number not in named]
+            rest.sort(key=lambda c: -decision.relevance.get(c.article_number, 0.0))
+            chunks = [c for c in chunks if c.article_number in named] + rest
+        # a question that names an article is answerable by definition: no gate
+        gated = decision is not None and not named and decision.answerable < self.gate_threshold
+        keep = chunks[: max(self.context_size, len(named), 1)]
+        return _Context(keep, decision, gated, timings)
+
+    async def _decide(self, question: str, chunks: list[Chunk]) -> Decision | None:
+        if self.decider is None or not chunks:
+            return None
+        try:
+            return await self.decider.decide(question, chunks)
+        except DeciderUnavailableError as exc:
+            # degraded (retrieval order, no gate), not down
+            # ponytail: per-request fallback; add a circuit breaker if the decider flaps
+            log.warning("decider_unavailable", decider=self.decider.name, error=str(exc))
+            return None
 
     def _finish(self, language: str, text: str, context: list[Chunk]) -> dict[str, Any]:
         cited = cited_articles(text)  # [Art. N] brackets: what the prompt asks for
@@ -92,18 +129,21 @@ class RagPipeline:
     async def ask(self, question: str, book: str | None = None) -> Answer:
         t0 = time.perf_counter()
         language = detect_language(question)
-        context = await self._context(question, book)
-        timings = {"retrieve": _ms(t0)}
-        if not context:  # nothing to ground an answer on: refuse without spending tokens
+        ctx = await self._context(question, book)
+        context = ctx.chunks
+        timings = dict(ctx.timings)
+        if not context or ctx.gated:  # nothing to ground an answer on: refuse, spend no tokens
+            log.info("refused_before_llm", gated=ctx.gated, context=len(context))
             return Answer(
                 question,
                 refusal_for(language),
                 language,
                 [],
-                [],
+                context,
                 True,
                 [],
                 timings_ms={**timings, "total": _ms(t0)},
+                decision=ctx.decision,
             )
 
         t1 = time.perf_counter()
@@ -130,6 +170,7 @@ class RagPipeline:
                 "completion_tokens": completion.completion_tokens,
             },
             timings_ms=timings,
+            decision=ctx.decision,
             **checked,
         )
 
@@ -139,8 +180,9 @@ class RagPipeline:
         """Server-sent events: {"type": "token", "text": ...} ... then one {"type": "done", ...}."""
         t0 = time.perf_counter()
         language = detect_language(question)
-        context = await self._context(question, book)
-        if not context:
+        ctx = await self._context(question, book)
+        context = ctx.chunks
+        if not context or ctx.gated:
             yield {"type": "token", "text": refusal_for(language)}
             yield {"type": "done", "refused": True, "sources": [], "invalid_citations": []}
             return

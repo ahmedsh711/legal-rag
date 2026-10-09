@@ -67,7 +67,8 @@ def cited_articles(answer: str) -> list[int]:
     return numbers
 
 
-def _format_article(c: Any) -> str:
+def format_article(c: Any) -> str:
+    """One article exactly as the model sees it (also what the RAGAS judge checks against)."""
     if c.is_repealed:
         return f"[Art. {c.article_number}] REPEALED. {c.note}"
     where = " / ".join(x for x in (c.section, c.topic) if x)
@@ -80,7 +81,7 @@ def _format_article(c: Any) -> str:
 
 
 def build_messages(question: str, chunks: Sequence[Any]) -> list[dict[str, str]]:
-    articles = "\n\n".join(_format_article(c) for c in chunks)
+    articles = "\n\n".join(format_article(c) for c in chunks)
     # said explicitly: with Arabic and English article text in context, rule 5 alone was ignored
     language = "Arabic" if detect_language(question) == "ar" else "English"
     user = f"<articles>\n{articles}\n</articles>\n\nAnswer in {language}.\nQuestion: {question}"
