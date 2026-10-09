@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+SCHEMA_VERSION = "1"  # bump when fields change; written to articles.meta.json
 
 
 class Article(BaseModel):
@@ -10,9 +12,13 @@ class Article(BaseModel):
 
     Hierarchy follows the Arabic headings, named like the English edition of the PDF:
     الكتاب -> book, الباب -> chapter, الفصل -> section, الفرع -> subsection, numbered headings -> topic.
+    ``id``, ``citation`` and ``citation_ar`` are derived from ``article_number`` and checked on load.
     """
 
+    model_config = ConfigDict(extra="forbid")  # an unknown field means a schema mismatch: fail
+
     article_number: int = Field(ge=1)
+    id: str = ""
     book: str = ""
     chapter: str = ""
     section: str = ""
@@ -23,9 +29,23 @@ class Article(BaseModel):
     text_en: str = ""
     is_repealed: bool = False
     note: str = ""
+    quality_flags: list[str] = Field(default_factory=list)  # documented source defects
     source_page: int = Field(ge=1)
     citation: str = ""
+    citation_ar: str = ""
 
-    def model_post_init(self, __context) -> None:
-        if not self.citation:
-            self.citation = f"Egyptian Civil Code, Article {self.article_number}"
+    @model_validator(mode="after")
+    def _derived_fields(self) -> Article:
+        n = self.article_number
+        expected = {
+            "id": f"eg-civil-{n}",
+            "citation": f"Egyptian Civil Code, Article {n}",
+            "citation_ar": f"القانون المدني المصري، المادة {n}",
+        }
+        for field, value in expected.items():
+            current = getattr(self, field)
+            if not current:
+                setattr(self, field, value)
+            elif current != value:
+                raise ValueError(f"{field}={current!r} does not match article_number {n}")
+        return self

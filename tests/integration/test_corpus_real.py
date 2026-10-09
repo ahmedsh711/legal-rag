@@ -4,9 +4,9 @@ import random
 from pathlib import Path
 
 import pytest
-import yaml
 
-from legalrag.ingest.parse import parse_pdf
+from legalrag.ingest.params import load_params
+from legalrag.ingest.parse import apply_quality_flags, parse_pdf
 from legalrag.ingest.validate import validate_articles
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,12 +15,17 @@ pytestmark = pytest.mark.skipif(not PDF.exists(), reason="corpus PDF not present
 
 
 @pytest.fixture(scope="module")
-def articles():
-    return {a.article_number: a for a in parse_pdf(PDF)}
+def params():
+    return load_params(ROOT / "params.yaml")
 
 
-def test_every_article_number_is_present(articles):
-    assert sorted(articles) == list(range(1, 1150))
+@pytest.fixture(scope="module")
+def articles(params):
+    return {a.article_number: a for a in apply_quality_flags(parse_pdf(PDF), params)}
+
+
+def test_every_article_number_is_present(articles, params):
+    assert sorted(articles) == list(range(1, params.expected_articles + 1))
 
 
 def test_repealed_ranges_come_from_the_pdf_notes(articles):
@@ -52,20 +57,21 @@ def test_hierarchy_is_captured(articles):
     assert "BOOK I" in a.heading_en
 
 
-def test_corpus_passes_validation(articles):
-    params = yaml.safe_load((ROOT / "params.yaml").read_text(encoding="utf-8"))["corpus"]
-    report = validate_articles(
-        list(articles.values()),
-        params["expected_articles"],
-        params["max_chars"],
-        {int(k): v for k, v in params["known_anomalies"].items()},
-    )
+def test_corpus_passes_validation(articles, params):
+    report = validate_articles(list(articles.values()), params)
     assert report.ok, report.errors[:5]
+
+
+def test_documented_anomalies_are_flagged(articles):
+    assert articles[1022].quality_flags == ["arabic_text_inside_article_1021"]
+    assert articles[1021].quality_flags == ["contains_arabic_of_article_1022"]
+    assert articles[54].text_en == ""  # the repeal note is a note, not article text
 
 
 def test_random_spot_check_of_20_articles(articles):
     live = [a for a in articles.values() if not a.is_repealed and a.text_ar]
     for a in random.Random(42).sample(live, 20):
         assert "Article" not in a.text_ar and "مادة" not in a.text_ar[:6]
-        assert a.text_en[:1].isupper() or a.text_en[:1] in "(*", a.text_en[:40]
+        assert a.text_en, a.article_number
+        assert a.text_en[0].isupper() or a.text_en[0] == "(", a.text_en[:40]
         assert a.citation == f"Egyptian Civil Code, Article {a.article_number}"

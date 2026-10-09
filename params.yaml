@@ -1,6 +1,46 @@
-# Parameters tracked by DVC: changing one re-runs only the stages that depend on it.
+# Parameters tracked by DVC: changing one re-runs only the stages that use it.
 corpus:
   expected_articles: 1149   # the Egyptian Civil Code has 1,149 articles
-  max_chars: 2500           # per language; a longer record means an article split failed
-  known_anomalies:          # source-PDF problems we flag instead of hiding (see reports/module-1.md)
-    1022: "Arabic text of Article 1022 is merged into Article 1021's Arabic block in the source PDF"
+  max_chars_ar: 1800        # ~1.25x the longest measured Arabic article (1,419)
+  max_chars_en: 2700        # ~1.25x the longest measured English article (2,141)
+  length_ratio: [0.9, 2.8]  # English/Arabic chars; measured p0.5 = 0.98, p99.5 = 2.59
+
+  # golden checks: these phrases must stay in these articles, whatever the parser change
+  pinned:
+    1: "تسرى النصوص التشريعية"
+    89: "يتم العقد بمجرد أن يتبادل طرفان"
+    147: "العقد شريعة المتعاقدين"
+    374: "خمس عشرة سنة"
+    418: "أن ينقل للمشتري"
+    802: "لمالك الشيء وحده"
+    1030: "الرهن الرسمي عقد"
+    1149: "للشركاء الذين اقتسموا"
+  book_starts:
+    89: "الكتاب الأول"
+    418: "الكتاب الثاني"
+    802: "الكتاب الثالث"
+    1030: "الكتاب الرابع"
+
+  # defects in the SOURCE PDF, flagged instead of hidden (reports/module-1.md).
+  # `allow` lists the only checks that become warnings; `flag` is copied onto the record.
+  known_anomalies:
+    1022:
+      reason: "the PDF prints Article 1022's Arabic inside Article 1021's Arabic block"
+      flag: arabic_text_inside_article_1021
+      allow: [empty_ar]
+    1021:
+      reason: "its Arabic block also contains the Arabic of Article 1022"
+      flag: contains_arabic_of_article_1022
+      allow: [length_ratio]
+    970:
+      reason: "the Arabic includes later amendments (state property) that the English translation lacks"
+      flag: arabic_newer_than_english
+      allow: [length_ratio]
+    519:
+      reason: "the PDF's Arabic is one sentence; the English translation has three"
+      flag: arabic_shorter_than_english
+      allow: [length_ratio]
+    1060:
+      reason: "the PDF's Arabic has one paragraph; the English has two (the second is scrambled)"
+      flag: arabic_shorter_than_english
+      allow: [length_ratio]
