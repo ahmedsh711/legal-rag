@@ -2,7 +2,7 @@
 
 from legalrag.eval.golden import GoldenItem
 from legalrag.eval.metrics import Prediction
-from legalrag.eval.run import read_predictions, run_golden, write_predictions
+from legalrag.eval.run import read_predictions, run_golden, summarize_retrieval, write_predictions
 from legalrag.generation import REFUSAL_EN, Generator
 from legalrag.pipeline import RagPipeline
 from legalrag.retrieval import Chunk
@@ -39,6 +39,15 @@ async def test_run_golden_records_what_the_pipeline_did():
     assert first.prompt_tokens == 120 and first.latency_ms > 0
     assert "A lease is a contract" in first.context_texts[0]  # what RAGAS will judge against
     assert first.reference == "A lease is a contract [Art. 558]."
+
+
+async def test_retrieval_only_never_calls_the_llm():
+    llm = FakeLLM("should not be called")
+    pipe = RagPipeline(StubRetriever(), Generator(llm, "m", 100, 0.0))
+    preds = await run_golden(pipe, ITEMS, generate=False)
+    assert llm.calls == [] and preds[0].context_articles == [558] and preds[0].answer == ""
+    assert summarize_retrieval(preds)["all"].keys() >= {"hit_at_1", "mrr", "correct_refusal_rate"}
+    assert "citation_recall" not in summarize_retrieval(preds)["all"]
 
 
 def test_predictions_round_trip(tmp_path):

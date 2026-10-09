@@ -2,7 +2,7 @@
 
 import pytest
 
-from legalrag.eval.metrics import Prediction, summarize
+from legalrag.eval.metrics import Prediction, gate_sweep, summarize
 
 
 def pred(**kw) -> Prediction:
@@ -67,6 +67,22 @@ def test_language_match_latency_tokens_and_cost():
     assert s["all"]["latency_p50_ms"] == pytest.approx(2000.0)
     assert s["all"]["cost_usd"] == pytest.approx(2 * (1000 * 0.09 + 50 * 0.55) / 1e6)
     assert s["all"]["n"] == 2 and s["ar"]["n"] == 1
+
+
+def test_gate_sweep_replays_refusals_at_each_threshold():
+    preds = [
+        pred(id="a1", answerable_score=0.9),
+        pred(id="a2", answerable_score=0.6),
+        pred(id="a3", answerable_score=0.6, refused=True),  # the LLM refused anyway
+        pred(id="o1", category="off_topic", gold_articles=[], answerable_score=0.7),
+        pred(id="o2", category="injection", gold_articles=[], answerable_score=0.1),
+    ]
+    rows = {r["threshold"]: r for r in gate_sweep(preds, [0.0, 0.65, 0.8])}
+    assert rows[0.0]["false_refusal_rate"] == pytest.approx(1 / 3)  # only the LLM's own refusal
+    assert rows[0.0]["correct_refusal_rate"] == 0.0
+    assert rows[0.65]["false_refusal_rate"] == pytest.approx(2 / 3)
+    assert rows[0.65]["correct_refusal_rate"] == pytest.approx(1 / 2)
+    assert rows[0.8]["correct_refusal_rate"] == 1.0
 
 
 def test_repealed_items_count_as_answerable():

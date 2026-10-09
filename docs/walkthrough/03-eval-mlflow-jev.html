@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evaluation and Jev · legal-rag guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Fraunces:opsz,wght@9..144,600&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-lang="both">
+<header class="topbar">
+  <div class="crumbs"><a href="index.html">legal-rag guide</a> / Phase 3 · evaluation, MLflow, Jev</div>
+  <div class="lang-toggle" role="group" aria-label="Language">
+    <button type="button" data-lang="en">EN</button>
+    <button type="button" data-lang="ar">عربي</button>
+    <button type="button" data-lang="both">Both · الاتنين</button>
+  </div>
+</header>
+<main>
+<p class="eyebrow">Phase 3 · code tour</p>
+<h1><span class="en">Measure first, then let a decision model improve it</span><span class="ar">قيس الأول، وبعدين خلّي موديل القرارات يحسّن</span></h1>
+
+<div class="pair">
+  <div class="en"><p class="lede">Phase 2 answers questions; Phase 3 tells us <em>how well</em>, in numbers we can compare. A fixed set of questions with known answers (the golden set) is run through the pipeline; free deterministic metrics and an LLM judge (RAGAS) score it; every run lands in MLflow with the exact config and data versions. Then the JEV-RAG idea is tested: does a decision model (Jev) or a local cross-encoder reranker beat plain retrieval? Concepts: <a href="00c-eval-tracking.html">Concepts 3 · evaluation and tracking</a>, <a href="00b-rag-jev.html">Concepts 2 · JEV-RAG</a>.</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p class="lede">المرحلة 2 بتجاوب على الأسئلة؛ والمرحلة 3 بتقولنا <em>بتجاوب كويس قد إيه</em>، بأرقام نقدر نقارنها. مجموعة ثابتة من الأسئلة إجاباتها معروفة (الـ golden set) بتعدي على الـ pipeline؛ ومقاييس محسوبة من غير أي موديل (ببلاش) وحَكَم LLM (‏RAGAS) بيدّوها درجات؛ وكل تشغيلة بتتسجل في MLflow بالإعدادات ونسخ الداتا بالظبط. وبعدين بنختبر فكرة JEV-RAG: هل موديل القرارات (Jev) أو reranker محلي (cross-encoder) أحسن من الـ retrieval العادي؟ المفاهيم في صفحة المفاهيم 3 (التقييم والتتبع) والمفاهيم 2 (JEV-RAG).</p></div>
+</div>
+
+<nav class="toc" aria-label="On this page">
+  <strong>On this page · في الصفحة دي</strong>
+  <ol>
+    <li><a href="#flow">The evaluation loop</a></li>
+    <li><a href="#golden">eval/golden.py: the golden set</a></li>
+    <li><a href="#metrics">eval/metrics.py: free, exact metrics</a></li>
+    <li><a href="#ragas">eval/ragas_run.py: the LLM judge</a></li>
+    <li><a href="#judge">eval/judge.py: can we trust the judge?</a></li>
+    <li><a href="#decider">decider/: Jev and the local reranker</a></li>
+    <li><a href="#run">eval/run.py: one command per experiment</a></li>
+    <li><a href="#mlflow">eval/track.py + MLflow server</a></li>
+    <li><a href="#results">Results</a></li>
+    <li><a href="#lessons">Problems we hit</a></li>
+  </ol>
+</nav>
+
+<h2 id="flow"><span class="en">1. The evaluation loop</span><span class="ar">1. دورة التقييم</span></h2>
+<div class="flow" aria-label="Evaluation flow">
+  <div class="step"><b>golden set</b>56 questions, known answers</div><span class="arrow">→</span>
+  <div class="step"><b>run</b>pipeline (or retrieval only)</div><span class="arrow">→</span>
+  <div class="step"><b>predictions</b>answer, citations, context, cost</div><span class="arrow">→</span>
+  <div class="step" style="border-color:var(--accent)"><b>score</b>exact metrics + RAGAS judge</div><span class="arrow">→</span>
+  <div class="step"><b>MLflow run</b>params, metrics, lineage</div><span class="arrow">→</span>
+  <div class="step"><b>registry</b>best config @production</div>
+</div>
+<div class="pair">
+  <div class="en"><p>The predictions file is the hinge: the expensive part (calling the pipeline) runs once, and any number of scorers read the file afterwards. That is why a judge failure halfway did not cost us the pipeline run (see Problems).</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p>فايل الـ predictions هو المفصلة: الجزء الغالي (تشغيل الـ pipeline) بيحصل مرة واحدة، وأي عدد من طرق التقييم بيقرأ الفايل بعدها. وعشان كده لما الحَكَم وقع في النص مخسرناش تشغيلة الـ pipeline (شوف المشاكل تحت).</p></div>
+</div>
+
+<h2 id="golden"><span class="en">2. <code>eval/golden.py</code>: the golden set</span><span class="ar">2. <code>eval/golden.py</code>: الـ golden set</span></h2>
+<div class="pair">
+  <div class="en">
+    <p><code>data/golden/golden_set.jsonl</code>: 28 pairs, each asked once in Arabic and once in English (56 questions), so the two languages are compared on <em>exactly</em> the same questions. Every reference answer was written after reading the article text in <code>articles.json</code>, not from memory.</p>
+    <ul>
+      <li><strong>in_scope</strong> (21 pairs, all four books) and <strong>explicit_ref</strong> ("What does Article 1 say…"): answerable; <code>gold_articles</code> are the articles a correct answer must cite.</li>
+      <li><strong>repealed</strong> (Articles 60, 400): a correct answer says "repealed".</li>
+      <li><strong>off_topic</strong> (tax, criminal law) and <strong>injection</strong> ("ignore all previous instructions…"): the correct answer is the exact refusal sentence.</li>
+    </ul>
+    <p><code>GoldenItem</code> validates each line (language matches the question, unanswerable items carry the exact refusal); <code>check_golden()</code> finds duplicates, unmirrored pairs and, with the corpus, wrong or repealed article numbers. A typo in a gold article fails a test instead of silently lowering a metric.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p><code>data/golden/golden_set.jsonl</code>: 28 زوج، كل سؤال مرة بالعربي ومرة بالإنجليزي (56 سؤال)، عشان نقارن اللغتين على نفس الأسئلة <em>بالظبط</em>. وكل إجابة مرجعية اتكتبت بعد ما قرينا نص المادة في <code>articles.json</code>، مش من الذاكرة.</p>
+    <ul>
+      <li><strong>in_scope</strong> (‏21 زوج من الكتب الأربعة) و<strong>explicit_ref</strong> ("المادة 1 بتقول إيه…"): ليها إجابة؛ و<code>gold_articles</code> هي المواد اللي الإجابة الصح لازم تذكرها.</li>
+      <li><strong>repealed</strong> (المادة 60 والمادة 400): الإجابة الصح تقول "اتلغت".</li>
+      <li><strong>off_topic</strong> (ضرايب، قانون جنائي) و<strong>injection</strong> ("تجاهل كل التعليمات…"): الإجابة الصح هي جملة الرفض بالظبط.</li>
+    </ul>
+    <p><code>GoldenItem</code> بيراجع كل سطر (اللغة مطابقة للسؤال، والأسئلة اللي ملهاش إجابة معاها جملة الرفض بالظبط)؛ و<code>check_golden()</code> بتلاقي التكرار، والأزواج المش متطابقة، ومع الـ corpus بتلاقي أرقام مواد غلط أو ملغية. غلطة في رقم مادة بتفشّل test بدل ما تنزّل رقم من غير ما حد ياخد باله.</p>
+  </div>
+</div>
+
+<h2 id="metrics"><span class="en">3. <code>eval/metrics.py</code>: free, exact metrics</span><span class="ar">3. <code>eval/metrics.py</code>: مقاييس ببلاش ودقيقة</span></h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>Metric</th><th class="en">What it measures (which stage it blames)</th><th class="ar">بيقيس إيه (وبيلوم أنهي مرحلة)</th></tr></thead>
+  <tbody>
+    <tr><td><code>hit_at_1</code>, <code>hit_at_5</code>, <code>mrr</code></td><td class="en">Is a gold article first / in the five shown to the model; MRR = mean of 1/rank. Retrieval and reranking.</td><td class="ar">هل مادة صح طلعت أولى / من الخمسة اللي اتعرضوا على الموديل؛ والـ MRR متوسط 1/الترتيب. الـ retrieval والـ rerank.</td></tr>
+    <tr><td><code>citation_recall</code>, <code>citation_precision</code></td><td class="en">Did the answer cite the gold articles; how many of its citations are gold. Generation.</td><td class="ar">هل الإجابة ذكرت المواد الصح؛ وقد إيه من اللي ذكرته صح. الكتابة.</td></tr>
+    <tr><td><code>false_refusal_rate</code>, <code>correct_refusal_rate</code></td><td class="en">Refusing an answerable question vs refusing an off-topic/injection one. The gate and the prompt.</td><td class="ar">رفض سؤال ليه إجابة قصاد رفض سؤال بره الموضوع أو injection. الـ gate والـ prompt.</td></tr>
+    <tr><td><code>language_match</code>, <code>invalid_citation_rate</code></td><td class="en">Answer in the question's language; citations of articles never shown (hallucinated). Generation.</td><td class="ar">الإجابة بلغة السؤال؛ واستشهادات بمواد عمرها ما اتعرضت (متألّفة). الكتابة.</td></tr>
+    <tr><td><code>latency_p50/p95_ms</code>, tokens, <code>cost_usd</code></td><td class="en">Speed and money, including the decider's own cost.</td><td class="ar">السرعة والفلوس، ومعاها تكلفة الـ decider نفسه.</td></tr>
+  </tbody>
+</table></div>
+<div class="pair">
+  <div class="en"><p>Everything is reported overall and per language. <code>gate_sweep()</code> replays the answerability gate at every threshold from saved scores: one run, the whole trade-off curve, no extra API calls.</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p>كل حاجة بتطلع للكل ولكل لغة لوحدها. و<code>gate_sweep()</code> بتعيد تشغيل الـ gate على كل threshold من الدرجات المتسجلة: تشغيلة واحدة، والمنحنى كله، ومن غير أي نداء API زيادة.</p></div>
+</div>
+
+<h2 id="ragas"><span class="en">4. <code>eval/ragas_run.py</code>: the LLM judge</span><span class="ar">4. <code>eval/ragas_run.py</code>: الحَكَم الـ LLM</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>RAGAS asks a judge model four questions, each blaming a different stage: <strong>faithfulness</strong> (is every claim supported by the articles? generation), <strong>answer relevancy</strong> (does it address the question? generation), <strong>context precision</strong> (are relevant articles ranked high? rerank), <strong>context recall</strong> (do the articles cover the reference answer? retrieval). Faithfulness and relevancy are skipped for refusals (no claims to check).</p>
+    <p>Choices: the current RAGAS 0.4 API (<code>ragas.metrics.collections</code>, async <code>ascore</code>); the judge comes from a <em>different family</em> than the generator when possible (models favour their own style: self-preference bias); a failing judge call is recorded on the row and counted (<code>ragas_errors</code>) instead of killing the run.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>RAGAS بيسأل موديل حَكَم أربع أسئلة، كل واحد بيلوم مرحلة مختلفة: <strong>faithfulness</strong> (كل كلام في الإجابة موجود في المواد؟ الكتابة)، <strong>answer relevancy</strong> (بتجاوب على السؤال؟ الكتابة)، <strong>context precision</strong> (المواد المهمة جت في الأول؟ الـ rerank)، <strong>context recall</strong> (المواد بتغطي الإجابة المرجعية؟ الـ retrieval). والـ faithfulness والـ relevancy مش بيتحسبوا للرفض (مفيش كلام نراجعه).</p>
+    <p>الاختيارات: API الـ RAGAS 0.4 الحالي (<code>ragas.metrics.collections</code> و<code>ascore</code>)؛ والحَكَم من <em>عيلة مختلفة</em> عن الموديل اللي بيكتب لما ينفع (الموديلات بتحب أسلوبها: self-preference bias)؛ ونداء الحَكَم اللي يفشل بيتسجل على السطر ويتعد (<code>ragas_errors</code>) بدل ما يوقّع التشغيلة كلها.</p>
+  </div>
+</div>
+
+<h2 id="judge"><span class="en">5. <code>eval/judge.py</code>: can we trust the judge?</span><span class="ar">5. <code>eval/judge.py</code>: نقدر نثق في الحَكَم؟</span></h2>
+<div class="pair">
+  <div class="en">
+    <p>A judge is a model too, so it is measured like one. <code>sheet</code> writes <code>data/golden/to_label.csv</code> (20 answered questions, 10 AR + 10 EN, opens in Excel with Arabic intact); a human marks each answer 1 (all legal claims supported) or 0. <code>calibrate</code> then reports:</p>
+    <ul>
+      <li><strong>agreement</strong> and <strong>Cohen's kappa</strong> of our judge with the human (kappa corrects for chance: 0 = chance, 1 = perfect);</li>
+      <li>the same for "RAGAS faithfulness ≥ 0.8";</li>
+      <li><strong>self-preference probe</strong>: the same judge prompt run by the generator's own model;</li>
+      <li><strong>verbosity probe</strong>: append a harmless sentence to every answer; a fair judge does not flip its verdict.</li>
+    </ul>
+    <p>Position bias (swapping answers A/B) only applies to pairwise judges, so it is not probed here.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الحَكَم برضه موديل، فبيتقاس زي أي موديل. <code>sheet</code> بتكتب <code>data/golden/to_label.csv</code> (‏20 سؤال اتجاوبوا، 10 عربي و10 إنجليزي، وبيفتح في Excel والعربي سليم)؛ وإنسان بيحط لكل إجابة 1 (كل الكلام القانوني موجود في المواد) أو 0. وبعدين <code>calibrate</code> بتطلّع:</p>
+    <ul>
+      <li><strong>الاتفاق</strong> و<strong>Cohen's kappa</strong> بين الحَكَم بتاعنا والإنسان (الـ kappa بتشيل أثر الصدفة: 0 = صدفة، 1 = تطابق كامل)؛</li>
+      <li>ونفس الحاجة لـ "RAGAS faithfulness ≥ 0.8"؛</li>
+      <li><strong>اختبار التحيز للنفس</strong>: نفس prompt الحَكَم بموديل الكتابة نفسه؛</li>
+      <li><strong>اختبار الإطالة</strong>: نزوّد جملة ملهاش ضرر على كل إجابة؛ والحَكَم العادل ميغيّرش حكمه.</li>
+    </ul>
+    <p>تحيز الترتيب (لما نبدّل الإجابة A وB) بيخص الحَكَم اللي بيقارن اتنين بس، فمش بنختبره هنا.</p>
+  </div>
+</div>
+
+<h2 id="decider"><span class="en">6. <code>decider/</code>: Jev and the local reranker</span><span class="ar">6. <code>decider/</code>: Jev والـ reranker المحلي</span></h2>
+<div class="tablewrap"><table>
+  <thead><tr><th>Piece</th><th class="en">What it does and why</th><th class="ar">بيعمل إيه وليه</th></tr></thead>
+  <tbody>
+    <tr><td><code>Decision</code>, <code>Decider</code> (ABC)</td><td class="en">One call per question returns <code>relevance</code> per article (rerank) and <code>answerable</code> (the gate). The pipeline only knows this contract, so deciders are swappable (the course's "model behind an abstract class").</td><td class="ar">نداء واحد لكل سؤال بيرجّع <code>relevance</code> لكل مادة (rerank) و<code>answerable</code> (الـ gate). الـ pipeline تعرف العقد ده بس، فنقدر نبدّل الـ deciders (فكرة "الموديل ورا abstract class" من الكورس).</td></tr>
+    <tr><td><code>JevDecider</code></td><td class="en">One request to OpenRouter's <code>/systemone</code>: one <code>score</code> question per article (0 Irrelevant … 3 Directly answers) and one <code>noul</code> ("answerable from these passages?"). Jev returns probabilities, not text: nothing to parse, nothing to hallucinate. Articles are sent in English (Jev's primary language). Measured: one call ≈ $0.00002.</td><td class="ar">طلب واحد لـ <code>/systemone</code> في OpenRouter: سؤال <code>score</code> لكل مادة (من 0 ملهاش علاقة لحد 3 بتجاوب مباشرة) وسؤال <code>noul</code> واحد ("ينفع نجاوب من النصوص دي؟"). Jev بيرجّع احتمالات مش كلام: مفيش حاجة نفكّها ومفيش هلوسة. والمواد بتتبعت بالإنجليزي (لغة Jev الأساسية). اتقاس: النداء الواحد حوالي $0.00002.</td></tr>
+    <tr><td><code>LocalDecider</code></td><td class="en">bge-reranker-v2-m3 cross-encoder on CPU: reads question + article together, <code>sigmoid(logit)</code> = relevance; the best relevance doubles as the gate score. No key, no per-call cost; the standard alternative Jev is compared against.</td><td class="ar">cross-encoder اسمه bge-reranker-v2-m3 على الـ CPU: بيقرا السؤال والمادة مع بعض، و<code>sigmoid(logit)</code> هي الـ relevance؛ وأعلى relevance هي درجة الـ gate. من غير key ومن غير تكلفة لكل نداء؛ وده البديل المعروف اللي Jev بيتقارن بيه.</td></tr>
+    <tr><td><code>RagPipeline.select_context()</code></td><td class="en">Retrieve 12 → decider reranks (articles the user names stay first) → keep 5 → if <code>answerable</code> &lt; gate and no article is named: refuse <em>without</em> calling the LLM. Decider down → retrieval order, no gate (degraded, not down).</td><td class="ar">نجيب 12 ← الـ decider يرتّب (المواد اللي المستخدم ذكرها تفضل الأول) ← ناخد 5 ← لو <code>answerable</code> أقل من الـ gate ومفيش مادة متذكرة: نرفض <em>من غير</em> ما ننادي الـ LLM. ولو الـ decider وقع: ترتيب الـ retrieval ومن غير gate (أبطأ في الجودة، بس شغال).</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="run"><span class="en">7. <code>eval/run.py</code>: one command per experiment</span><span class="ar">7. <code>eval/run.py</code>: أمر واحد لكل تجربة</span></h2>
+<div class="pair">
+  <div class="en">
+    <pre><code>uv run python -m legalrag.eval.run --name ret-hybrid-local --decider local --retrieval-only --mlflow
+uv run python -m legalrag.eval.run --name baseline --ragas --mlflow
+uv run python -m legalrag.eval.run --name baseline --ragas --from-predictions reports/eval/baseline/predictions.jsonl</code></pre>
+    <p>Flags override settings for one run (<code>--decider</code>, <code>--mode hybrid|dense|sparse</code>, <code>--context-size</code>, <code>--top-n</code>, <code>--gate</code>). <code>--retrieval-only</code> stops before the LLM: ranking and gate metrics for free. <code>rag_config()</code> is the list of everything that changes an answer; it becomes the MLflow params and, for the winner, the registered config.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>الـ flags بتغيّر الإعدادات لتشغيلة واحدة (<code>--decider</code> و<code>--mode</code> و<code>--context-size</code> و<code>--top-n</code> و<code>--gate</code>). و<code>--retrieval-only</code> بيقف قبل الـ LLM: مقاييس الترتيب والـ gate ببلاش. و<code>rag_config()</code> هي قايمة كل حاجة بتغيّر الإجابة؛ وبتبقى الـ params في MLflow، وللفايز بتبقى الـ config المتسجلة.</p>
+  </div>
+</div>
+
+<h2 id="mlflow"><span class="en">8. <code>eval/track.py</code> and the MLflow server</span><span class="ar">8. <code>eval/track.py</code> وسيرفر MLflow</span></h2>
+<div class="pair">
+  <div class="en">
+    <ul>
+      <li><strong>Server</strong> (compose profile <code>tracking</code>): runs and metrics in Postgres, artifacts in MinIO; the server proxies artifacts, so clients only need <code>MLFLOW_TRACKING_URI</code>. <code>--allowed-hosts</code> is required: MLflow rejects unknown Host headers.</li>
+      <li><strong><code>log_eval_run()</code></strong>: params = <code>rag_config</code>; metrics flattened as <code>all.mrr</code>, <code>ar.hit_at_5</code>…; tags = git SHA, <code>articles_md5</code>, Qdrant collection, golden-set md5, eval mode. That is the lineage chain git SHA → DVC data → MLflow run.</li>
+      <li><strong><code>register_config()</code> / <code>load_config()</code></strong>: the winning config is a tiny pyfunc "model" holding <code>rag_config.json</code>; promoting = moving the alias <code>production</code>; loading = <code>models:/legal-rag-config@production</code> ("load by alias, never by path").</li>
+    </ul>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <ul>
+      <li><strong>السيرفر</strong> (profile اسمه <code>tracking</code>): التشغيلات والأرقام في Postgres، والملفات في MinIO؛ والسيرفر بيوصّل الملفات بنفسه، فالـ client محتاج <code>MLFLOW_TRACKING_URI</code> بس. و<code>--allowed-hosts</code> لازم: MLflow بيرفض أي Host header مش معروف.</li>
+      <li><strong><code>log_eval_run()</code></strong>: الـ params هي <code>rag_config</code>؛ والأرقام بأسماء زي <code>all.mrr</code> و<code>ar.hit_at_5</code>؛ والـ tags هي git SHA و<code>articles_md5</code> والـ collection والـ md5 بتاع الـ golden set ونوع التقييم. ودي سلسلة الـ lineage: git SHA ← داتا DVC ← تشغيلة MLflow.</li>
+      <li><strong><code>register_config()</code> و<code>load_config()</code></strong>: الـ config الفايزة "موديل" pyfunc صغير جواه <code>rag_config.json</code>؛ والترقية = ننقل الـ alias اللي اسمه <code>production</code>؛ والتحميل = <code>models:/legal-rag-config@production</code> ("حمّل بالـ alias، عمرك ما تحمّل بالمسار").</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="results"><span class="en">9. Results</span><span class="ar">9. النتايج</span></h2>
+<!-- RESULTS -->
+
+<h2 id="lessons"><span class="en">10. Problems we hit</span><span class="ar">10. مشاكل قابلناها</span></h2>
+<div class="pair">
+  <div class="en">
+    <ul>
+      <li><strong>"jev-router" is not Jev decisions</strong>: the only Jev id OpenRouter lists by default, <code>typesafe/jev-router</code>, is a router that picks which <em>chat</em> model answers. The decision model is called with the TypeSafe body at <code>/api/v1/systemone</code>. A one-call probe confirmed the format before any code was written.</li>
+      <li><strong>Dependency chain</strong>: RAGAS 0.4.3 fails to import with the newest langchain-community (pinned to 0.4.1), and RAGAS → instructor → <code>jiter&lt;0.15</code> holds <code>openai</code> at 3.3.0 for the whole lock, the API included. Our code only uses long-stable OpenAI features; the chain is recorded so it can be lifted when instructor updates.</li>
+      <li><strong>MLflow keeps global state</strong>: the active experiment id leaked between tests ("No experiment with id=1") and artifacts landed in <code>./mlruns</code> of the repo. Each test now gets its own directory and experiment.</li>
+      <li><strong>Out of credits mid-run</strong>: OpenRouter answered <code>402</code> during RAGAS judging; the account had no purchased credits, and free models are capped at 50 requests/day (one golden run is 56, with RAGAS ~600). The pipeline predictions were already saved, so nothing was lost; RAGAS errors are now recorded per row, and generation/judging can move to the Gemini API free tier (<code>LLM_BACKEND=gemini</code>, <code>JUDGE_BACKEND=gemini</code>).</li>
+    </ul>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <ul>
+      <li><strong>"jev-router" مش هو قرارات Jev</strong>: الـ id الوحيد اللي OpenRouter بيعرضه افتراضيًا <code>typesafe/jev-router</code> ده router بيختار أنهي موديل <em>chat</em> يجاوب. موديل القرارات بيتنادى بـ body بتاع TypeSafe على <code>/api/v1/systemone</code>. ونداء تجربة واحد أكّد الشكل قبل ما نكتب أي كود.</li>
+      <li><strong>سلسلة الاعتمادات</strong>: RAGAS 0.4.3 مش بيشتغل مع أحدث langchain-community (ثبّتناها على 0.4.1)، وRAGAS ← instructor ← <code>jiter&lt;0.15</code> مثبّتة <code>openai</code> على 3.3.0 في الـ lock كله، والـ API معاه. الكود بتاعنا بيستخدم مزايا قديمة وثابتة بس في OpenAI؛ والسلسلة متسجلة عشان نشيلها لما instructor يتحدث.</li>
+      <li><strong>MLflow شايل حالة عامة</strong>: الـ experiment id النشط عدّى من test لـ test ("No experiment with id=1") والملفات اتكتبت في <code>./mlruns</code> جوه الـ repo. دلوقتي كل test ليه فولدر وexperiment لوحده.</li>
+      <li><strong>الرصيد خلص في نص التشغيلة</strong>: OpenRouter رد بـ <code>402</code> وقت حَكَم RAGAS؛ الحساب ملوش رصيد مشترى، والموديلات المجانية ليها 50 طلب في اليوم بس (تشغيلة golden واحدة 56، ومع RAGAS حوالي 600). الـ predictions كانت اتحفظت فمخسرناش حاجة؛ وأخطاء RAGAS بقت بتتسجل لكل سطر، والكتابة والحَكَم ممكن ينقلوا على الـ free tier بتاع Gemini API (<code>LLM_BACKEND=gemini</code> و<code>JUDGE_BACKEND=gemini</code>).</li>
+    </ul>
+  </div>
+</div>
+
+<div class="pager"><a href="02-rag-api.html">← Phase 2 · RAG API</a><a href="index.html">Guide index →</a></div>
+</main>
+<script src="assets/toggle.js"></script>
+</body>
+</html>

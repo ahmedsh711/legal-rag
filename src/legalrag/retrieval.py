@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from qdrant_client import QdrantClient, models
 
@@ -83,9 +83,10 @@ class Retriever:
         embedder: Embedder,
         top_n: int = 12,
         max_article: int = 1149,
+        mode: Literal["hybrid", "dense", "sparse"] = "hybrid",  # dense/sparse: for ablations
     ):
         self.client, self.alias, self.embedder = client, alias, embedder
-        self.top_n, self.max_article = top_n, max_article
+        self.top_n, self.max_article, self.mode = top_n, max_article, mode
 
     def _filter(self, book: str | None) -> models.Filter:
         must: list[Any] = [
@@ -104,21 +105,27 @@ class Retriever:
         indices, values = emb.sparse_indices_values()
         flt = self._filter(book)
         limit = top_n * PREFETCH_MULTIPLIER
-        result = self.client.query_points(
-            self.alias,
-            prefetch=[
-                models.Prefetch(query=emb.dense, using=DENSE, limit=limit, filter=flt),
-                models.Prefetch(
-                    query=models.SparseVector(indices=indices, values=values),
-                    using=SPARSE,
-                    limit=limit,
-                    filter=flt,
-                ),
-            ],
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=limit,
-            with_payload=True,
-        )
+        queries = {
+            DENSE: emb.dense,
+            SPARSE: models.SparseVector(indices=indices, values=values),
+        }
+        if self.mode == "hybrid":
+            result = self.client.query_points(
+                self.alias,
+                prefetch=[
+                    models.Prefetch(query=q, using=name, limit=limit, filter=flt)
+                    for name, q in queries.items()
+                ],
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=limit,
+                with_payload=True,
+            )
+        else:
+            name = DENSE if self.mode == "dense" else SPARSE
+            result = self.client.query_points(
+                self.alias, query=queries[name], using=name, query_filter=flt, limit=limit,
+                with_payload=True,
+            )  # fmt: skip
         chunks: dict[int, Chunk] = {}
         for point in result.points:  # already sorted by fused score
             n = point.payload["article_number"]

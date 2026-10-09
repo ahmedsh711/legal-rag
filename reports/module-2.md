@@ -14,7 +14,7 @@
 | Query latency, retrieval only (embed + Qdrant hybrid) | p50 178 ms, max 227 ms on the host (embedding the question is ~133 ms of it); 120–160 ms inside the container. Before the `127.0.0.1` fix: 2,214 ms |
 | `/ask` end to end (OpenRouter `qwen/qwen3-235b-a22b-2507`) | p50 2.9 s, max 8.4 s over 9 questions (retrieval 120–300 ms, the rest is the LLM); streaming time-to-first-token 1.5 s; ~1,280 prompt + 45 completion tokens per question ≈ $0.00014 per question (see *End to end* below) |
 | Tests / coverage | 162 passed, coverage 92.1% (gate: 80%) |
-| API image `ahmedshobaki/legal-rag-api` | `ahmedshobaki/legal-rag-api:0.1.0` (+ `latest`), 1.32 GB, non-root, healthy 22 s after start with the model in its volume |
+| API image `ahmedshobaki/legal-rag-api` | `ahmedshobaki/legal-rag-api:0.1.0` (+ `latest`) on Docker Hub, digest `sha256:d46a8d586f61…`; 1.32 GB unpacked / 388 MB compressed; non-root; healthy 22 s after start with the model in its volume |
 
 ## How a question becomes an answer
 
