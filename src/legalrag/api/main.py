@@ -297,6 +297,7 @@ def create_app(
             invalid_citations=result.invalid_citations,
             request_id=request_id,
             prompt_version=result.prompt_version,
+            guardrails=result.guardrails,
             model=result.model,
             usage=result.usage,
             timings_ms=result.timings_ms,

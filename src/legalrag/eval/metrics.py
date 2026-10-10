@@ -44,6 +44,7 @@ class Prediction(BaseModel):
     gated: bool = False  # refused by the gate (the LLM never saw it), not by the LLM
     decider_cost_usd: float = 0.0
     decider_model: str = ""  # the exact model the decider reported (e.g. a dated Jev build)
+    guardrails: list[str] = []  # guards that fired (pii:*, injection:*, gate:*, citation:*)
     error: str = ""  # the question failed (quota, timeout): excluded from metrics, counted
 
     @property

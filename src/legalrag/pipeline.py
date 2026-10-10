@@ -1,4 +1,4 @@
-"""The RAG pipeline: retrieve -> (decide, from Phase 3) -> generate -> check citations.
+"""The RAG pipeline: guard -> retrieve -> decide (rerank + gate) -> generate -> check citations.
 
 Retrieval is CPU work (embedding the question) plus a Qdrant call, so it runs in a worker thread
 (``asyncio.to_thread``) and never blocks the event loop that serves other users.
@@ -21,6 +21,7 @@ from legalrag.generation import (
     detect_language,
     refusal_for,
 )
+from legalrag.guardrails import check_question
 from legalrag.logging_conf import get_logger
 from legalrag.retrieval import Chunk, article_numbers_in
 
@@ -48,6 +49,9 @@ class Answer:
     timings_ms: dict[str, float] = field(default_factory=dict)
     decision: Decision | None = None  # rerank + gate, when a decider ran
     gated: bool = False  # refused by the gate before any LLM call
+    # every guard that fired, in order: "pii:phone", "injection:override", "gate:unanswerable",
+    # "citation:invalid", "citation:uncited" (one counter per name in Phase 5)
+    guardrails: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -122,44 +126,61 @@ class RagPipeline:
         if blocked:
             log.warning("uncited_answer_blocked", chars=len(text))
         refused = is_refusal or blocked
+        fired = ["citation:invalid"] * bool(bad) + ["citation:uncited"] * blocked
         return {
             "sources": [] if refused else [c for c in context if c.article_number in cited],
             "invalid_citations": bad,
             "refused": refused,
             "blocked": blocked,
+            "fired": fired,
         }
+
+    async def _guarded_context(
+        self, question: str, book: str | None
+    ) -> tuple[str, Context | None, list[str], dict[str, float]]:
+        """Input guards, then retrieval + decider. Context is None when a guard blocked."""
+        check = check_question(question)  # PII redacted from here on: search, LLM, logs
+        timings = {"guard": check.latency_ms}
+        if check.blocked:
+            log.warning("guardrail_blocked", fired=check.fired)
+            return check.text, None, check.fired, timings
+        ctx = await self.select_context(check.text, book)
+        fired = check.fired + ["gate:unanswerable"] * ctx.gated
+        return check.text, ctx, fired, {**timings, **ctx.timings}
 
     async def ask(self, question: str, book: str | None = None) -> Answer:
         t0 = time.perf_counter()
         language = detect_language(question)
-        ctx = await self.select_context(question, book)
-        context = ctx.chunks
-        timings = dict(ctx.timings)
-        if not context or ctx.gated:  # nothing to ground an answer on: refuse, spend no tokens
-            log.info("refused_before_llm", gated=ctx.gated, context=len(context))
+        question, ctx, fired, timings = await self._guarded_context(question, book)
+        if ctx is None or not ctx.chunks or ctx.gated:  # blocked / nothing to ground on: no tokens
+            log.info("refused_before_llm", guardrails=fired)
             return Answer(
                 question,
                 refusal_for(language),
                 language,
                 [],
-                context,
+                ctx.chunks if ctx else [],
                 True,
                 [],
                 timings_ms={**timings, "total": _ms(t0)},
-                decision=ctx.decision,
-                gated=ctx.gated,
+                decision=ctx.decision if ctx else None,
+                gated=bool(ctx and ctx.gated),
+                guardrails=fired,
             )
+        context = ctx.chunks
 
         t1 = time.perf_counter()
         completion = await self.generator.complete(build_messages(question, context))
         timings["generate"] = _ms(t1)
         timings["total"] = _ms(t0)
         checked = self._finish(language, completion.text, context)
+        fired += checked.pop("fired")
         log.info(
             "answered",
             language=language,
             context=len(context),
             refused=checked["refused"],
+            guardrails=fired,
             **timings,
         )
         blocked = checked.pop("blocked")
@@ -175,6 +196,7 @@ class RagPipeline:
             },
             timings_ms=timings,
             decision=ctx.decision,
+            guardrails=fired,
             **checked,
         )
 
@@ -184,12 +206,13 @@ class RagPipeline:
         """Server-sent events: {"type": "token", "text": ...} ... then one {"type": "done", ...}."""
         t0 = time.perf_counter()
         language = detect_language(question)
-        ctx = await self.select_context(question, book)
-        context = ctx.chunks
-        if not context or ctx.gated:
+        question, ctx, fired, _ = await self._guarded_context(question, book)
+        if ctx is None or not ctx.chunks or ctx.gated:
             yield {"type": "token", "text": refusal_for(language)}
-            yield {"type": "done", "refused": True, "sources": [], "invalid_citations": []}
+            yield {"type": "done", "refused": True, "sources": [], "invalid_citations": [],
+                   "guardrails": fired}  # fmt: skip
             return
+        context = ctx.chunks
         stream = self.generator.stream(build_messages(question, context))
         parts: list[str] = []
         first_token_ms = None
@@ -214,6 +237,7 @@ class RagPipeline:
                 for c in checked["sources"]
             ],
             "invalid_citations": checked["invalid_citations"],
+            "guardrails": fired + checked["fired"],
             "usage": {
                 "prompt_tokens": stream.prompt_tokens,
                 "completion_tokens": stream.completion_tokens,
