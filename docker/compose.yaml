@@ -42,6 +42,8 @@ services:
       QDRANT_URL: http://qdrant:6333
       VLLM_BASE_URL: http://vllm:8000/v1
       FEEDBACK_PATH: /app/feedback/feedback.jsonl
+      # CONFIG_SOURCE=mlflow (in .env): runtime knobs from models:/legal-rag-config@production
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     volumes:
       # bge-m3 (~2.3 GB) is downloaded once into this volume, not baked into the image.
       # (A Windows bind mount was tried: it appears as root:root 755 inside the container,
@@ -92,6 +94,39 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  # Experiment tracking + model registry. Runs/params/metrics in Postgres, artifacts in MinIO.
+  # The server proxies artifacts (--serve-artifacts is the default), so clients only need
+  # MLFLOW_TRACKING_URI; the S3 credentials stay here. "-full" = Postgres + S3 drivers included.
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.17.0-full
+    profiles: [tracking]
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      - --backend-store-uri=postgresql+psycopg2://${POSTGRES_USER:-legalrag}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/mlflow
+      - --artifacts-destination=s3://mlflow
+      # MLflow rejects unknown Host headers (DNS-rebinding protection); allow our names
+      - --allowed-hosts=mlflow:5000,localhost:5000,127.0.0.1:5000
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    ports: ["127.0.0.1:5000:5000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
 
 secrets:

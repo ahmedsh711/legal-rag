@@ -22,6 +22,9 @@ def _add_request_id(_logger, _method, event_dict: dict) -> dict:
 
 
 def configure_logging(level: str = "INFO") -> None:
+    # UTF-8 stdout: Arabic text (and MLflow's emoji) crash the default Windows console encoding
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     # stdout, not stderr: containers and log shippers read stdout
     logging.basicConfig(level=level.upper(), format="%(message)s", stream=sys.stdout, force=True)
     structlog.configure(

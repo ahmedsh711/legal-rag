@@ -3,7 +3,7 @@
 Final project for the ITI × MLOps MENA **MLOps Practitioner** course, Track B (LLM / RAG).
 Ask a question about the Egyptian Civil Code in Arabic or English and get an answer **with article citations**. The pipeline's *deciding* steps (routing, reranking, "can we answer?", claim checking) run on the Jev decision model; only the *writing* step runs on an LLM.
 
-> Status: Phase 2. Vanilla RAG (hybrid retrieval + cited answers) behind a FastAPI service in Docker. The Jev decision steps arrive in Phases 3–4.
+> Status: Phase 3. Evaluated, tracked and served by alias: dense retrieval + the Jev decider (rerank + answerability gate) is the `production` config in the MLflow registry (MRR 1.000 vs 0.878 for the vanilla baseline on the golden set; see `reports/module-3.md`).
 
 ## Quickstart (3 commands)
 
@@ -27,9 +27,24 @@ curl -s 127.0.0.1:8000/ask -H 'content-type: application/json' -d '{"question":"
 | `POST /feedback` | `{"request_id": "...", "rating": "up" \| "down", "comment": "..."}` |
 | `GET /health` | readiness: 200 only when the index is reachable and not empty |
 | `GET /live` | liveness: the process answers |
-| `GET /metadata` | app, prompt, LLM, embedding model and index versions |
+| `GET /metadata` | app, prompt, LLM, embedding model, index, decider and where the config came from |
 
 Interactive docs: http://127.0.0.1:8000/docs
+
+## Evaluation and experiments
+
+Start the tracking stack (Postgres + MinIO + MLflow at http://127.0.0.1:5000), then run experiments. Each command is one MLflow run with the config as params, metrics per language, and lineage tags (git SHA, `articles.json` md5, Qdrant collection, golden-set md5).
+
+```bash
+docker compose --env-file .env -f docker/compose.yaml --profile core --profile tracking up -d
+uv sync --group eval                                                       # RAGAS + MLflow client
+uv run python -m legalrag.eval.run --name ret-dense-jev --decider jev --mode dense --retrieval-only --mlflow   # ranking + gate, no LLM
+uv run python -m legalrag.eval.run --name e2e-dense-jev --decider jev --mode dense --gate 0.5 --ragas --mlflow # full pipeline + RAGAS judge
+uv run python -m legalrag.eval.track register --run-id <run id> --alias production                            # promote that run's config
+uv run python -m legalrag.eval.judge calibrate --mlflow                                                         # judge vs human labels
+```
+
+With `CONFIG_SOURCE=mlflow` the API reads `models:/legal-rag-config@production` at startup; promoting or rolling back a config is moving the alias and restarting the API (no rebuild). Free-tier providers: set `LLM_RPM` / `JUDGE_RPM` so evaluations pace themselves under the per-minute limit.
 
 ## Developer commands
 
@@ -61,4 +76,5 @@ Open `docs/walkthrough/index.html` in a browser. Every section has an EN / AR / 
 
 ## Changelog by session
 
-- Session 1 (packaging, API, Docker): in progress.
+- Session 1 (packaging, API, Docker): v0.1.0, image `ahmedshobaki/legal-rag-api:0.1.0`.
+- Session 2 (evaluation, MLflow, DVC lineage): golden set, exact metrics + RAGAS judge with human calibration, an MLflow run per experiment, Jev vs local reranker ablation, config registry with alias `production` (Phase 3).

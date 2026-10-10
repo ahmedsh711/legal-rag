@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -25,6 +26,10 @@ from openai import APIConnectionError, APIStatusError
 from legalrag import __version__
 from legalrag.api.middleware import RequestIdMiddleware
 from legalrag.api.schemas import AskRequest, AskResponse, FeedbackRequest, HealthResponse, Source
+from legalrag.config_registry import apply_registry_config
+from legalrag.decider.base import Decider
+from legalrag.decider.jev import JevDecider
+from legalrag.decider.local import LocalDecider
 from legalrag.generation import PROMPT_VERSION, Generator, make_client
 from legalrag.index.store import alias_target, read_metadata
 from legalrag.ingest.normalize import NORMALIZATION_VERSION
@@ -91,7 +96,11 @@ def build_components(settings: Settings) -> Components:
         revision=settings.embedding_revision,
     )
     retriever = Retriever(
-        client, settings.qdrant_collection_alias, embedder, top_n=settings.retrieve_top_n
+        client,
+        settings.qdrant_collection_alias,
+        embedder,
+        top_n=settings.retrieve_top_n,
+        mode=settings.retrieval_mode,
     )
     generator = Generator(
         make_client(
@@ -102,9 +111,29 @@ def build_components(settings: Settings) -> Components:
         settings.llm_temperature,
     )
     pipeline = RagPipeline(
-        retriever, generator, context_size=settings.rerank_keep_top, top_n=settings.retrieve_top_n
+        retriever,
+        generator,
+        context_size=settings.rerank_keep_top,
+        top_n=settings.retrieve_top_n,
+        decider=build_decider(settings),
+        gate_threshold=settings.gate_threshold,
     )
     return Components(pipeline, client, settings.qdrant_collection_alias, collection, meta or {})
+
+
+def build_decider(settings: Settings) -> Decider | None:
+    if settings.decider_backend == "jev":
+        return JevDecider(
+            httpx.AsyncClient(timeout=settings.jev_timeout_s),
+            settings.jev_base_url,
+            settings.openrouter_api_key.get_secret_value(),
+            settings.jev_model,
+        )
+    if settings.decider_backend == "local":
+        return LocalDecider.from_pretrained(
+            settings.reranker_model, settings.reranker_revision, settings.embedding_device
+        )
+    return None
 
 
 def _llm_failure(exc: Exception) -> tuple[int, str, dict[str, str]]:
@@ -128,6 +157,9 @@ async def _close(comp: Components) -> None:
     llm = getattr(getattr(comp.pipeline, "generator", None), "client", None)
     if hasattr(llm, "close"):
         await llm.close()
+    decider = getattr(comp.pipeline, "decider", None)  # Jev holds an HTTP client
+    if hasattr(decider, "aclose"):
+        await decider.aclose()
 
 
 def _source(c: Any) -> Source:
@@ -148,11 +180,12 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(settings.log_level)
-        app.state.settings = settings
-        app.state.components = build(settings)  # load once, never per request
-        log.info(
-            "startup", collection=app.state.components.collection, llm=settings.active_llm_model
-        )
+        # runtime knobs from models:/legal-rag-config@production when CONFIG_SOURCE=mlflow
+        served, app.state.config_source = apply_registry_config(settings)
+        app.state.settings = served
+        app.state.components = build(served)  # load once, never per request
+        log.info("startup", collection=app.state.components.collection,
+                 llm=served.active_llm_model, config=app.state.config_source)  # fmt: skip
         try:
             yield
         finally:
@@ -211,14 +244,18 @@ def create_app(
     async def metadata(request: Request) -> dict[str, Any]:
         """What is serving right now: versions of the app, prompt, models and index."""
         comp: Components = request.app.state.components
+        served: Settings = request.app.state.settings
         return {
             "app_version": __version__,
             "prompt_version": PROMPT_VERSION,
-            "llm_backend": settings.llm_backend,
-            "llm_model": settings.active_llm_model,
-            "embedding_model": settings.embedding_model,
-            "embedding_revision": settings.embedding_revision,
-            "decider_backend": settings.decider_backend,
+            "config_source": request.app.state.config_source,
+            "llm_backend": served.llm_backend,
+            "llm_model": served.active_llm_model,
+            "embedding_model": served.embedding_model,
+            "embedding_revision": served.embedding_revision,
+            "decider_backend": served.decider_backend,
+            "retrieval_mode": served.retrieval_mode,
+            "gate_threshold": served.gate_threshold,
             "index": {"alias": comp.alias, "collection": comp.collection, **comp.index_meta},
         }
 

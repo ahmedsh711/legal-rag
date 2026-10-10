@@ -23,6 +23,10 @@ dist/
 .terraform/
 *.tfstate*
 mlruns/
+# eval runs: MLflow keeps predictions/ragas as artifacts; git keeps only each run's metrics.json
+reports/eval/**/predictions.jsonl
+reports/eval/**/ragas.jsonl
+reports/eval/*.log
 .dvc/cache/
 .dvc/tmp/
 node_modules/

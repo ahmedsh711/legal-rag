@@ -22,35 +22,46 @@ class Settings(BaseSettings):
     environment: Literal["dev", "staging", "prod"] = "dev"
     log_level: str = "INFO"
 
-    # --- generation backend (OpenAI-compatible everywhere: OpenRouter or local vLLM) ---
-    llm_backend: Literal["openrouter", "vllm"] = "openrouter"
+    # --- generation backend: OpenAI-compatible everywhere (OpenRouter, Gemini API, local vLLM) ---
+    llm_backend: Literal["openrouter", "gemini", "vllm"] = "openrouter"
     openrouter_api_key: SecretStr = SecretStr("")
     llm_base_url: str = "https://openrouter.ai/api/v1"
-    llm_model: str = (
-        "qwen/qwen3-235b-a22b-2507"  # strong multilingual, $0.09/M input tokens (Oct 2026)
-    )
-    judge_model: str = (
-        "anthropic/claude-haiku-5.5"  # different family from the generator (self-preference bias)
-    )
+    llm_model: str = "qwen/qwen3-235b-a22b-2507"  # strong multilingual, cheap
+    # USD per million tokens of the active model (eval cost; 0 on a free tier)
+    llm_price_in_per_m: float = 0.09
+    llm_price_out_per_m: float = 0.55
+    # Google's Gemini API has a free tier and an OpenAI-compatible endpoint
+    gemini_api_key: SecretStr = SecretStr("")
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    gemini_model: str = "gemini-3.1-flash-lite"  # 2.5-flash is closed to new users (Oct 2026)
+    # RAGAS judge: a different family from the generator if possible (self-preference bias);
+    # needs JSON mode. judge_backend picks the endpoint + key (openrouter | gemini).
+    judge_backend: Literal["openrouter", "gemini"] = "openrouter"
+    judge_model: str = "anthropic/claude-haiku-5.5"
+    judge_embedding_model: str = "baai/bge-m3"  # for answer relevancy (same endpoint)
+    # "none" switches off hidden reasoning on thinking models (it otherwise eats max_tokens)
+    judge_reasoning_effort: str | None = None
+    # requests-per-minute limits of the provider (free tiers): evaluations pace themselves under them
+    llm_rpm: float | None = None
+    judge_rpm: float | None = None
+    # RAGAS metrics to compute; each costs judge calls (fewer on a free daily quota)
+    ragas_metrics: str = "faithfulness,answer_relevancy,context_precision,context_recall"
     vllm_base_url: str = "http://127.0.0.1:8001/v1"
     vllm_model: str = "Qwen/Qwen2.5-1.5B-Instruct-AWQ"
     llm_timeout_s: float = 60.0
     llm_max_tokens: int = 800
     llm_temperature: float = 0.0
 
-    # --- Jev decision model ---
-    decider_backend: Literal["jev", "local"] = "jev"
-    typesafe_api_key: SecretStr = SecretStr("")
-    jev_model: str = "jev-1.13.0"
-    jev_timeout_s: float = 2.0
-    # tiers from the JEV-RAG pattern: act / second opinion / refuse
-    tier_act: float = Field(0.90, ge=0, le=1)
-    tier_second_opinion: float = Field(0.60, ge=0, le=1)
-    gate_threshold: float = Field(0.75, ge=0, le=1)
-    validate_threshold: float = Field(0.75, ge=0, le=1)
-    rerank_keep_top: int = 5
-    retrieve_top_n: int = 12
-    jev_translate_query: bool = False
+    # --- decider: rerank + "can we answer?" gate (none | jev | local) ---
+    decider_backend: Literal["none", "jev", "local"] = "none"
+    # Jev through OpenRouter's /systemone endpoint (same key as generation; one bill)
+    jev_base_url: str = "https://openrouter.ai/api/v1"
+    jev_model: str = "jev-1.13"
+    jev_timeout_s: float = 10.0  # first call measured 2.9 s
+    gate_threshold: float = Field(0.75, ge=0, le=1)  # below this: refuse without calling the LLM
+    rerank_keep_top: int = 5  # articles shown to the LLM
+    retrieve_top_n: int = 12  # articles retrieved and scored by the decider
+    retrieval_mode: Literal["hybrid", "dense", "sparse"] = "hybrid"  # dense/sparse: ablations
 
     # --- retrieval ---
     embedding_model: str = "BAAI/bge-m3"
@@ -63,7 +74,8 @@ class Settings(BaseSettings):
     # "localhost" tries IPv6 (::1) first -> every Qdrant call waited ~2 s (measured 2,069 vs 17 ms)
     qdrant_url: str = "http://127.0.0.1:6333"
     qdrant_collection_alias: str = "articles"
-    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"  # the local decider (cross-encoder)
+    reranker_revision: str = "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"  # pragma: allowlist secret
 
     # --- data paths (relative to repo root) ---
     raw_pdf_path: str = "data/raw/egyptian_civil_code.pdf"
@@ -74,6 +86,9 @@ class Settings(BaseSettings):
     # --- infra ---
     redis_url: str = "redis://127.0.0.1:6379/0"
     mlflow_tracking_uri: str = "http://127.0.0.1:5000"
+    mlflow_experiment: str = "legal-rag-eval"
+    # env: knobs from the environment; mlflow: runtime knobs from models:/<name>@<alias>
+    config_source: Literal["env", "mlflow"] = "env"
     mlflow_config_model_name: str = "legal-rag-config"
     mlflow_config_alias: str = "production"
     langfuse_host: str = "http://127.0.0.1:3000"
@@ -81,18 +96,35 @@ class Settings(BaseSettings):
     langfuse_secret_key: SecretStr = SecretStr("")
     rate_limit_per_minute: int = 60
 
-    @property
-    def active_llm_base_url(self) -> str:
-        return self.vllm_base_url if self.llm_backend == "vllm" else self.llm_base_url
+    def _endpoint(self, backend: str) -> tuple[str, str]:
+        """(base_url, api_key) of a backend. vLLM ignores the key, but the client needs one."""
+        if backend == "gemini":
+            return self.gemini_base_url, self.gemini_api_key.get_secret_value()
+        if backend == "vllm":
+            return self.vllm_base_url, "none"
+        return self.llm_base_url, self.openrouter_api_key.get_secret_value() or "none"
 
     @property
-    def active_llm_model(self) -> str:
-        return self.vllm_model if self.llm_backend == "vllm" else self.llm_model
+    def active_llm_base_url(self) -> str:
+        return self._endpoint(self.llm_backend)[0]
 
     @property
     def active_llm_api_key(self) -> str:
-        # vLLM ignores the key but the OpenAI client requires a non-empty string
-        return self.openrouter_api_key.get_secret_value() or "none"
+        return self._endpoint(self.llm_backend)[1]
+
+    @property
+    def active_llm_model(self) -> str:
+        return {"vllm": self.vllm_model, "gemini": self.gemini_model}.get(
+            self.llm_backend, self.llm_model
+        )
+
+    @property
+    def judge_base_url(self) -> str:
+        return self._endpoint(self.judge_backend)[0]
+
+    @property
+    def judge_api_key(self) -> str:
+        return self._endpoint(self.judge_backend)[1]
 
 
 @lru_cache

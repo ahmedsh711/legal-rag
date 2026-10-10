@@ -75,6 +75,13 @@ def test_hybrid_search_finds_the_right_article(retriever):
     assert chunks[0].citation == "Egyptian Civil Code, Article 374"
 
 
+@pytest.mark.parametrize("mode", ["dense", "sparse"])
+def test_single_signal_modes_for_ablations(qdrant, embedder, mode):
+    r = Retriever(qdrant, alias="articles", embedder=embedder, top_n=3, mode=mode)
+    chunks = r.search("ما مدة التقادم خمس عشرة سنة")
+    assert chunks[0].article_number == 374 and not any(c.is_repealed for c in chunks)
+
+
 def test_one_chunk_per_article_even_with_two_languages(retriever):
     chunks = retriever.search("contract law of the parties العقد شريعة المتعاقدين")
     numbers = [c.article_number for c in chunks]

@@ -105,6 +105,7 @@ def test_health_and_metadata(client):
     }
     m = client.get("/metadata").json()
     assert m["index"]["collection"] == "articles_test" and m["embedding_model"] == "BAAI/bge-m3"
+    assert m["config_source"] == "env" and m["decider_backend"] == "none"
 
 
 @pytest.mark.parametrize("qdrant", [FakeQdrant(fail=True), FakeQdrant(points=0)])
@@ -193,3 +194,16 @@ def test_api_refuses_an_index_built_differently(meta, ok):
     else:
         with pytest.raises(IndexMismatchError):
             check_index_compatible(meta, settings)
+
+
+def test_shutdown_closes_the_deciders_http_client(tmp_path):
+    class ClosableDecider:
+        closed = False
+
+        async def aclose(self):
+            ClosableDecider.closed = True
+
+    pipeline = SimpleNamespace(decider=ClosableDecider())
+    with make_client(tmp_path, pipeline):
+        pass  # leaving the block runs the lifespan shutdown
+    assert ClosableDecider.closed
