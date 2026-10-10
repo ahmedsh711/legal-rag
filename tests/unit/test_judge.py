@@ -7,11 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from legalrag.eval.judge import (
+    FABRICATED,
     PADDING,
     Judge,
     agreement,
+    calibrate,
     cohen_kappa,
     read_labels,
+    with_fabricated_claim,
     write_label_sheet,
 )
 from legalrag.eval.metrics import Prediction
@@ -75,3 +78,38 @@ async def test_judge_padding_probe_appends_harmless_text():
     llm = FakeChat([json.dumps({"supported": True})])
     await Judge(llm, "m").supported(pred(1), pad=True)
     assert PADDING["en"] in llm.calls[0]["messages"][1]["content"]
+
+
+def test_fabricated_claim_makes_a_known_negative():
+    neg = with_fabricated_claim(pred(3, lang="ar"))
+    assert neg.id == "p3-ar-neg" and neg.answer.endswith(FABRICATED["ar"])
+    assert neg.context_texts == ["[Art. 3] text 3"]  # same articles: the new claim is unsupported
+
+
+class ScriptedJudge:
+    """Says 'supported' unless the answer contains the fabricated claim (a perfect judge)."""
+
+    def __init__(self, model, fooled_by_padding=False):
+        self.model, self.fooled = model, fooled_by_padding
+
+    async def supported(self, p, pad=False):
+        if pad and self.fooled:
+            return 0
+        return 0 if any(c in p.answer for c in FABRICATED.values()) else 1
+
+
+async def test_calibration_adds_negatives_so_kappa_means_something():
+    preds = [pred(i) for i in range(1, 5)]
+    human = {p.id: 1 for p in preds}  # humans found every real answer supported
+    report = await calibrate(preds, human, ScriptedJudge("judge"), same_family=None, ragas={})
+    assert report["n_labelled"] == 4 and report["n_synthetic_negatives"] == 4
+    assert report["judge"]["agreement"] == 1.0 and report["judge"]["kappa"] == 1.0
+    assert report["self_preference_probe"] == "not measured: judge and generator share a model"
+    assert report["verbosity_probe"]["verdict_flips"] == 0
+
+
+async def test_verbosity_probe_counts_flips():
+    preds = [pred(i) for i in range(1, 3)]
+    report = await calibrate(preds, {p.id: 1 for p in preds},
+                             ScriptedJudge("judge", fooled_by_padding=True), None, {})  # fmt: skip
+    assert report["verbosity_probe"] == {"verdict_flips": 2, "of": 2}

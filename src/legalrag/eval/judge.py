@@ -25,11 +25,18 @@ from pathlib import Path
 from typing import Any
 
 from legalrag.eval.metrics import Prediction
+from legalrag.eval.pacing import Pacer
 
 LABEL = "supported (1/0)"
 PADDING = {
     "en": " This is an important question that many people ask about Egyptian civil law.",
     "ar": " وهذا سؤال مهم يسأله كثير من الناس عن القانون المدني المصري.",
+}
+# A legal claim no article supports (and that is false under Egyptian law): appended to a real
+# answer it makes a negative example whose correct label is 0 by construction.
+FABRICATED = {
+    "en": " In addition, the parties may agree in writing to extend this period indefinitely.",
+    "ar": " كما يجوز للطرفين الاتفاق كتابة على مد هذه المدة إلى أجل غير محدود.",
 }
 SYSTEM = """You check answers about the Egyptian Civil Code against the articles they were
 based on. An answer is SUPPORTED only if every legal claim in it is stated in, or directly follows
@@ -39,11 +46,13 @@ from, the given articles. Ignore generic remarks that make no claim about the la
 
 
 class Judge:
-    def __init__(self, client: Any, model: str, **extra: Any):
+    def __init__(self, client: Any, model: str, pacer: Pacer | None = None, **extra: Any):
         self.client, self.model = client, model
+        self.pacer = pacer or Pacer(None)  # stay under the provider's requests-per-minute
         self.extra = extra  # e.g. reasoning_effort="none" for thinking models
 
     async def supported(self, p: Prediction, pad: bool = False) -> int:
+        await self.pacer.wait()
         answer = p.answer + (PADDING.get(p.lang, PADDING["en"]) if pad else "")
         articles = "\n\n".join(p.context_texts)
         user = f"<articles>\n{articles}\n</articles>\n\nQuestion: {p.question}\n\nAnswer: {answer}"
@@ -104,28 +113,43 @@ async def _verdicts(judge: Judge, preds: Sequence[Prediction], pad: bool = False
         *(judge.supported(p, pad=pad) for p in preds)), strict=True))  # fmt: skip
 
 
+def with_fabricated_claim(p: Prediction) -> Prediction:
+    """Same question and articles, plus one unsupported legal claim: a known negative."""
+    return p.model_copy(update={"id": f"{p.id}-neg",
+                                "answer": p.answer + FABRICATED.get(p.lang, FABRICATED["en"])})  # fmt: skip
+
+
+def _scores(truth: Mapping[str, int], votes: Mapping[str, int]) -> dict[str, float]:
+    return {"agreement": agreement(truth, votes), "kappa": cohen_kappa(truth, votes),
+            "n": len(truth.keys() & votes.keys())}  # fmt: skip
+
+
 async def calibrate(preds: Sequence[Prediction], human: Mapping[str, int], judge: Judge,
-                    same_family: Judge, ragas: Mapping[str, float]) -> dict[str, Any]:  # fmt: skip
+                    same_family: Judge | None, ragas: Mapping[str, float]) -> dict[str, Any]:  # fmt: skip
+    """Human labels + one synthetic negative per labelled answer (balances the classes: if
+    humans found every real answer supported, kappa alone would be meaningless)."""
     labelled = [p for p in preds if p.id in human]
-    ours = await _verdicts(judge, labelled)
+    negatives = [with_fabricated_claim(p) for p in labelled]
+    truth = {**human, **{n.id: 0 for n in negatives}}
+    ours = await _verdicts(judge, labelled + negatives)
     padded = await _verdicts(judge, labelled, pad=True)
-    family = await _verdicts(same_family, labelled)
-    ragas_vote = {i: int(v >= 0.8) for i, v in ragas.items() if i in human}
-    return {
+    ragas_vote = {i: int(v >= 0.8) for i, v in ragas.items() if i in truth}
+    report: dict[str, Any] = {
         "n_labelled": len(labelled),
+        "n_synthetic_negatives": len(negatives),
         "human_supported_rate": sum(human[p.id] for p in labelled) / max(len(labelled), 1),
-        "judge": {"model": judge.model, "agreement": agreement(human, ours),
-                  "kappa": cohen_kappa(human, ours)},
-        "ragas_faithfulness_ge_0_8": {"agreement": agreement(human, ragas_vote),
-                                      "kappa": cohen_kappa(human, ragas_vote)},
-        "self_preference_probe": {"model": same_family.model,
-                                  "agreement": agreement(human, family),
-                                  "kappa": cohen_kappa(human, family),
-                                  "supported_rate": sum(family.values()) / max(len(family), 1),
-                                  "judge_supported_rate": sum(ours.values()) / max(len(ours), 1)},
-        "verbosity_probe": {"verdict_flips": sum(ours[i] != padded[i] for i in ours),
-                            "of": len(ours)},
+        "judge": {"model": judge.model, **_scores(truth, ours)},
+        "judge_on_real_answers_only": _scores(human, ours),
+        "ragas_faithfulness_ge_0_8": _scores(truth, ragas_vote),
+        "verbosity_probe": {"verdict_flips": sum(ours[p.id] != padded[p.id] for p in labelled),
+                            "of": len(labelled)},
     }  # fmt: skip
+    if same_family is None or same_family.model == judge.model:
+        report["self_preference_probe"] = "not measured: judge and generator share a model"
+    else:
+        family = await _verdicts(same_family, labelled + negatives)
+        report["self_preference_probe"] = {"model": same_family.model, **_scores(truth, family)}
+    return report
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -133,8 +157,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("command", choices=["sheet", "calibrate"])
     p.add_argument("--predictions", default="reports/eval/baseline/predictions.jsonl")
     p.add_argument("--labels", default="data/golden/to_label.csv")
-    p.add_argument("--ragas", default="reports/eval/baseline/ragas.jsonl")
     p.add_argument("--out", default="reports/eval/judge_calibration.json")
+    p.add_argument("--mlflow", action="store_true", help="log the calibration as an MLflow run")
     args = p.parse_args(argv)
 
     from legalrag.eval.run import read_predictions
@@ -143,23 +167,57 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "sheet":
         write_label_sheet(preds, args.labels)
         return
+    report = asyncio.run(_calibrate_cli(preds, read_labels(args.labels)))
+    Path(args.out).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
+    if args.mlflow:
+        _log_calibration(report, args.out)
+
+
+async def _calibrate_cli(preds: Sequence[Prediction], human: Mapping[str, int]) -> dict:
     from openai import AsyncOpenAI
+
+    from legalrag.eval.ragas_run import make_metrics, score_predictions
+    from legalrag.logging_conf import configure_logging
+    from legalrag.settings import get_settings
+
+    s = get_settings()
+    configure_logging(s.log_level)
+    pacer = Pacer(s.judge_rpm)  # judge, padding probe and RAGAS share one per-minute budget
+    effort = {"reasoning_effort": s.judge_reasoning_effort} if s.judge_reasoning_effort else {}
+    client = AsyncOpenAI(base_url=s.judge_base_url, api_key=s.judge_api_key, timeout=120,
+                         max_retries=4)  # fmt: skip
+    gen = AsyncOpenAI(base_url=s.active_llm_base_url, api_key=s.active_llm_api_key, timeout=120,
+                      max_retries=4)  # fmt: skip
+    labelled = [p for p in preds if p.id in human]
+    faith = make_metrics(s.judge_base_url, s.judge_api_key, s.judge_model,
+                         s.judge_embedding_model, names=("faithfulness",),
+                         reasoning_effort=s.judge_reasoning_effort)  # fmt: skip
+    rows = await score_predictions(labelled + [with_fabricated_claim(p) for p in labelled],
+                                   faith, concurrency=2, requests_per_minute=s.judge_rpm)  # fmt: skip
+    ragas = {r["id"]: r["faithfulness"] for r in rows if r.get("faithfulness") is not None}
+    return await calibrate(preds, human, Judge(client, s.judge_model, pacer, **effort),
+                           Judge(gen, s.active_llm_model, pacer), ragas)  # fmt: skip
+
+
+def _log_calibration(report: Mapping[str, Any], path: str) -> None:
+    import mlflow
 
     from legalrag.settings import get_settings
 
     s = get_settings()
-    judge_client = AsyncOpenAI(base_url=s.judge_base_url, api_key=s.judge_api_key, timeout=120,
-                               max_retries=4)  # fmt: skip
-    gen_client = AsyncOpenAI(base_url=s.active_llm_base_url, api_key=s.active_llm_api_key,
-                             timeout=120, max_retries=4)  # fmt: skip
-    rows = [json.loads(x) for x in Path(args.ragas).read_text(encoding="utf-8").splitlines() if x]
-    ragas = {r["id"]: r["faithfulness"] for r in rows if r.get("faithfulness") is not None}
-    report = asyncio.run(calibrate(
-        preds, read_labels(args.labels),
-        Judge(judge_client, s.judge_model, **({"reasoning_effort": s.judge_reasoning_effort}
-                                              if s.judge_reasoning_effort else {})),
-        Judge(gen_client, s.active_llm_model), ragas))  # fmt: skip
-    Path(args.out).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
+    mlflow.set_tracking_uri(s.mlflow_tracking_uri)
+    mlflow.set_experiment(s.mlflow_experiment)
+    with mlflow.start_run(run_name="judge-calibration", tags={"eval_mode": "judge_calibration"}):
+        mlflow.log_params({"judge_model": report["judge"]["model"],
+                           "n_labelled": report["n_labelled"],
+                           "n_synthetic_negatives": report["n_synthetic_negatives"]})  # fmt: skip
+        for group in ("judge", "judge_on_real_answers_only", "ragas_faithfulness_ge_0_8"):
+            for k in ("agreement", "kappa"):
+                value = report[group][k]
+                if value == value:  # skip NaN
+                    mlflow.log_metric(f"{group}.{k}", value)
+        mlflow.log_metric("verbosity_flips", report["verbosity_probe"]["verdict_flips"])
+        mlflow.log_artifact(path)
 
 
 if __name__ == "__main__":
