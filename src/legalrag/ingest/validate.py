@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Validate articles.json")
     parser.add_argument("--articles", default=None, help="default: settings.articles_path")
     parser.add_argument("--params", default="params.yaml")
-    parser.add_argument("--metrics", default="reports/corpus_metrics.json")
+    parser.add_argument("--metrics", default="metrics/corpus.json")
     args = parser.parse_args(argv)
 
     from legalrag.settings import get_settings  # after argparse so --help works without a valid env

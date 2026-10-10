@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--articles", default=None, help="default: settings.articles_path")
     parser.add_argument("--params", default="params.yaml")
     parser.add_argument("--manifest", default="data/processed/index_manifest.json")
-    parser.add_argument("--metrics", default="reports/index_metrics.json")
+    parser.add_argument("--metrics", default="metrics/index.json")
     args = parser.parse_args(argv)
 
     from qdrant_client import QdrantClient

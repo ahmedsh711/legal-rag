@@ -15,23 +15,15 @@ dist/
 *.pem
 !docker/no-local-ca.pem
 # data files are git-ignored by DVC itself (it writes a .gitignore next to each tracked file)
-# course copyright material (local reference only)
-/docs/research/course_materials/
-/docs/research/handbook.pdf
-/docs/research/handbook.txt
 # tooling
 .terraform/
 *.tfstate*
 mlruns/
-# eval runs: MLflow keeps predictions/ragas as artifacts; git keeps only each run's metrics.json
-reports/eval/**/predictions.jsonl
-reports/eval/**/ragas.jsonl
-reports/eval/*.log
 .dvc/cache/
 .dvc/tmp/
 node_modules/
 .prometheus-multiproc/
-reports/load/*.html
 data/events/
 data/events-live/
-reports/drift/drift_triggers.json
+# generated outputs: evaluation runs, load tests, drift reports
+reports/

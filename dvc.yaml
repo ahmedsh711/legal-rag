@@ -18,7 +18,7 @@ stages:
       - data/processed/articles.meta.json
 
   validate:
-    cmd: uv run python -m legalrag.ingest.validate --articles data/processed/articles.json --params params.yaml --metrics reports/corpus_metrics.json
+    cmd: uv run python -m legalrag.ingest.validate --articles data/processed/articles.json --params params.yaml --metrics metrics/corpus.json
     deps:
       - data/processed/articles.json
       - src/legalrag/ingest
@@ -26,7 +26,7 @@ stages:
     params:
       - corpus
     metrics:
-      - reports/corpus_metrics.json:
+      - metrics/corpus.json:
           cache: false
 
   index:
@@ -35,10 +35,10 @@ stages:
     # volume). The stage runs on every repro; the build reuses an existing identical collection
     # in seconds and only embeds when it is missing.
     always_changed: true
-    cmd: uv run python -m legalrag.index.build --articles data/processed/articles.json --params params.yaml --manifest data/processed/index_manifest.json --metrics reports/index_metrics.json
+    cmd: uv run python -m legalrag.index.build --articles data/processed/articles.json --params params.yaml --manifest data/processed/index_manifest.json --metrics metrics/index.json
     deps:
       - data/processed/articles.json
-      - reports/corpus_metrics.json   # runs only after `validate` passed: never embed an invalid corpus
+      - metrics/corpus.json   # runs only after `validate` passed: never embed an invalid corpus
       - src/legalrag/index
       - uv.lock
     params:
@@ -47,5 +47,5 @@ stages:
       - data/processed/index_manifest.json:
           cache: false
     metrics:
-      - reports/index_metrics.json:
+      - metrics/index.json:
           cache: false
