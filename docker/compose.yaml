@@ -1,7 +1,8 @@
 # One compose file, many profiles, so the laptop only runs what the current phase needs.
 #   docker compose -f docker/compose.yaml --profile core up -d
 # Profiles: core | tracking | llm | monitoring | llm-observability | airflow | serving
-# Services are added phase by phase (see task_plan.md). Phase 4 added llm (vLLM on the GPU).
+# Services are added phase by phase (see task_plan.md). Phase 4: llm (vLLM on the GPU);
+# Phase 5: monitoring (Prometheus, Alertmanager, Grafana, exporters).
 name: legal-rag
 
 services:
@@ -176,6 +177,86 @@ services:
       start_period: 300s
     restart: unless-stopped
 
+  # ---------- monitoring: metrics, dashboards, alerts (Phase 5) ----------
+  # Prometheus pulls /metrics from the API, vLLM, the exporters; Alertmanager routes the alerts
+  # its rules fire; Grafana draws it all from files in monitoring/ (nothing configured by hand).
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle  # POST /-/reload after editing rules, no restart
+    volumes:
+      - ../monitoring/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    profiles: [monitoring]
+    command: [--config.file=/etc/alertmanager/alertmanager.yml]
+    volumes: [../monitoring/alertmanager:/etc/alertmanager:ro]
+    ports: ["127.0.0.1:9093:9093"]
+    restart: unless-stopped
+
+  # stands in for Slack/Discord: records every alert delivery (monitoring/alerts/alerts.jsonl)
+  alert-sink:
+    image: python:3.12-slim
+    profiles: [monitoring]
+    command: [python, /app/alert_sink.py]
+    environment:
+      ALERT_LOG: /data/alerts.jsonl
+    volumes:
+      - ../monitoring/alert_sink.py:/app/alert_sink.py:ro
+      - ../monitoring/alerts:/data
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    profiles: [monitoring]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"  # read-only viewers without a login, on localhost only
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/legal-rag.json
+    volumes:
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports: ["127.0.0.1:3001:3000"]  # 3000 is kept for Langfuse
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+  # the machine (Docker Desktop's Linux VM) + the textfile collector: batch jobs (nightly
+  # evaluation, drift) leave their last numbers as *.prom files in monitoring/textfile
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    profiles: [monitoring]
+    command: [--collector.textfile.directory=/textfile]
+    volumes: [../monitoring/textfile:/textfile:ro]
+    restart: unless-stopped
+
+  # per-container CPU and memory; needs read access to the host's cgroups and Docker state
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    profiles: [monitoring]
+    privileged: true  # reads /dev/kmsg and cgroup stats; local-only, no published port
+    devices: [/dev/kmsg]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    restart: unless-stopped
+
+  # a synthetic user that calls /health from outside the app (relabelled in prometheus.yml)
+  blackbox:
+    image: prom/blackbox-exporter:v0.28.0
+    profiles: [monitoring]
+    restart: unless-stopped
+
 secrets:
   local_ca:
     file: ${LOCAL_CA_CERT:-./no-local-ca.pem}
@@ -188,3 +269,5 @@ volumes:
   postgres_data:
   minio_data:
   vllm_cache:
+  prometheus_data:
+  grafana_data:

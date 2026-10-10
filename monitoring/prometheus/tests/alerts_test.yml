@@ -1,0 +1,83 @@
+# Unit tests for the alert rules (promtool feeds made-up series and checks what fires, and when).
+#   docker run --rm --entrypoint promtool -v ./monitoring/prometheus:/etc/prometheus \
+#     prom/prometheus:v3.15.0 test rules /etc/prometheus/tests/alerts_test.yml
+rule_files:
+  - ../rules/recording.yml
+  - ../rules/alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # the API stops answering at minute 2: pending at 2, firing from 3 (for: 1m)
+  - interval: 1m
+    input_series:
+      - series: 'up{job="api"}'
+        values: "1 1 0 0 0 0"
+      - series: 'probe_success{job="blackbox-health"}'
+        values: "1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ApiDown
+        exp_alerts: [] # pending, not firing yet
+      - eval_time: 4m
+        alertname: ApiDown
+        exp_alerts:
+          - exp_labels: {severity: page, kind: symptom, job: api}
+            exp_annotations:
+              summary: "legal-rag API is not answering (/metrics or /health)"
+              first_action: "docker compose ps api; docker logs --tail 50 legal-rag-api-1 (index alias missing? model download?)"
+              runbook: docs/runbook.md#apidown
+
+  # a one-scrape blip is not an incident
+  - interval: 1m
+    input_series:
+      - series: 'up{job="api"}'
+        values: "1 1 0 1 1 1"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ApiDown
+        exp_alerts: []
+
+  # Redis down: the limiter reports "degraded" for every request
+  - interval: 1m
+    input_series:
+      - series: 'rag_ratelimit_total{outcome="degraded"}'
+        values: "0 0 5 10 15 20 25 30"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: RateLimiterDegraded
+        exp_alerts:
+          - exp_labels: {severity: ticket, kind: cause}
+            exp_annotations:
+              summary: "Redis unreachable: the API serves without a rate limit (fail open)"
+              first_action: "docker compose ps redis; docker logs legal-rag-redis-1"
+              runbook: docs/runbook.md#ratelimiterdegraded
+
+  # 8 of every 10 answers are refusals for half an hour (what the 1.5B model did in Phase 4)
+  - interval: 1m
+    input_series:
+      - series: 'rag_answers_total{outcome="refused"}'
+        values: "0+8x40"
+      - series: 'rag_answers_total{outcome="answered"}'
+        values: "0+2x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: RefusalRateHigh
+        exp_alerts:
+          - exp_labels: {severity: ticket, kind: symptom}
+            exp_annotations:
+              summary: "80% of answers are refusals"
+              first_action: "rag_guardrail_total by guard: citation:uncited = the LLM stopped citing (model/prompt change?); gate:unanswerable = off-topic traffic or retrieval drift"
+              runbook: docs/runbook.md#refusalratehigh
+
+  # healthy traffic: 1 refusal in 10 never alerts
+  - interval: 1m
+    input_series:
+      - series: 'rag_answers_total{outcome="refused"}'
+        values: "0+1x40"
+      - series: 'rag_answers_total{outcome="answered"}'
+        values: "0+9x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: RefusalRateHigh
+        exp_alerts: []

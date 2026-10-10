@@ -1,0 +1,30 @@
+# Alertmanager decides who hears about a firing alert, how grouped and how often.
+# Receivers here are a local webhook "sink" (monitoring/alert_sink.py) that records every
+# delivery, so the routing is testable on a laptop. For a team, replace the url with a Slack or
+# Discord webhook (slack_configs / discord_configs with webhook_url_file: a secret file).
+route:
+  receiver: tickets
+  group_by: [alertname]
+  group_wait: 30s # collect alerts that fire together into one message
+  group_interval: 5m
+  repeat_interval: 4h # still firing? remind, but not every minute
+  routes:
+    - matchers: ['severity="page"'] # users are affected: faster, louder, repeated more often
+      receiver: pages
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  - name: pages
+    webhook_configs:
+      - url: http://alert-sink:8080/page
+        send_resolved: true
+  - name: tickets
+    webhook_configs:
+      - url: http://alert-sink:8080/ticket
+        send_resolved: true
+
+inhibit_rules:
+  # when the API is down every cause alert is noise: tell people about the outage only
+  - source_matchers: ['alertname="ApiDown"']
+    target_matchers: ['kind="cause"']

@@ -1,0 +1,11 @@
+# Grafana reads this at start-up: data sources are configuration in git, not clicks in a UI.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s # = scrape interval, so rate() windows are never too short

@@ -25,6 +25,7 @@ from prometheus_client import (
     Counter,
     Gauge,
     Histogram,
+    ProcessCollector,
     generate_latest,
     multiprocess,
 )
@@ -51,6 +52,8 @@ def _bounded(value: str, allowed: Iterable[str]) -> str:
 class RagMetrics:
     def __init__(self, registry: CollectorRegistry | None = None):
         r = registry
+        if r is not None:  # CPU, memory, open files and start time of this process (Linux only);
+            ProcessCollector(registry=r)  # the start time draws the "deploy" line in Grafana
         self.requests = Counter("rag_requests_total", "HTTP requests by endpoint and status code",
                                 ["endpoint", "status"], registry=r)  # fmt: skip
         self.request_seconds = Histogram("rag_request_seconds", "Time to response (for a stream: "

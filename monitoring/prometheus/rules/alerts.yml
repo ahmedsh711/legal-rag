@@ -1,0 +1,119 @@
+# Alerting rules. Two kinds, told apart by the `kind` label:
+#   symptom: users feel it (down, slow, errors, wrong answers): pages someone;
+#   cause:   a reason that will become a symptom (queue, cache, budget, dependency): a ticket.
+# Every rule waits `for:` a while before firing (one slow scrape is not an incident) and carries
+# the first thing to do, so the person woken up does not start from zero.
+groups:
+  - name: rag-symptoms
+    rules:
+      - alert: ApiDown
+        expr: up{job="api"} == 0 or probe_success{job="blackbox-health"} == 0
+        for: 1m
+        labels: {severity: page, kind: symptom}
+        annotations:
+          summary: "legal-rag API is not answering (/metrics or /health)"
+          first_action: "docker compose ps api; docker logs --tail 50 legal-rag-api-1 (index alias missing? model download?)"
+          runbook: docs/runbook.md#apidown
+
+      - alert: AskLatencyHigh
+        expr: rag:ask_latency_p95:5m > 5
+        for: 10m
+        labels: {severity: page, kind: symptom}
+        annotations:
+          summary: "/ask p95 is {{ $value | humanizeDuration }} (SLO: under 5 s)"
+          first_action: "Grafana row 'RAG behaviour': which stage grew? retrieve -> RetrieveStageSlow; generate -> provider or vLLM queue"
+          runbook: docs/runbook.md#asklatencyhigh
+
+      - alert: AskErrorsHigh
+        expr: rag:ask_error_ratio:5m > 0.01 and sum(rate(rag_requests_total{endpoint="ask"}[5m])) > 0.05
+        for: 5m
+        labels: {severity: page, kind: symptom}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of /ask requests fail with 5xx"
+          first_action: "503 = LLM provider down or quota (check llm_error logs); 500 = our bug (unhandled_error logs, by request_id)"
+          runbook: docs/runbook.md#askerrorshigh
+
+      # error budget: 1 % of requests per 30 days; burning it 14.4x faster than allowed empties
+      # it in 2 days. Two windows: the long one proves it is real, the short one that it is now.
+      - alert: ErrorBudgetBurnFast
+        expr: rag:ask_error_ratio:1h > (14.4 * 0.01) and rag:ask_error_ratio:5m > (14.4 * 0.01)
+        for: 2m
+        labels: {severity: page, kind: symptom}
+        annotations:
+          summary: "/ask is burning its monthly error budget 14x too fast"
+          first_action: "same as AskErrorsHigh; consider rolling back the last deploy (Grafana deploy annotations)"
+          runbook: docs/runbook.md#errorbudgetburnfast
+
+      - alert: RefusalRateHigh
+        expr: rag:refusal_ratio:15m > 0.5 and sum(rate(rag_answers_total[15m])) > 0.01
+        for: 15m
+        labels: {severity: ticket, kind: symptom}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of answers are refusals"
+          first_action: "rag_guardrail_total by guard: citation:uncited = the LLM stopped citing (model/prompt change?); gate:unanswerable = off-topic traffic or retrieval drift"
+          runbook: docs/runbook.md#refusalratehigh
+
+      - alert: FaithfulnessLow
+        expr: rag_eval_faithfulness < 0.80
+        for: 1m
+        labels: {severity: ticket, kind: symptom}
+        annotations:
+          summary: "nightly RAGAS faithfulness is {{ $value }} (threshold 0.80)"
+          first_action: "open the nightly predictions; compare prompt_version / llm_model in rag_info with the last good run in MLflow"
+          runbook: docs/runbook.md#faithfulnesslow
+
+  - name: rag-causes
+    rules:
+      - alert: RetrieveStageSlow
+        expr: rag:stage_latency_p95:5m{stage="retrieve"} > 2
+        for: 5m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "retrieve p95 is {{ $value | humanizeDuration }}: the CPU embedder is saturated"
+          first_action: "API container CPU (row Resources); QUERY_BATCH_MAX set? (Phase 4 load test: one-at-a-time embedding was the first bottleneck)"
+          runbook: docs/runbook.md#retrievestageslow
+
+      - alert: LlmQueueBacklog
+        expr: sum(vllm:num_requests_waiting) > 0
+        for: 5m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "{{ $value }} requests wait for a vLLM slot"
+          first_action: "KV cache usage low? raise --max-num-seqs; high? the GPU is full: shed load or add capacity"
+          runbook: docs/runbook.md#llmqueuebacklog
+
+      - alert: KvCacheNearlyFull
+        expr: max(vllm:kv_cache_usage_perc) > 0.9
+        for: 5m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "vLLM KV cache {{ $value | humanizePercentage }} full: requests will be preempted"
+          first_action: "lower --max-num-seqs or --max-model-len, or move to a bigger GPU"
+          runbook: docs/runbook.md#kvcachenearlyfull
+
+      - alert: DailyTokenBudget
+        expr: sum(increase(rag_llm_tokens_total[24h])) > 2e6
+        for: 10m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "{{ $value | humanize }} LLM tokens in 24 h (budget 2M)"
+          first_action: "rag:tokens:1h by backend; a single client looping? (rate-limit logs); a prompt that grew?"
+          runbook: docs/runbook.md#dailytokenbudget
+
+      - alert: RateLimiterDegraded
+        expr: sum(increase(rag_ratelimit_total{outcome="degraded"}[5m])) > 0
+        for: 2m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "Redis unreachable: the API serves without a rate limit (fail open)"
+          first_action: "docker compose ps redis; docker logs legal-rag-redis-1"
+          runbook: docs/runbook.md#ratelimiterdegraded
+
+      - alert: DriftDetected
+        expr: rag_drift_alert == 1
+        for: 1m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "question drift: {{ $labels.test }} on {{ $labels.feature }}"
+          first_action: "Grafana row 'Drift & quality'; read the drift report; if the topic mix changed, extend the golden set before retraining anything"
+          runbook: docs/runbook.md#driftdetected
