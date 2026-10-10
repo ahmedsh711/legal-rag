@@ -10,11 +10,15 @@ through the real ``RagPipeline`` (guards, prompt, citation check) with a retriev
 those articles. So the gate guards the prompt and the generation model; retrieval is guarded by
 exact metrics on the full golden set (``eval/run.py``).
 
-Two thresholds, both must hold:
-- faithfulness (RAGAS judge) >= 0.75, mean over the answered items;
+Three checks, all must hold:
+- faithfulness (RAGAS judge) >= 0.75, mean over the judged items;
+- no single judged answer below 0.5 (a mean of 10 can hide one made-up answer);
 - cited_gold: share of answers that cite a gold article >= 0.8 (exact, no judge).
-It fails closed: if more than 2 items could not be generated or judged (quota, outage), the gate
+It fails closed: if more than 1 item could not be generated or judged (quota, outage), the gate
 fails. A gate that passes whenever it cannot measure is not a gate.
+What it can and cannot catch: n = 10 (5 translated pairs) with a stochastic judge, so it stops
+gross breakage (a prompt that drops the grounding rule, a model that ignores the articles), not
+a 0.05 drift; the full golden run (eval/run.py) is the place for small differences.
 """
 
 from __future__ import annotations
@@ -57,6 +61,7 @@ class FrozenRetriever:
 def freeze(predictions: Path, articles: Path, golden: Path, pairs: int = 5) -> list[dict[str, Any]]:
     """Smoke rows from a production run: the first ``pairs`` in-scope pairs, AR + EN, each
     with the full payload of the articles that run showed the model."""
+    from legalrag.eval.track import git_sha
     from legalrag.index.store import payload
     from legalrag.ingest.validate import load_articles
 
@@ -68,11 +73,13 @@ def freeze(predictions: Path, articles: Path, golden: Path, pairs: int = 5) -> l
             shown[row["id"]] = row["context_articles"]
     items = [it for it in load_golden(golden) if it.category == "in_scope" and it.id in shown]
     keep = sorted({it.pair for it in items})[:pairs]
+    source = f"{predictions.parent.name} (frozen at {git_sha()})"  # where the contexts came from
     return [
-        {**it.model_dump(), "context": [payload(by_number[n], "ar") for n in shown[it.id]]}
+        {**it.model_dump(), "frozen_from": source,
+         "context": [payload(by_number[n], "ar") for n in shown[it.id]]}
         for it in items
         if it.pair in keep
-    ]
+    ]  # fmt: skip
 
 
 def load_smoke(path: Path) -> tuple[list[GoldenItem], dict[str, list[Chunk]]]:
@@ -101,8 +108,11 @@ def verdict(
     min_faithfulness: float,
     min_cited: float,
     max_errors: int,
+    min_item: float = 0.5,
 ) -> dict[str, Any]:
-    scores = [r["faithfulness"] for r in ragas_rows if r.get("faithfulness") is not None]
+    judged = [r for r in ragas_rows if r.get("faithfulness") is not None]
+    scores = [r["faithfulness"] for r in judged]
+    below_floor = [r["id"] for r in judged if r["faithfulness"] < min_item]
     ok = [p for p in preds if not p.error]
     unmeasured = len(preds) - len(scores)
     faith = round(sum(scores) / len(scores), 3) if scores else None
@@ -118,10 +128,13 @@ def verdict(
         )
     if faith is None or faith < min_faithfulness:
         reasons.append(f"faithfulness {faith} < {min_faithfulness}")
+    if below_floor:
+        reasons.append(f"answers below {min_item} faithfulness: {', '.join(below_floor)}")
     if cited is None or cited < min_cited:
         reasons.append(f"cited_gold {cited} < {min_cited}")
     return {"passed": not reasons, "faithfulness": faith, "cited_gold": cited,
-            "n": len(preds), "unmeasured": unmeasured, "reasons": reasons}  # fmt: skip
+            "below_floor": below_floor, "n": len(preds), "unmeasured": unmeasured,
+            "reasons": reasons}  # fmt: skip
 
 
 def _summary_markdown(v: Mapping[str, Any], model: str) -> str:
@@ -159,7 +172,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     s = get_settings()
     items, contexts = load_smoke(Path(args.smoke))
     preds, rows = asyncio.run(_generate_and_judge(s, items, contexts))
-    v = verdict(preds, rows, args.min_faithfulness, args.min_cited, args.max_errors)
+    v = verdict(preds, rows, args.min_faithfulness, args.min_cited, args.max_errors, args.min_item)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for name, data in (
@@ -183,7 +196,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--smoke", default=str(SMOKE_PATH))
     parser.add_argument("--min-faithfulness", type=float, default=0.75)
     parser.add_argument("--min-cited", type=float, default=0.8)
-    parser.add_argument("--max-errors", type=int, default=2)
+    parser.add_argument("--max-errors", type=int, default=1)
+    parser.add_argument("--min-item", type=float, default=0.5)
     parser.add_argument("--out", default="reports/eval/smoke")
     parser.add_argument("--from-run", default="reports/eval/e2e-dense-jev/predictions.jsonl")
     args = parser.parse_args(argv)

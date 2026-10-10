@@ -63,6 +63,11 @@ class AskResponse(BaseModel):
     )
 
 
+class ErrorBody(BaseModel):
+    detail: str
+    request_id: str
+
+
 class FeedbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: str = Field(pattern=REQUEST_ID_PATTERN)  # same shape the API hands out

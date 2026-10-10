@@ -85,3 +85,11 @@ def test_frozen_retriever_names_the_question_it_has_no_articles_for():
 
     with pytest.raises(KeyError, match="no frozen articles for"):
         FrozenRetriever({}).retrieve("a question that was rewritten")
+
+
+def test_one_unfaithful_answer_fails_the_gate_even_when_the_mean_passes():
+    preds = [pred(i, [374]) for i in range(10)]
+    rows = [{"id": f"q{i}", "faithfulness": 0.2 if i == 0 else 0.95} for i in range(10)]
+    v = verdict(preds, rows, min_faithfulness=0.75, min_cited=0.8, max_errors=1)
+    assert v["faithfulness"] == 0.875  # the mean alone would pass
+    assert not v["passed"] and v["below_floor"] == ["q0"]

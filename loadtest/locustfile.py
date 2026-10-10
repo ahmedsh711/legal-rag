@@ -15,6 +15,8 @@ bucket per IP, and all Locust users come from one IP.
 
 Besides Locust's own numbers:
 - "SSE ttft": time from sending the request to the first token event (what the user feels);
+- "STAGE <name>": the per-stage timings the API returns in every /ask answer (guard, retrieve,
+  generate, total), so a bottleneck claim names the stage whose time grows with load;
 - failures carry their reason ("429 rate limited", "HTTP 503", "error event"), so the failure
   table separates a rate-limited request from a broken one.
 """
@@ -29,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from locust import HttpUser, between, events, task
+from locust import HttpUser, LoadTestShape, between, events, task
 
 GOLDEN = Path(__file__).resolve().parents[1] / "data" / "golden" / "golden_set.jsonl"
 QUESTIONS = [
@@ -60,6 +62,10 @@ class LegalQuestionUser(HttpUser):
             "/ask", json={"question": question}, name="/ask", catch_response=True
         ) as r:
             self._check(r)
+            if r.status_code == 200:
+                for stage, ms in r.json().get("timings_ms", {}).items():
+                    events.request.fire(request_type="STAGE", name=stage, response_time=ms,
+                                        response_length=0, exception=None, context={})  # fmt: skip
 
     @task(3)
     def ask_stream(self) -> None:
@@ -93,3 +99,16 @@ class LegalQuestionUser(HttpUser):
     @task(1)
     def metadata(self) -> None:
         self.client.get("/metadata", name="/metadata")
+
+
+if os.environ.get("LOCUST_STEPS"):  # e.g. "5,10,20,40": a stepped ramp to find the knee
+
+    class StepLoad(LoadTestShape):
+        """Hold each user count for LOCUST_STEP_SECONDS (default 120), then stop."""
+
+        steps = [int(n) for n in os.environ["LOCUST_STEPS"].split(",")]
+        hold = int(os.environ.get("LOCUST_STEP_SECONDS", "120"))
+
+        def tick(self) -> tuple[int, float] | None:
+            step = int(self.get_run_time() // self.hold)
+            return (self.steps[step], 5.0) if step < len(self.steps) else None

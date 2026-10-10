@@ -80,3 +80,13 @@ def test_unreadable_nvidia_smi_output_is_no_reading_not_a_crash(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="[N/A], [N/A]"))
     assert gpu_memory_mib() is None
+
+
+async def test_repeated_prompts_are_made_unique_so_the_prefix_cache_cannot_flatter_ttft():
+    llm = FakeLLM("a b")
+    prompt = [{"role": "system", "content": "rules"}, {"role": "user", "content": "q?"}]
+    await run_level(Generator(llm, "m", 10, 0.0), [prompt], concurrency=2, requests=4)
+    users = [c["messages"][1]["content"] for c in llm.calls]
+    assert len(set(users)) == 4 and all(u.endswith("q?") for u in users)
+    assert {c["messages"][0]["content"] for c in llm.calls} == {"rules"}  # shared prefix stays
+    assert prompt[1]["content"] == "q?"  # the caller's prompt is not changed

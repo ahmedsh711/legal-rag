@@ -140,6 +140,11 @@ services:
   vllm:
     image: vllm/vllm-openai:v0.30.0
     profiles: [llm]
+    # same start-up script as the API: trusts a local HTTPS-inspection CA if one is mounted,
+    # then runs the image's own command (`vllm serve ...`)
+    entrypoint: ["sh", "/usr/local/bin/ca-entrypoint.sh", "vllm", "serve"]
+    environment:
+      HF_HUB_DISABLE_XET: "1"  # plain HTTPS download, so the trusted bundle above applies
     command:
       - --model=Qwen/Qwen2.5-1.5B-Instruct-AWQ
       - --revision=3ecffa0ceb27851800f45519bab9c457a04405e1  # pinned, like bge-m3
@@ -150,7 +155,10 @@ services:
       - --max-num-seqs=8
       - --host=0.0.0.0
       - --port=8000
-    volumes: [vllm_cache:/root/.cache/huggingface]  # ~1.1 GB of weights, downloaded once
+    volumes:
+      - vllm_cache:/root/.cache/huggingface  # ~1.1 GB of weights, downloaded once
+      - ./entrypoint.sh:/usr/local/bin/ca-entrypoint.sh:ro
+      - ${LOCAL_CA_CERT:-./no-local-ca.pem}:/run/local-ca.pem:ro
     ports: ["127.0.0.1:8001:8000"]
     shm_size: 1gb
     deploy:

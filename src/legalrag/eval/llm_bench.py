@@ -4,7 +4,12 @@
 
 Every request is a real RAG prompt (the 10 smoke questions with their five articles, built by
 ``build_messages``) sent through ``Generator.stream``, the same code path as ``/ask?stream=true``.
-For each concurrency level N, ``--requests`` requests run with exactly N in flight at a time.
+For each concurrency level N, ``--requests`` requests run with exactly N in flight at a time
+(closed loop: it measures capacity, not latency under a given arrival rate; levels above vLLM's
+--max-num-seqs only queue inside the server). Each level is warmed up first with N requests
+(CUDA graphs are captured per batch size). Every request gets a unique marker at the start of its
+user message: the system prompt stays shared and cacheable, as in production, but a repeated
+prompt can no longer be served from vLLM's prefix cache and flatter TTFT.
 
 - TTFT: time to first token, what the user feels as "it started answering".
 - decode tok/s: tokens after the first one / time after the first one, per request.
@@ -20,6 +25,7 @@ import asyncio
 import json
 import subprocess
 import time
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,14 +106,23 @@ async def run_level(
     if concurrency < 1:
         raise ValueError("concurrency must be >= 1")
     gate = asyncio.Semaphore(concurrency)
+    run = uuid.uuid4().hex[:8]
 
     async def one(i: int) -> Sample:
         async with gate:
-            return await measure(generator, prompts[i % len(prompts)])
+            return await measure(generator, _unique(prompts[i % len(prompts)], f"{run}-{i}"))
 
     t0 = time.perf_counter()
     samples = await asyncio.gather(*(one(i) for i in range(requests)))
     return summarize(samples, time.perf_counter() - t0, concurrency)
+
+
+def _unique(messages: Messages, marker: str) -> Messages:
+    """A copy whose user message starts with a marker: unique after the shared system prompt."""
+    return [
+        {**m, "content": f"(request {marker})\n{m['content']}"} if m["role"] == "user" else m
+        for m in messages
+    ]
 
 
 def gpu_memory_mib() -> dict[str, int] | None:
@@ -144,6 +159,7 @@ async def _bench(args: argparse.Namespace) -> dict[str, Any]:
         warmup = await run_level(generator, prompts, concurrency=1, requests=args.warmup)
         require_answers(warmup, "warm-up")
         for n in args.levels:
+            await run_level(generator, prompts, n, n)  # warm-up at this batch size, not counted
             level = await run_level(generator, prompts, n, max(args.requests, n))
             require_answers(level, f"concurrency {n}")
             if args.vram:
@@ -159,7 +175,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="TTFT / tokens-per-second benchmark")
     parser.add_argument("--name", required=True)
     parser.add_argument("--levels", type=int, nargs="+", default=[1, 4, 8, 16])
-    parser.add_argument("--requests", type=int, default=20, help="requests per level (>= N)")
+    parser.add_argument("--requests", type=int, default=50, help="requests per level (>= N)")
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--vram", action="store_true", help="record nvidia-smi memory per level")
     args = parser.parse_args(argv)
