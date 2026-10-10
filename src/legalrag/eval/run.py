@@ -52,6 +52,7 @@ async def predict(pipeline: Any, item: GoldenItem) -> Prediction:
         answerable_score=ans.decision.answerable if ans.decision else None,
         gated=ans.gated,
         decider_cost_usd=ans.decision.cost_usd if ans.decision else 0.0,
+        decider_model=ans.decision.model if ans.decision else "",
     )
 
 
@@ -68,6 +69,7 @@ async def predict_context(pipeline: Any, item: GoldenItem) -> Prediction:
         latency_ms=round((time.perf_counter() - t0) * 1000, 1),
         answerable_score=ctx.decision.answerable if ctx.decision else None,
         decider_cost_usd=ctx.decision.cost_usd if ctx.decision else 0.0,
+        decider_model=ctx.decision.model if ctx.decision else "",
     )  # fmt: skip
 
 
@@ -85,7 +87,16 @@ async def run_golden(
     async def one(item: GoldenItem) -> Prediction:
         async with gate:
             await pacer.wait()
-            return await step(pipeline, item)
+            try:
+                return await step(pipeline, item)
+            except Exception as exc:  # noqa: BLE001 - one quota/timeout must not lose the run
+                log.warning("eval_item_failed", id=item.id, error=str(exc)[:200])
+                return Prediction(
+                    id=item.id, lang=item.lang, category=item.category, question=item.question,
+                    gold_articles=item.gold_articles, reference=item.reference, answer="",
+                    refused=False, cited=[], context_articles=[],
+                    error=f"{type(exc).__name__}: {exc}"[:300],
+                )  # fmt: skip
 
     return list(await asyncio.gather(*(one(i) for i in items)))
 
@@ -93,7 +104,7 @@ async def run_golden(
 # thresholds replayed offline; reported as correct_refusal - false_refusal (higher = better gate)
 GATE_GRID = [round(0.05 * i, 2) for i in range(20)]
 
-RETRIEVAL_KEYS = ("n", "hit_at_1", "hit_at_5", "mrr", "false_refusal_rate",
+RETRIEVAL_KEYS = ("n", "errors", "hit_at_1", "hit_at_5", "mrr", "false_refusal_rate",
                   "correct_refusal_rate", "latency_p50_ms", "latency_p95_ms", "decider_cost_usd")  # fmt: skip
 
 
@@ -179,6 +190,38 @@ def _index_tags(settings: Settings) -> dict[str, str]:
     return {"index_collection": collection, "articles_md5": str(meta.get("articles_md5", ""))}
 
 
+def _md5(path: str | Path) -> str:
+    return hashlib.md5(Path(path).read_bytes()).hexdigest()  # noqa: S324 - fingerprint only
+
+
+def _git_dirty() -> str:
+    import subprocess
+
+    try:
+        out = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+                             capture_output=True, text=True, check=True, timeout=10)  # fmt: skip
+        return str(bool(out.stdout.strip())).lower()
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def _lineage_tags(settings: Settings, args: argparse.Namespace, golden: Path,
+                  preds: Sequence[Prediction]) -> dict[str, str]:  # fmt: skip
+    """Everything needed to reproduce the run besides the params (git SHA is added by track)."""
+    resolved = next((p.decider_model for p in preds if p.decider_model), "")
+    return {
+        "eval_mode": "retrieval_only" if args.retrieval_only else "end_to_end",
+        "golden_md5": _md5(golden),
+        "uv_lock_md5": _md5("uv.lock"),
+        "git_dirty": _git_dirty(),
+        "llm_backend": settings.llm_backend,
+        "decider_resolved_model": resolved,  # e.g. the dated Jev build behind "jev-1.13"
+        "judge_model": settings.judge_model if args.ragas else "",
+        "judge_reasoning_effort": str(settings.judge_reasoning_effort or ""),
+        "ragas_metrics": settings.ragas_metrics if args.ragas else "",
+    }
+
+
 def _ragas(preds: list[Prediction], settings: Settings, out: Path, concurrency: int) -> dict:
     from legalrag.eval.ragas_run import make_metrics, score_predictions, summarize_ragas
 
@@ -210,11 +253,14 @@ def main(argv: list[str] | None = None) -> None:
         preds = asyncio.run(run_golden(pipeline, load_golden(golden_path), args.concurrency,
                                        generate=not args.retrieval_only,
                                        requests_per_minute=settings.llm_rpm))  # fmt: skip
+    if args.retrieval_only:  # no LLM ran: every refusal is the gate's (also true for old files)
+        preds = [p.model_copy(update={"gated": p.refused}) for p in preds]
     write_predictions(preds, out / "predictions.jsonl")
     if args.retrieval_only:
         summary = summarize_retrieval(preds)
-        summary["gate_sweep"] = {f"t{r['threshold']:.2f}": r["correct_refusal_rate"] - r[
-            "false_refusal_rate"] for r in gate_sweep(preds, GATE_GRID)}  # fmt: skip
+        summary["gate_sweep"] = {f"t{r['threshold']:.2f}.{k}": r[k]
+                                 for r in gate_sweep(preds, GATE_GRID)
+                                 for k in ("false_refusal_rate", "correct_refusal_rate")}  # fmt: skip
     else:
         summary = summarize(preds, settings.llm_price_in_per_m, settings.llm_price_out_per_m)
     artifacts = [out / "predictions.jsonl", out / "metrics.json"]
@@ -229,9 +275,7 @@ def main(argv: list[str] | None = None) -> None:
         from legalrag.eval.track import log_eval_run
 
         mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
-        tags = {**_index_tags(settings), "judge_model": settings.judge_model if args.ragas else "",
-                "eval_mode": "retrieval_only" if args.retrieval_only else "end_to_end",
-                "golden_md5": hashlib.md5(golden_path.read_bytes()).hexdigest()}  # noqa: S324  # fmt: skip
+        tags = {**_index_tags(settings), **_lineage_tags(settings, args, golden_path, preds)}
         run_id = log_eval_run(settings.mlflow_experiment, args.name, rag_config(settings),
                               summary, tags, artifacts)  # fmt: skip
         log.info("mlflow_run", run_id=run_id)

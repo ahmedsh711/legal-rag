@@ -157,6 +157,9 @@ async def _close(comp: Components) -> None:
     llm = getattr(getattr(comp.pipeline, "generator", None), "client", None)
     if hasattr(llm, "close"):
         await llm.close()
+    decider = getattr(comp.pipeline, "decider", None)  # Jev holds an HTTP client
+    if hasattr(decider, "aclose"):
+        await decider.aclose()
 
 
 def _source(c: Any) -> Source:

@@ -57,3 +57,23 @@ def test_predictions_round_trip(tmp_path):
     write_predictions([p], path)
     assert read_predictions(path) == [p]
     assert b"\r" not in path.read_bytes()
+
+
+class FlakyPipeline:
+    """The second question fails after the SDK's own retries (e.g. a daily quota 429)."""
+
+    def __init__(self):
+        self.inner = RagPipeline(StubRetriever(), Generator(FakeLLM("A lease [Art. 558]."),
+                                                            "m", 100, 0.0))  # fmt: skip
+
+    async def ask(self, question):
+        if "PWNED" in question:
+            raise RuntimeError("429 quota exceeded")
+        return await self.inner.ask(question)
+
+
+async def test_one_failed_question_is_recorded_not_fatal():
+    preds = await run_golden(FlakyPipeline(), ITEMS)
+    assert preds[0].error == "" and preds[1].error.startswith("RuntimeError")
+    summary = summarize_retrieval(preds)["all"]
+    assert summary["n"] == 1 and summary["errors"] == 1  # scored only on what really ran

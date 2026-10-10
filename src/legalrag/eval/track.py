@@ -118,6 +118,9 @@ def main(argv: list[str] | None = None) -> None:
     configure_logging(settings.log_level)
     uri = settings.mlflow_tracking_uri
     mlflow.set_tracking_uri(uri)
+    mode = MlflowClient().get_run(args.run_id).data.tags.get("eval_mode")
+    if mode != "end_to_end":  # a retrieval-only run never measured an answer
+        raise SystemExit(f"run {args.run_id} is {mode!r}; only end_to_end runs can be promoted")
     if uri.startswith("http"):  # a tracking server: stream through it (see fetch_run_config)
         from legalrag.config_registry import fetch_run_config
 

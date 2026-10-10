@@ -194,3 +194,16 @@ def test_api_refuses_an_index_built_differently(meta, ok):
     else:
         with pytest.raises(IndexMismatchError):
             check_index_compatible(meta, settings)
+
+
+def test_shutdown_closes_the_deciders_http_client(tmp_path):
+    class ClosableDecider:
+        closed = False
+
+        async def aclose(self):
+            ClosableDecider.closed = True
+
+    pipeline = SimpleNamespace(decider=ClosableDecider())
+    with make_client(tmp_path, pipeline):
+        pass  # leaving the block runs the lifespan shutdown
+    assert ClosableDecider.closed

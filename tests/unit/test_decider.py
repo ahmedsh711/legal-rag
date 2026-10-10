@@ -121,3 +121,24 @@ async def test_decider_outage_falls_back_to_retrieval_order():
     ans = await pipe.ask("What is a lease?")
     assert [c.article_number for c in ans.context] == [147, 374] and ans.decision is None
     assert llm.calls  # still answers: degraded, not down
+
+
+async def test_local_decider_errors_become_unavailable_so_the_pipeline_degrades():
+    def broken(question, texts):
+        raise RuntimeError("CUDA out of memory")
+
+    with pytest.raises(DeciderUnavailableError):
+        await LocalDecider(score_pairs=broken).decide("q?", [chunk(1)])
+
+
+async def test_jev_bad_cost_value_does_not_lose_the_decision():
+    def handler(request: httpx.Request) -> httpx.Response:
+        reply = jev_reply(request)
+        data = json.loads(reply.content)
+        data["usage"]["cost"] = "n/a"
+        return httpx.Response(200, json=data)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    jev = JevDecider(client, base_url="https://x/api/v1", api_key="k", model="jev-1.13")
+    d = await jev.decide("q?", [chunk(558)])
+    assert d.relevance[558] == pytest.approx(1.0) and d.cost_usd == 0.0

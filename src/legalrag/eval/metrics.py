@@ -43,6 +43,8 @@ class Prediction(BaseModel):
     answerable_score: float | None = None  # the decider's gate score, when one ran
     gated: bool = False  # refused by the gate (the LLM never saw it), not by the LLM
     decider_cost_usd: float = 0.0
+    decider_model: str = ""  # the exact model the decider reported (e.g. a dated Jev build)
+    error: str = ""  # the question failed (quota, timeout): excluded from metrics, counted
 
     @property
     def answerable(self) -> bool:
@@ -129,10 +131,13 @@ def gate_sweep(preds: Sequence[Prediction], thresholds: Sequence[float]) -> list
 def summarize(
     preds: Sequence[Prediction], price_in_per_m: float = 0.0, price_out_per_m: float = 0.0
 ) -> dict[str, dict[str, Any]]:
-    """Metrics overall and per language. Prices are USD per million tokens."""
-    out = {"all": _block(preds, price_in_per_m, price_out_per_m)}
-    for lang in ("ar", "en"):
-        subset = [p for p in preds if p.lang == lang]
+    """Metrics overall and per language, over the questions that ran (failed ones are only
+    counted as ``errors``, never scored as wrong). Prices are USD per million tokens."""
+    out = {}
+    for group in ("all", "ar", "en"):
+        subset = [p for p in preds if group == "all" or p.lang == group]
         if subset:
-            out[lang] = _block(subset, price_in_per_m, price_out_per_m)
+            ok = [p for p in subset if not p.error]
+            out[group] = {**_block(ok, price_in_per_m, price_out_per_m),
+                          "errors": len(subset) - len(ok)}  # fmt: skip
     return out

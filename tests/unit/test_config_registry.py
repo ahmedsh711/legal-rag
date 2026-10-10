@@ -68,3 +68,23 @@ def test_unreachable_registry_keeps_env_settings():
 def test_env_source_does_not_call_mlflow():
     s, source = apply_registry_config(Settings(_env_file=None), transport=None)
     assert source == "env"
+
+
+@pytest.mark.parametrize(
+    ("bad", "match"),
+    [
+        ({**CONFIG, "retrieval_mode": "Hybrid"}, "invalid"),  # a typo must not serve sparse-only
+        ({k: v for k, v in CONFIG.items() if k != "prompt_version"}, "prompt"),
+        ({**CONFIG, "decider_model": "jev-2.0"}, "decider model"),  # threshold belongs to a model
+        (["not", "a", "dict"], "not a JSON object"),
+    ],
+)
+def test_bad_registry_configs_fail_startup_loudly(bad, match):
+    with pytest.raises(ConfigMismatchError, match=match):
+        apply_registry_config(settings(jev_model="jev-1.13"), transport=mlflow_server(config=bad))
+
+
+def test_matching_decider_model_is_accepted():
+    ok = {**CONFIG, "decider_model": "jev-1.13"}
+    s, _ = apply_registry_config(settings(jev_model="jev-1.13"), transport=mlflow_server(config=ok))
+    assert s.decider_backend == "jev"

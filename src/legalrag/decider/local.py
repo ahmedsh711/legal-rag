@@ -13,7 +13,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 
-from legalrag.decider.base import Decider, Decision, passage_text
+from legalrag.decider.base import Decider, DeciderUnavailableError, Decision, passage_text
 from legalrag.generation import detect_language
 from legalrag.retrieval import Chunk
 
@@ -34,8 +34,12 @@ class LocalDecider(Decider):
         t0 = time.perf_counter()
         lang = detect_language(question)  # multilingual model: compare in the question's language
         texts = [passage_text(c, lang) for c in chunks]
-        logits = await asyncio.to_thread(self.score_pairs, question, texts)  # CPU work
-        relevance = {c.article_number: _sigmoid(x) for c, x in zip(chunks, logits, strict=True)}
+        try:
+            logits = await asyncio.to_thread(self.score_pairs, question, texts)  # CPU work
+            relevance = {c.article_number: _sigmoid(x)
+                         for c, x in zip(chunks, logits, strict=True)}  # fmt: skip
+        except Exception as exc:  # torch/tokenizer failure: degrade like a Jev outage, not a 500
+            raise DeciderUnavailableError(f"local: {type(exc).__name__}: {exc}") from exc
         return Decision(
             relevance=relevance,
             answerable=max(relevance.values(), default=0.0),
