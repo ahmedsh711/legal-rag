@@ -2,7 +2,7 @@
 #   docker compose -f docker/compose.yaml --profile core up -d
 # Profiles: core | tracking | llm | monitoring | llm-observability | airflow | serving
 # Services are added phase by phase (see task_plan.md). Phase 4: llm (vLLM on the GPU);
-# Phase 5: monitoring (Prometheus, Alertmanager, Grafana, exporters).
+# Phase 5: monitoring (Prometheus, Alertmanager, Grafana, exporters), llm-observability (Langfuse).
 name: legal-rag
 
 services:
@@ -23,7 +23,7 @@ services:
 
   redis:
     image: redis:7.4-alpine
-    profiles: [core]
+    profiles: [core, llm-observability]
     ports: ["127.0.0.1:6379:6379"]
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes: [redis_data:/data]
@@ -282,6 +282,86 @@ services:
     profiles: [monitoring]
     restart: unless-stopped
 
+  # ---------- llm-observability: Langfuse v4 (Phase 5) ----------
+  # Traces of every answer (one span per stage, the LLM call with tokens and cost), scores,
+  # and prompt management with labels. Reuses our Postgres (database "langfuse"), Redis and MinIO
+  # (bucket "langfuse"); adds ClickHouse for the trace data. First start is headless: organisation,
+  # project, API keys and an admin user come from LANGFUSE_INIT_* (values in .env).
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4.46.0
+    profiles: [llm-observability]
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://${POSTGRES_USER:-legalrag}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT in .env}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?set LANGFUSE_ENCRYPTION_KEY in .env (openssl rand -hex 32)}
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+    depends_on: &langfuse-deps
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_started}
+      clickhouse: {condition: service_healthy}
+    restart: unless-stopped
+
+  langfuse-web:
+    image: langfuse/langfuse:4.46.0
+    profiles: [llm-observability]
+    environment:
+      <<: *langfuse-env
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET in .env}
+      LANGFUSE_INIT_ORG_ID: legal-rag
+      LANGFUSE_INIT_ORG_NAME: legal-rag
+      LANGFUSE_INIT_PROJECT_ID: legal-rag
+      LANGFUSE_INIT_PROJECT_NAME: legal-rag
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?set LANGFUSE_PUBLIC_KEY in .env}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?set LANGFUSE_SECRET_KEY in .env}
+      LANGFUSE_INIT_USER_EMAIL: admin@legal-rag.local
+      LANGFUSE_INIT_USER_NAME: admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set LANGFUSE_INIT_USER_PASSWORD in .env}
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: *langfuse-deps
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12.11.4-alpine
+    profiles: [llm-observability]
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      # 127.0.0.1, not localhost: localhost resolves to ::1 here and ClickHouse listens on IPv4
+      test: wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
 secrets:
   local_ca:
     file: ${LOCAL_CA_CERT:-./no-local-ca.pem}
@@ -297,3 +377,5 @@ volumes:
   events:
   prometheus_data:
   grafana_data:
+  clickhouse_data:
+  clickhouse_logs:
