@@ -1,80 +1,171 @@
-# legal-rag — Arabic Legal Q&A (JEV-RAG) over the Egyptian Civil Code
+# legal-rag
 
-Final project for the ITI × MLOps MENA **MLOps Practitioner** course, Track B (LLM / RAG).
-Ask a question about the Egyptian Civil Code in Arabic or English and get an answer **with article citations**. The pipeline's *deciding* steps (routing, reranking, "can we answer?", claim checking) run on the Jev decision model; only the *writing* step runs on an LLM.
+[![CI](https://github.com/ahmedsh711/legal-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/ahmedsh711/legal-rag/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.12-blue)
+![Docker](https://img.shields.io/badge/docker-compose-2496ED)
 
-> Status: Phase 3. Evaluated, tracked and served by alias: dense retrieval + the Jev decider (rerank + answerability gate) is the `production` config in the MLflow registry (MRR 1.000 vs 0.878 for the vanilla baseline on the golden set; see `reports/module-3.md`).
+Question answering over the Egyptian Civil Code, in Arabic and English, with article citations.
 
-## Quickstart (3 commands)
-
-Prerequisites: Docker Desktop, [uv](https://docs.astral.sh/uv/), `cp .env.example .env` with your `OPENROUTER_API_KEY`, and the course PDF at `data/raw/egyptian_civil_code.pdf` (or `uv run dvc pull` if you can reach the DVC remote).
+You ask a legal question. The service finds the relevant articles, decides whether they actually answer the question, and only then asks an LLM to write an answer grounded in those articles. Every answer cites its sources as `[Art. N]`. Questions the Civil Code does not cover get a refusal instead of a guess.
 
 ```bash
-docker compose --env-file .env -f docker/compose.yaml --profile core up -d   # 1. qdrant + redis + api
-uv run dvc repro                                                             # 2. PDF -> articles.json -> validate -> Qdrant index
-curl -s 127.0.0.1:8000/ask -H 'content-type: application/json' -d '{"question":"ما هي مدة تقادم الالتزام؟"}'   # 3. ask
+curl -s http://127.0.0.1:8000/ask -H 'content-type: application/json' \
+  -d '{"question": "At what age does a person reach majority under the Civil Code?"}'
 ```
 
-- **Step 2** embeds 2,241 texts with bge-m3 on CPU, once (10–30 min on a laptop). The `index` stage always runs because its real output lives in Qdrant, which DVC cannot see; when the index is already there it is reused in seconds.
-- **The API container** downloads bge-m3 (2.3 GB) into the `hf_cache` volume on its first start, and waits for the index: until the alias exists it exits and Docker restarts it. `curl 127.0.0.1:8000/health` returns `"status": "healthy"` once it is ready; `curl 127.0.0.1:8000/metadata` shows what is serving.
-- **Streaming:** add `?stream=true` to `/ask` for Server-Sent Events (`token` events, then one `done` event with sources and timings).
-- **Port 8000 taken** on your machine? Set `API_HOST_PORT=8010` in `.env` and use that port.
-- Use `127.0.0.1`, not `localhost`: ports are published on IPv4 loopback only, and on Windows `localhost` tries IPv6 first (each Python call to Qdrant waited ~2 s).
+```json
+{
+  "answer": "A person reaches the age of majority at twenty-one years completed in accordance with the Gregorian calendar [Art. 44].",
+  "language": "en",
+  "sources": [
+    {"article_number": 44, "citation": "Egyptian Civil Code, Article 44", "citation_ar": "القانون المدني المصري، المادة 44", "is_repealed": false}
+  ],
+  "refused": false,
+  "model": "gemini-3.1-flash-lite"
+}
+```
 
-| Endpoint | Purpose |
+The full response also carries `request_id`, `prompt_version`, token `usage` and per-stage `timings_ms`.
+
+## How it works
+
+```mermaid
+flowchart LR
+    Q[Question] --> R[Retrieve<br/>bge-m3 + Qdrant]
+    R --> D[Decide<br/>rerank + answerability gate]
+    D -->|answerable| L[Generate<br/>LLM over the selected articles]
+    D -->|not answerable| X[Refusal]
+    L --> C[Citation check]
+    C --> A[Answer + sources]
+```
+
+1. **Ingestion.** The bilingual Civil Code PDF (170 pages) is parsed into one record per article: 1,149 articles, 1,093 in force and 56 repealed, each with its Arabic and English text and its book, chapter and section. Quirks of the source (reversed Arabic digits, mixed-language blocks, articles split across pages) are handled in the parser and checked by a validation stage in the DVC pipeline.
+2. **Indexing.** Every article is embedded in both languages with [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3) (dense and sparse vectors) and stored in Qdrant: 2,241 points behind an alias, so a rebuilt index can be swapped in without downtime.
+3. **Retrieval.** Articles the question names explicitly ("Article 60") are fetched directly, repealed ones included. Everything else goes through dense search over both languages, limited to articles in force.
+4. **Decision.** A small decision model, [Jev](https://docs.typesafe.ai), scores each retrieved article and decides whether the top articles can answer the question at all. It costs about $0.0001 per question and replaces an LLM call for ranking and refusing. A local cross-encoder (`bge-reranker-v2-m3`) can be used instead, with no external calls.
+5. **Generation.** Gemini or any OpenRouter model writes the answer from the selected articles only. An answer that cites none of the articles it was shown is replaced by the refusal.
+
+## Results
+
+Measured on a hand-written golden set of 56 questions: 28 Arabic/English pairs, including off-topic and prompt-injection questions. The set is small and was also used to choose the gate threshold, so the numbers are indicative; a held-out set of 5 new pairs gave the same picture.
+
+| Configuration | hit@1 | MRR | Citation recall | False refusals | Correct refusals |
+|---|---|---|---|---|---|
+| Hybrid retrieval, no reranking | 0.792 | 0.878 | 0.979 | 0 % | 100 % |
+| **Dense retrieval + Jev (production)** | **1.000** | **1.000** | **1.000** | 0 % | 100 % |
+
+- RAGAS faithfulness is 0.97 for the production configuration (Arabic 0.98, English 0.96). The judge is from the same model family as the generator, so treat it as a sanity check rather than an independent score.
+
+## Tech stack
+
+| Area | Tools |
 |---|---|
-| `POST /ask` | `{"question": "...", "book": null}` → answer, cited sources, refusal flag, request id, token usage, timings. `?stream=true` → Server-Sent Events |
-| `POST /feedback` | `{"request_id": "...", "rating": "up" \| "down", "comment": "..."}` |
-| `GET /health` | readiness: 200 only when the index is reachable and not empty |
-| `GET /live` | liveness: the process answers |
-| `GET /metadata` | app, prompt, LLM, embedding model, index, decider and where the config came from |
+| API | FastAPI, Pydantic, structlog, Server-Sent Events |
+| Retrieval | bge-m3, Qdrant, Jev |
+| Generation | Gemini / OpenRouter through an OpenAI-compatible client |
+| Data and experiments | DVC, MLflow tracking and model registry, RAGAS |
+| Platform | Docker Compose, Postgres, MinIO |
+| Quality | pytest, ruff, pre-commit, GitHub Actions |
 
-Interactive docs: http://127.0.0.1:8000/docs
+## Getting started
+
+### Prerequisites
+
+- Docker with Compose v2
+- [uv](https://docs.astral.sh/uv/), which installs Python 3.12 and the dependencies
+- An API key for generation (Gemini or OpenRouter) and an OpenRouter key for the Jev decider
+- The Civil Code PDF at `data/raw/egyptian_civil_code.pdf`, or `uv run dvc pull` if you have access to the DVC remote
+
+### Run
+
+```bash
+cp .env.example .env          # fill in the API keys
+uv sync
+
+docker compose --env-file .env -f docker/compose.yaml --profile core up -d   # Qdrant and the API
+uv run dvc repro                                                             # parse, validate, embed, index
+curl -s http://127.0.0.1:8000/health
+```
+
+The first `dvc repro` embeds the corpus on CPU, which takes 10 to 30 minutes on a laptop; later runs reuse the existing index in seconds. The API container downloads bge-m3 on its first start and reports healthy once the index is reachable. Interactive API docs are served at http://127.0.0.1:8000/docs.
+
+On Windows, use `127.0.0.1` instead of `localhost`, and send Arabic questions from a UTF-8 file (`curl --data-binary @question.json`) or from Python, because Git Bash passes inline arguments through the ANSI code page.
+
+### API
+
+| Endpoint | Description |
+|---|---|
+| `POST /ask` | `{"question": "...", "book": null}` returns the answer, sources, refusal flag, token usage and per-stage timings. `?stream=true` streams tokens as Server-Sent Events. |
+| `POST /feedback` | `{"request_id": "...", "rating": "up" \| "down", "comment": "..."}` |
+| `GET /health` | Readiness: 200 only when the index is reachable and not empty |
+| `GET /live` | Liveness |
+| `GET /metadata` | Versions of the app, prompt, models, index and decider being served |
+
+### Configuration
+
+Settings are environment variables, read by `src/legalrag/settings.py`; `.env.example` lists all of them. The main ones:
+
+| Variable | Purpose |
+|---|---|
+| `LLM_BACKEND` | `gemini`, `openrouter` or `vllm` |
+| `DECIDER_BACKEND` | `jev`, `local` or `none` |
+| `GATE_THRESHOLD` | minimum answerability score before the LLM is called (0.5 in production) |
+| `CONFIG_SOURCE` | `env`, or `mlflow` to load the pipeline configuration from the registry alias `legal-rag-config@production` |
+
+### Compose profiles
+
+| Profile | Services |
+|---|---|
+| `core` | Qdrant, API |
+| `tracking` | Postgres, MinIO, MLflow (http://127.0.0.1:5000) |
 
 ## Evaluation and experiments
 
-Start the tracking stack (Postgres + MinIO + MLflow at http://127.0.0.1:5000), then run experiments. Each command is one MLflow run with the config as params, metrics per language, and lineage tags (git SHA, `articles.json` md5, Qdrant collection, golden-set md5).
+Every evaluation run is logged to MLflow with its configuration, metrics per language and lineage tags: git commit, data hash, index collection and golden-set hash.
 
 ```bash
 docker compose --env-file .env -f docker/compose.yaml --profile core --profile tracking up -d
-uv sync --group eval                                                       # RAGAS + MLflow client
-uv run python -m legalrag.eval.run --name ret-dense-jev --decider jev --mode dense --retrieval-only --mlflow   # ranking + gate, no LLM
-uv run python -m legalrag.eval.run --name e2e-dense-jev --decider jev --mode dense --gate 0.5 --ragas --mlflow # full pipeline + RAGAS judge
-uv run python -m legalrag.eval.track register --run-id <run id> --alias production                            # promote that run's config
-uv run python -m legalrag.eval.judge calibrate --mlflow                                                         # judge vs human labels
+uv sync --group eval
+
+uv run python -m legalrag.eval.run --name dense-jev --decider jev --mode dense --retrieval-only --mlflow
+uv run python -m legalrag.eval.run --name e2e-dense-jev --decider jev --mode dense --gate 0.5 --ragas --mlflow
+uv run python -m legalrag.eval.track register --run-id <run-id> --alias production
 ```
 
-With `CONFIG_SOURCE=mlflow` the API reads `models:/legal-rag-config@production` at startup; promoting or rolling back a config is moving the alias and restarting the API (no rebuild). Free-tier providers: set `LLM_RPM` / `JUDGE_RPM` so evaluations pace themselves under the per-minute limit.
+With `CONFIG_SOURCE=mlflow`, the API loads the configuration registered under the `production` alias at startup. Promoting or rolling back a configuration is an alias change, not a rebuild.
 
-## Developer commands
-
-There is no Makefile on purpose: the course handbook asks for the real commands in the README.
+## Development
 
 ```bash
-uv sync                                                              # install (.venv, Python 3.12)
-uv run ruff check src tests && uv run ruff format --check src tests  # lint + format check
-uv run pytest                                                        # tests; 80% coverage gate is in pyproject.toml
-uv run pre-commit install                                            # git hooks
-docker compose -f docker/compose.yaml --profile core --profile tracking up -d
+uv sync
+uv run pre-commit install
+uv run ruff check . && uv run ruff format --check .
+uv run pytest            # unit and integration tests; fails below 80 % coverage
 ```
 
-## Repository map
+CI (`.github/workflows/ci.yml`) runs lint and the test suite on every push and pull request.
+
+## Project structure
 
 ```
-src/legalrag/        installable package: settings, ingest, index, retrieval, decider, api, eval, monitoring
-tests/               pytest suite
-docker/              compose.yaml (profiles: core, tracking, llm, monitoring, llm-observability, airflow, serving)
-docs/walkthrough/    bilingual (EN / Egyptian Arabic) learning guide, one page per phase
-docs/research/       research digests the design was built from
-docs/PLAN.md         approved plan; task_plan.md / progress.md / findings.md track execution
-reports/             one lab report per module with measured numbers and screenshots
+src/legalrag/
+  ingest/          PDF parsing, Arabic normalisation, validation
+  index/           embedding and Qdrant collections
+  decider/         Jev and local reranking and answerability gate
+  api/             FastAPI app, schemas, middleware
+  eval/            golden-set runs, RAGAS, judge calibration, MLflow tracking
+  pipeline.py      retrieve -> decide -> generate
+tests/             unit and integration tests
+data/golden/       evaluation sets
+docker/            Dockerfile and Compose files
+dvc.yaml           data pipeline: parse -> validate -> index
 ```
 
-## Learning guide
+## Limitations
 
-Open `docs/walkthrough/index.html` in a browser. Every section has an EN / AR / Both toggle.
+- The golden set is small (28 question pairs) and was written by the author. It catches regressions; it does not prove general accuracy.
+- Article numbers quoted inside Arabic article bodies keep the digit order produced by PDF extraction. Citations always come from the parsed article numbers, so they are not affected.
 
-## Changelog by session
+## Acknowledgements
 
-- Session 1 (packaging, API, Docker): v0.1.0, image `ahmedshobaki/legal-rag-api:0.1.0`.
-- Session 2 (evaluation, MLflow, DVC lineage): golden set, exact metrics + RAGAS judge with human calibration, an MLflow run per experiment, Jev vs local reranker ablation, config registry with alias `production` (Phase 3).
+Built as the capstone project of the ITI × MLOps MENA *MLOps Practitioner* program (LLM/RAG track). The decide-then-generate design follows the JEV-RAG pattern.
