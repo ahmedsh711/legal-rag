@@ -48,6 +48,21 @@ def test_eval_run_records_params_metrics_tags_and_config(tracking, tmp_path):
     assert {"predictions.jsonl", "rag_config.json"} <= names
 
 
+def test_register_cli_promotes_exactly_the_evaluated_config(tracking, monkeypatch):
+    from legalrag.eval.track import main
+    from legalrag.settings import get_settings
+
+    run_id = log_eval_run("legal-rag-test", "jev", params={"decider_backend": "jev"},
+                          summary={"all": {"mrr": 1.0}}, tags={})  # fmt: skip
+    monkeypatch.setenv("MLFLOW_CONFIG_MODEL_NAME", "rag-config-cli")
+    get_settings.cache_clear()
+    try:
+        main(["register", "--run-id", run_id, "--alias", "production"])
+    finally:
+        get_settings.cache_clear()
+    assert load_config("rag-config-cli", "production") == {"decider_backend": "jev"}
+
+
 def test_config_is_loaded_by_alias(tracking):
     with mlflow.start_run():
         v1 = register_config({"decider": "none"}, "rag-config-test", alias="production")

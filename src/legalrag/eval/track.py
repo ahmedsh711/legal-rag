@@ -10,6 +10,7 @@ moving the alias ``production`` ("load by alias, never by path").
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import tempfile
@@ -96,3 +97,33 @@ def load_config(name: str, alias: str = "production") -> dict[str, Any]:
     """The config behind ``models:/name@alias`` without unpickling anything."""
     path = mlflow.artifacts.download_artifacts(f"models:/{name}@{alias}/artifacts/{CONFIG_FILE}")
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Promote an evaluated run: register its own rag_config.json, optionally move an alias.
+
+    uv run python -m legalrag.eval.track register --run-id <id> --alias production
+    """
+    parser = argparse.ArgumentParser(description="MLflow config registry")
+    sub = parser.add_subparsers(dest="command", required=True)
+    reg = sub.add_parser("register", help="register a run's rag_config.json")
+    reg.add_argument("--run-id", required=True)
+    reg.add_argument("--alias", default=None, help="e.g. production (omit to only register)")
+    args = parser.parse_args(argv)
+
+    from legalrag.logging_conf import configure_logging, get_logger
+    from legalrag.settings import get_settings
+
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+    path = mlflow.artifacts.download_artifacts(run_id=args.run_id, artifact_path=CONFIG_FILE)
+    config = json.loads(Path(path).read_text(encoding="utf-8"))
+    with mlflow.start_run(run_id=args.run_id):  # the version links back to the evaluated run
+        version = register_config(config, settings.mlflow_config_model_name, args.alias)
+    get_logger(__name__).info("config_registered", model=settings.mlflow_config_model_name,
+                              version=version, alias=args.alias, run_id=args.run_id)  # fmt: skip
+
+
+if __name__ == "__main__":
+    main()
