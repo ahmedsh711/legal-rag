@@ -6,11 +6,11 @@ Ship a production-style, fully observable RAG service over the Egyptian Civil Co
 
 ## Next Step
 
-Phase 3 (branch module-3-eval-mlflow-jev): golden set + to_label.csv, RAGAS 0.4 (check docs first), MLflow stack, Decider (Jev via OpenRouter `typesafe/jev-router` — verify the API), reranker ablation vs the Phase 2 baseline numbers in reports/module-2.md. Do not edit DVC stage deps while a stage runs.
+Phase 4 (branch module-4-serving-ci): first the judge calibration run when the Gemini quota resets; then guardrails, Redis token bucket, CI with a RAGAS smoke gate + image push, Locust load test. LLM = Gemini free tier (LLM_RPM pacing); OpenRouter has no credits (Jev only). Disk ~58 GB free: vLLM image (~10 GB) is possible but ask before pulling. Do not edit DVC stage deps while a stage runs.
 
 ## Current Phase
 
-Phase 3
+Phase 4
 
 ## Phases
 
@@ -53,16 +53,18 @@ Full detail (tasks, acceptance checks, decisions, risks) lives in `docs/PLAN.md`
 
 - [x] golden_set.jsonl 56 Q (28 AR/EN mirrored pairs, 5 categories, checked against the corpus) + to_label.csv labelled by the user (20/20 supported)
 - [x] eval/ragas_run.py (RAGAS 0.4, per-language, per-item errors, paced) → MLflow
-- [ ] eval/judge.py calibration (synthetic negatives added; verbosity probe; self-preference not measurable on the free tier) — run blocked until Gemini daily quota resets (500/day on flash-lite)
-- [x] MLflow 3.17 stack (tracking profile); 8 runs: retrieval modes (hybrid/dense/sparse), deciders (none/local/jev × hybrid/dense), end to end baseline vs Jev; rag_config artifact; registry v1 @baseline, v2 @production; API serves @production; alias rollback demo
-- [x] decider/base.py, jev.py, local.py + tests; ablation via eval/run.py flags (no separate ablation.py); AR-vs-EN agreement (25/25 answerable pairs, gate 28/28)
-- [ ] reviewers (python, mle) fixed; walkthrough 03 + reports/module-3.md final; PR #4; tag v0.2.0
+- [x] eval/judge.py calibration code (synthetic negatives, verbosity probe, tolerant parsing, MLflow logging); the *run* is carried into Phase 4 (blocked by the Gemini daily quota, 500/day on flash-lite)
+- [x] MLflow 3.17 stack (tracking profile); 9 runs: retrieval modes (hybrid/dense/sparse), deciders (none/local/jev × hybrid/dense), end to end baseline vs Jev, held-out; rag_config artifact; registry v1 @baseline, v2 @production; API serves @production; alias rollback demo
+- [x] decider/base.py, jev.py, local.py + tests; ablation via eval/run.py flags (no separate ablation.py); AR-vs-EN agreement (25/25 answerable pairs, gate 28/28); held-out 5 pairs
+- [x] reviewers (python, mle) fixed; walkthrough 03 + reports/module-3.md; PR #4; tag v0.2.0
 - Deviation from the plan: chunking/embedding/prompt experiments replaced by retrieval-mode and decider ablations (no re-index needed; the decider was the open question). Recorded in progress.md.
-- **Status:** in_progress
+- **Status:** complete (calibration run carried over, see Phase 4)
 
 ### Phase 4: Production serving, CI/CD, load (tag v0.3.0)
 
-- [ ] Decider wired into pipeline; guardrails as metrics (Presidio AR, injection, off-topic, schema) with latency/FPR
+- [ ] Carry-over: run `python -m legalrag.eval.judge calibrate --mlflow` once the Gemini quota resets; fill "Judge calibration" in reports/module-3.md + walkthrough 03
+- [x] Decider wired into the pipeline and API (Phase 3: rerank + gate, config by alias)
+- [ ] Guardrails as metrics (PII, injection, off-topic, schema) with measured latency and false-positive rate
 - [ ] Redis token bucket 429+Retry-After; vLLM profile llm + LLM_BACKEND switch; awq_eval.py TTFT table; BentoML service
 - [ ] ci.yml lint→test→RAGAS smoke gate→build→push SHA tag; branch protection; badge; red/green screenshots
 - [ ] Locust 50–100 users p50/p95/p99 + TTFT; bottleneck + one tuning change; inference-pattern table

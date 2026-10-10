@@ -230,7 +230,16 @@ uv run python -m legalrag.eval.run --name baseline --ragas --from-predictions re
     <p><strong>الترقية بالـ alias</strong>: v1 (‏<code>baseline</code>) وv2 (‏<code>production</code>) اتسجلوا من التشغيلات بتاعتهم. والـ API بيقرا <code>@production</code> وقت التشغيل، و<code>/metadata</code> بتقول <code>legal-rag-config@production (v2)</code>. ورجوع الـ alias لـ v1 وإعادة التشغيل أخدوا 18 ثانية؛ والرجوع لقدام 22 ثانية. من غير build ومن غير image جديدة.</p>
   </div>
 </div>
-<!-- CALIBRATION -->
+<div class="pair">
+  <div class="en">
+    <p><strong>How much to trust these numbers.</strong> 56 questions are 28 <em>independent</em> pairs (the Arabic and English halves are translations); 6 questions name their article (automatic wins for every variant); "100 % correct refusals" rests on 8 questions. The gate threshold and the winner were chosen on this same set, so these are <em>in-sample</em> numbers. That is why a separate <strong>held-out</strong> set of 5 new pairs (never used for any choice) was run with the production config: 6/6 answerable questions got their article first (gate scores 0.89–0.96) and 4/4 off-topic questions were refused (0.01–0.02). Small, but independent, and it agrees.</p>
+    <p><strong>Judge calibration: pending.</strong> All 20 human labels said "supported", so the calibration adds one synthetic negative per answer (the same answer plus a made-up legal claim). The run needs ~140 judge calls and waits for the free daily quota; the judge is the generator's own model, so the faithfulness numbers above are <em>self-judged</em> and indicative only.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p><strong>نثق في الأرقام دي قد إيه؟</strong> الـ 56 سؤال هما 28 زوج <em>مستقل</em> (النص العربي والإنجليزي ترجمة لبعض)؛ و6 أسئلة بتذكر رقم المادة (مكسب أوتوماتيك لكل الاختيارات)؛ و"رفض صح 100%" مبني على 8 أسئلة بس. والـ threshold والفايز اتختاروا على نفس المجموعة، فدي أرقام <em>من نفس العينة</em>. وعشان كده شغّلنا مجموعة <strong>held-out</strong> منفصلة فيها 5 أزواج جديدة (عمرها ما اتستخدمت في أي اختيار) بالإعدادات النهائية: 6 من 6 أسئلة ليها إجابة جت مادتها الأول (درجات الـ gate من 0.89 لـ 0.96)، و4 من 4 أسئلة بره الموضوع اترفضت (0.01–0.02). عينة صغيرة بس مستقلة، وبتأكد نفس النتيجة.</p>
+    <p><strong>معايرة الحَكَم: مستنية.</strong> الـ 20 تقييم بتوع الإنسان كلهم قالوا "مدعومة"، فالمعايرة بتضيف لكل إجابة نسخة سلبية مصطنعة (نفس الإجابة ومعاها كلام قانوني متألّف). التشغيلة محتاجة حوالي 140 نداء للحَكَم ومستنية الحصة المجانية اليومية تتجدد؛ والحَكَم هو نفس موديل الكتابة، فأرقام الـ faithfulness اللي فوق <em>بيقيّم نفسه بنفسه</em> وتعتبر إشارة بس.</p>
+  </div>
+</div>
 
 <h2 id="lessons"><span class="en">10. Problems we hit</span><span class="ar">10. مشاكل قابلناها</span></h2>
 <div class="pair">

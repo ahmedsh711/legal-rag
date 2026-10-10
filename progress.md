@@ -54,7 +54,9 @@
 
 ### Phase 3: Evaluation, MLflow, decider + JEV ablation
 
-- **Status:** in_progress (branch module-3-eval-mlflow-jev)
+- **Status:** complete (PR #4, tag v0.2.0); judge calibration *run* carried into Phase 4 (Gemini quota)
+- Results: dense+Jev MRR 1.000 vs hybrid baseline 0.878 (in-sample, 24 independent answerable pairs); held-out 5 pairs 6/6 + 4/4; Jev gate margin 0.04 vs 0.79 → gate 0.5; local cross-encoder ~9 s CPU/question; e2e faithfulness 0.969 vs 0.976 (self-judged); registry v1 @baseline, v2 @production; alias rollback 18 s / 22 s
+- Reviews: python (2 HIGH, 4 MEDIUM) and mle (3 HIGH, 7 MEDIUM) — all fixed or answered in reports/module-3.md "Code review"
 - Actions taken:
   - Research agents: Jev via OpenRouter `/api/v1/systemone` (jev-router is a chat router); RAGAS 0.4.3 + langchain-community 0.4.1 pin; MLflow 3.17 `-full` image + `--allowed-hosts`; one-call Jev probe before coding
   - Golden set (56 Q, read from article text), exact metrics, RAGAS wrapper, judge calibration, experiment runner (retrieval-only, from-predictions), MLflow server + tracking + registry, decider ABC + Jev + local cross-encoder, gate sweep, config by alias in the API
