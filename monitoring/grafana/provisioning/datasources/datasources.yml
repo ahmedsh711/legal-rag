@@ -13,12 +13,12 @@ datasources:
     uid: drift-db
     type: grafana-postgresql-datasource
     url: postgres:5432
-    user: $POSTGRES_USER
+    user: grafana_ro  # SELECT on the monitoring database only
     jsonData:
       database: monitoring
       sslmode: disable
     secureJsonData:
-      password: $POSTGRES_PASSWORD
+      password: $GRAFANA_DB_PASSWORD
   - name: Logs
     uid: loki
     type: loki
