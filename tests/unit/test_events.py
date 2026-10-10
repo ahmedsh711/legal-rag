@@ -67,3 +67,13 @@ def test_reference_events_come_from_an_evaluation_run():
     event = event_from_prediction(pred, books={558: "الكتاب الثاني"}, serving=SERVING)
     assert event.lang == "ar" and event.top_book == "الكتاب الثاني" and event.endpoint == "eval"
     assert json.loads(event.model_dump_json())["question_words"] == 3
+
+
+def test_a_half_written_line_is_skipped_not_fatal(tmp_path):
+    # found in review: the drift job read the file while the API was appending, and died
+    log = EventLog(tmp_path)
+    good = event_from_answer(answer(), QUESTION, "req-ok", "ask", SERVING)
+    log.write(good)
+    with (tmp_path / f"events-{good.ts:%Y-%m-%d}.jsonl").open("a", encoding="utf-8") as f:
+        f.write('{"ts": "2026-10-10T')  # cut off mid-write
+    assert [e.request_id for e in read_events(tmp_path)] == ["req-ok"]

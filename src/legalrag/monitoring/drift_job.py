@@ -2,20 +2,27 @@
 
     uv run python -m legalrag.monitoring.drift_job --hours 24                  # report + metrics
     uv run python -m legalrag.monitoring.drift_job --hours 24 --fail-on-drift  # as a CI gate
+    uv run python -m legalrag.monitoring.drift_job aa --since <time>           # false-alarm rate
     uv run python -m legalrag.monitoring.drift_job reference                   # rebuild reference
 
 Reference: prediction events of the golden + held-out evaluation (``data/monitoring/
-reference_events.jsonl``, built from an evaluation run; no question text). Current: the API's
-events of the last ``--hours``. Per feature, one or two tests from ``drift_stats``; p-value tests
-use a Bonferroni-corrected alpha (several tests at 1 % each would raise false alarms), distance
-tests use effect-size thresholds. Outputs, all from the same numbers:
+reference_events.jsonl``, tagged with the model and prompt that produced them; no question text).
+Current: the API's events of the last ``--hours``. Features come in three kinds, reported apart:
+- input (what people ask): language, question length, and both together (MMD, domain AUC);
+- retrieval (where the search lands): the book of the top article;
+- behaviour (what the system does with it): refusals, the decider's score. Only compared when
+  the current window was served by the reference's model and prompt; otherwise the difference
+  is a *change* we made, not drift, and the report says so.
+P-value tests share a Bonferroni-corrected alpha (several tests at 1 % each would raise false
+alarms); distance tests use effect-size thresholds. ``aa`` measures the false-alarm rate of the
+whole procedure on two random halves of one window (the same traffic: every flag is false).
+Outputs, all from the same numbers:
 - ``reports/drift/<time>.json`` (what a person reads),
-- Prometheus textfile metrics (``rag_drift_score``, ``rag_drift_alert``) for Grafana and the
-  ``DriftDetected`` alert, through node-exporter,
+- Prometheus textfile metrics (``rag_drift_*``) for Grafana and the ``DriftDetected`` alert,
 - rows in Postgres ``drift_metrics`` / ``drift_runs`` (history, Grafana table) when a database
   URL is configured,
-- the exit code with ``--fail-on-drift`` (CI gate).
-The StormGuard decides whether a drift may *trigger* anything (alert flag, Phase 6 retraining).
+- the exit code with ``--fail-on-drift`` (the Phase 6 retraining gate; on drift itself, not on
+  the storm guard, which only decides whether a drift may *trigger* actions).
 """
 
 from __future__ import annotations
@@ -23,23 +30,26 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import sys
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from legalrag.logging_conf import configure_logging, get_logger
 from legalrag.monitoring import drift_stats as ds
 from legalrag.monitoring.events import PredictionEvent, read_events
+from legalrag.monitoring.files import write_atomic
 
 log = get_logger(__name__)
 
 ALPHA = 0.01
-JS_MAX, WASSERSTEIN_MAX, AUC_MAX = 0.1, 0.25, 0.7  # effect sizes that matter for this traffic
+JS_MAX, WASSERSTEIN_MAX, AUC_MAX = 0.1, 0.25, 0.7  # chosen before the data; A/A reports their FPR
 
 
 @dataclass
@@ -49,7 +59,7 @@ class Row:
     statistic: float
     p_value: float | None
     drift: bool
-    kind: str = "input"  # input: what people ask; behaviour: what the system did with it
+    kind: str = "input"  # input | retrieval | behaviour
 
 
 @dataclass
@@ -59,60 +69,104 @@ class DriftReport:
     drift: bool
     reason: str
     rows: list[Row] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 def _counts(events: Sequence[PredictionEvent], key: str) -> dict[str, int]:
     return dict(Counter(str(getattr(e, key) or "none") for e in events))
 
 
-def _matrix(events: Sequence[PredictionEvent], books: list[str]) -> np.ndarray:
-    """One numeric row per event for the multivariate input tests: length, language, book.
-    (No outputs here: a model change must not look like a change in what people ask.)"""
-    return np.array([[math.log1p(e.question_chars), float(e.lang == "ar"),
-                      *[float(e.top_book == b) for b in books]] for e in events])  # fmt: skip
+def _serving(events: Sequence[PredictionEvent]) -> tuple[str, str]:
+    """The model and prompt that served most of a window."""
+    return Counter((e.llm_model, e.prompt_version) for e in events).most_common(1)[0][0]
 
 
-def _categorical(rows: list[Row], name: str, ref: Sequence[PredictionEvent],
-                 cur: Sequence[PredictionEvent], alpha: float, kind: str) -> None:  # fmt: skip
-    r, c = _counts(ref, name), _counts(cur, name)
-    chi = ds.chi2_test(r, c, alpha)
-    rows.append(Row(name, "chi2", chi.statistic, chi.p_value, chi.drift, kind))
-    js = ds.js_divergence(r, c)
-    rows.append(Row(name, "js", js, None, js > JS_MAX, kind))
+def _inputs(events: Sequence[PredictionEvent]) -> np.ndarray:
+    """Pure inputs only (no retrieval or answer outputs): log length and language."""
+    return np.array([[math.log1p(e.question_chars), float(e.lang == "ar")] for e in events])
+
+
+def _p_rows(ref: Sequence[PredictionEvent], cur: Sequence[PredictionEvent], seed: int,
+            behaviour: bool, min_samples: int) -> list[Row]:  # fmt: skip
+    """Every p-value test, drift decided later (the corrected alpha needs their count)."""
+    tests: list[tuple[str, str, Callable[[], Any]]] = [
+        ("lang", "input", lambda: ds.chi2_test(_counts(ref, "lang"), _counts(cur, "lang"))),
+        ("question_chars", "input", lambda: ds.ks_test([e.question_chars for e in ref],
+                                                       [e.question_chars for e in cur])),
+        ("top_book", "retrieval",
+         lambda: ds.chi2_test(_counts(ref, "top_book"), _counts(cur, "top_book"))),
+    ]  # fmt: skip
+    if behaviour:
+        tests.append(("refused", "behaviour",
+                      lambda: ds.chi2_test(_counts(ref, "refused"), _counts(cur, "refused"))))  # fmt: skip
+        scores = [
+            [e.answerable_score for e in x if e.answerable_score is not None] for x in (ref, cur)
+        ]
+        if min(len(s) for s in scores) >= min_samples:  # only when a decider ran in both windows
+            tests.append(("answerable_score", "behaviour", lambda: ds.ks_test(*scores)))
+    rows = []
+    for feature, kind, run in tests:
+        r = run()
+        test = "ks" if feature in ("question_chars", "answerable_score") else "chi2"
+        rows.append(Row(feature, test, r.statistic, r.p_value, False, kind))
+    mmd = ds.mmd_test(_inputs(ref), _inputs(cur), alpha=ALPHA / (len(rows) + 1), seed=seed)
+    rows.append(Row("inputs", "mmd", mmd.statistic, mmd.p_value, False, "input"))
+    alpha = ALPHA / len(rows)  # Bonferroni over the p-value tests actually run
+    for row in rows:
+        row.drift = row.p_value is not None and row.p_value < alpha
+    return rows
+
+
+def _effect_rows(ref: Sequence[PredictionEvent], cur: Sequence[PredictionEvent], seed: int,
+                 behaviour: bool) -> list[Row]:  # fmt: skip
+    rows = []
+    for feature, kind in (("lang", "input"), ("top_book", "retrieval"),
+                          *([("refused", "behaviour")] if behaviour else [])):  # fmt: skip
+        js = ds.js_divergence(_counts(ref, feature), _counts(cur, feature))
+        rows.append(Row(feature, "js", js, None, js > JS_MAX, kind))
+    w = ds.wasserstein_distance([e.question_chars for e in ref], [e.question_chars for e in cur])
+    rows.append(Row("question_chars", "wasserstein", w, None, w > WASSERSTEIN_MAX, "input"))
+    auc = ds.domain_classifier_auc(_inputs(ref), _inputs(cur), seed=seed)
+    rows.append(Row("inputs", "domain_auc", auc, None, auc > AUC_MAX, "input"))
+    return rows
 
 
 def compare(reference: Sequence[PredictionEvent], current: Sequence[PredictionEvent],
             min_samples: int = 50, seed: int = 0) -> DriftReport:  # fmt: skip
+    if not reference:
+        raise ValueError("empty reference: build it first (drift_job reference)")
     n_ref, n_cur = len(reference), len(current)
     if n_cur < min_samples:
         return DriftReport(n_ref, n_cur, False, f"too few samples ({n_cur} < {min_samples})")
-    alpha = ALPHA / 6  # Bonferroni over the p-value tests below (4 chi2/KS + MMD + spare)
-    rows: list[Row] = []
-    for name, kind in (("lang", "input"), ("top_book", "input"), ("refused", "behaviour")):
-        _categorical(rows, name, reference, current, alpha, kind)
-    ref_len = [e.question_chars for e in reference]
-    cur_len = [e.question_chars for e in current]
-    ks = ds.ks_test(ref_len, cur_len, alpha)
-    rows.append(Row("question_chars", "ks", ks.statistic, ks.p_value, ks.drift))
-    w = ds.wasserstein_distance(ref_len, cur_len)
-    rows.append(Row("question_chars", "wasserstein", w, None, w > WASSERSTEIN_MAX))
-    scores = [[e.answerable_score for e in x if e.answerable_score is not None]
-              for x in (reference, current)]  # fmt: skip
-    if min(len(s) for s in scores) >= min_samples:  # only when a decider ran in both windows
-        ks = ds.ks_test(scores[0], scores[1], alpha)
-        rows.append(Row("answerable_score", "ks", ks.statistic, ks.p_value, ks.drift,
-                        "behaviour"))  # fmt: skip
-    books = sorted({e.top_book for e in [*reference, *current]})
-    x_ref, x_cur = _matrix(reference, books), _matrix(current, books)
-    mmd = ds.mmd_test(x_ref, x_cur, alpha=alpha, seed=seed)
-    rows.append(Row("inputs", "mmd", mmd.statistic, mmd.p_value, mmd.drift))
-    auc = ds.domain_classifier_auc(x_ref, x_cur, seed=seed)
-    rows.append(Row("inputs", "domain_auc", auc, None, auc > AUC_MAX))
+    notes = []
+    behaviour = _serving(reference) == _serving(current)
+    if not behaviour:
+        notes.append(f"behaviour not compared: model or prompt changed "
+                     f"({_serving(reference)} -> {_serving(current)}), that is a change, not drift")  # fmt: skip
+    rows = _p_rows(reference, current, seed, behaviour, min_samples)
+    rows += _effect_rows(reference, current, seed, behaviour)
     parts = []
-    for kind in ("input", "behaviour"):
-        if hits := [f"{r.feature}/{r.test}" for r in rows if r.drift and r.kind == kind]:
+    for kind in ("input", "retrieval", "behaviour"):
+        if hits := sorted({f"{r.feature}/{r.test}" for r in rows if r.drift and r.kind == kind}):
             parts.append(f"{kind} drift: {', '.join(hits)}")
-    return DriftReport(n_ref, n_cur, bool(parts), "; ".join(parts) or "no drift", rows)
+    return DriftReport(n_ref, n_cur, bool(parts), "; ".join(parts) or "no drift", rows, notes)
+
+
+def aa_check(events: Sequence[PredictionEvent], runs: int = 100, seed: int = 0) -> dict[str, float]:
+    """A/A test: split one window into two random halves `runs` times. Both halves are the same
+    traffic, so every flag is a false alarm: the share of runs flagged per test is its FPR."""
+    rng = random.Random(seed)
+    flags: Counter[str] = Counter()
+    for i in range(runs):
+        shuffled = list(events)
+        rng.shuffle(shuffled)
+        half = len(shuffled) // 2
+        report = compare(shuffled[:half], shuffled[half:], min_samples=1, seed=i)
+        for row in report.rows:
+            flags[f"{row.feature}/{row.test}"] += row.drift
+        flags["any"] += report.drift
+    keys = sorted(flags)
+    return {k: round(flags[k] / runs, 3) for k in keys}
 
 
 def textfile_lines(report: DriftReport, alert: bool, last_trigger: datetime | None) -> list[str]:
@@ -121,23 +175,23 @@ def textfile_lines(report: DriftReport, alert: bool, last_trigger: datetime | No
              "# TYPE rag_drift_score gauge"]  # fmt: skip
     lines += [f'rag_drift_score{{feature="{r.feature}",test="{r.test}",kind="{r.kind}"}} '
               f"{r.statistic:.6g}" for r in report.rows]  # fmt: skip
-    lines += ["# HELP rag_drift_alert 1 when drift passed the storm guard (may trigger action)",
+    lines += ["# HELP rag_drift_detected 1 when the latest run found drift (the DriftDetected alert)",
+              "# TYPE rag_drift_detected gauge", f"rag_drift_detected {int(report.drift)}",
+              "# HELP rag_drift_alert 1 when the latest drift passed the storm guard",
               "# TYPE rag_drift_alert gauge", f"rag_drift_alert {int(alert)}",
               "# HELP rag_drift_window_events Events in the current window",
               "# TYPE rag_drift_window_events gauge", f"rag_drift_window_events {report.n_current}"]  # fmt: skip
-    if last_trigger is not None:  # the alert reads this: a later quiet run cannot erase it
+    if last_trigger is not None:
         lines += ["# HELP rag_drift_last_trigger_timestamp_seconds When drift last passed the guard",
                   "# TYPE rag_drift_last_trigger_timestamp_seconds gauge",
                   f"rag_drift_last_trigger_timestamp_seconds {last_trigger.timestamp():.0f}"]  # fmt: skip
     return lines
 
 
-def _write_atomic(path: Path, text: str) -> None:
-    """node-exporter may read at any moment: write a temp file, then rename over the old one."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(text, encoding="utf-8", newline="\n")
-    tmp.replace(path)
+def parse_since(value: str) -> datetime:
+    """An ISO time; without a timezone it is UTC (events are stored in UTC)."""
+    since = datetime.fromisoformat(value)
+    return since if since.tzinfo else since.replace(tzinfo=UTC)
 
 
 def _trigger_history(path: Path) -> list[datetime]:
@@ -146,48 +200,71 @@ def _trigger_history(path: Path) -> list[datetime]:
     return [datetime.fromisoformat(t) for t in json.loads(path.read_text(encoding="utf-8"))]
 
 
+def _load_reference(path: Path) -> list[PredictionEvent]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [PredictionEvent.model_validate_json(x) for x in lines if x.strip()]
+
+
 def run(args: argparse.Namespace) -> int:
     now = datetime.now(UTC)
-    lines = Path(args.reference).read_text(encoding="utf-8").splitlines()
-    reference = [PredictionEvent.model_validate_json(x) for x in lines if x.strip()]
-    since = datetime.fromisoformat(args.since) if args.since else now - timedelta(hours=args.hours)
+    reference = _load_reference(Path(args.reference))
+    since = parse_since(args.since) if args.since else now - timedelta(hours=args.hours)
     current = read_events(args.events, since=since)
     report = compare(reference, current, min_samples=args.min_samples)
     history_path = Path(args.state) / "drift_triggers.json"
     history = _trigger_history(history_path)
-    guard = ds.StormGuard(min_samples=args.min_samples)
+    guard = ds.StormGuard(min_samples=args.guard_min_samples)
     alert, why = guard.allow(report.drift, report.n_current, now, history)
     if alert:
         history = [*history, now]
-        _write_atomic(history_path, json.dumps([t.isoformat() for t in history][-20:]) + "\n")
-    out = {"run_at": now.isoformat(), "window_hours": args.hours, "triggered": alert,
-           "guard": why, **asdict(report)}  # fmt: skip
-    _write_atomic(Path(args.out) / f"{now:%Y%m%dT%H%M%SZ}.json", json.dumps(out, indent=2) + "\n")
+    out = {"run_at": now.isoformat(), "window_hours": args.hours, "since": since.isoformat(),
+           "triggered": alert, "guard": why, **asdict(report)}  # fmt: skip
+    write_atomic(Path(args.out) / f"{now:%Y%m%dT%H%M%SZ}.json", json.dumps(out, indent=2) + "\n")
     if args.textfile:
         last = max(history) if history else None
-        _write_atomic(Path(args.textfile), "\n".join(textfile_lines(report, alert, last)) + "\n")
+        write_atomic(Path(args.textfile), "\n".join(textfile_lines(report, alert, last)) + "\n")
     if args.db_url:
         from legalrag.monitoring.drift_store import store_run
 
-        store_run(args.db_url, out)
+        try:
+            store_run(args.db_url, out)
+        except Exception:  # noqa: BLE001 - history is lost for one run; the alert still works
+            log.exception("drift_store_failed")
+    if alert:  # last: a crash above must not use up the cooldown without an alert
+        write_atomic(history_path, json.dumps([t.isoformat() for t in history][-20:]) + "\n")
     log.info("drift_run", drift=report.drift, triggered=alert, guard=why, reason=report.reason,
-             n_reference=report.n_reference, n_current=report.n_current)  # fmt: skip
+             notes=report.notes, n_reference=report.n_reference, n_current=report.n_current)  # fmt: skip
     return 1 if args.fail_on_drift and report.drift else 0
 
 
-def build_reference(predictions: list[Path], articles: Path, out: Path) -> int:
+def run_aa(args: argparse.Namespace) -> int:
+    since = (
+        parse_since(args.since) if args.since else datetime.now(UTC) - timedelta(hours=args.hours)
+    )
+    current = read_events(args.events, since=since)
+    rates = aa_check(current, runs=args.runs)
+    out = {"since": since.isoformat(), "events": len(current), "runs": args.runs, "fpr": rates}
+    write_atomic(Path(args.out) / f"aa-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json",
+                 json.dumps(out, indent=2) + "\n")  # fmt: skip
+    log.info("drift_aa", events=len(current), runs=args.runs, **{"fpr_any": rates.get("any")})
+    return 0
+
+
+def build_reference(predictions: list[Path], articles: Path, out: Path,
+                    serving: dict[str, str]) -> int:  # fmt: skip
     from legalrag.eval.metrics import Prediction
     from legalrag.ingest.validate import load_articles
     from legalrag.monitoring.events import event_from_prediction
 
     books = {a.article_number: a.book for a in load_articles(articles)}
-    serving = {"prompt_version": "eval", "llm_model": "eval", "index_collection": "eval",
-               "decider": "eval"}  # fmt: skip
     events = [event_from_prediction(Prediction.model_validate_json(line), books, serving)
               for path in predictions
               for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]  # fmt: skip
-    _write_atomic(out, "".join(e.model_dump_json() + "\n" for e in events))
-    log.info("reference_built", events=len(events), out=str(out))
+    write_atomic(out, "".join(e.model_dump_json() + "\n" for e in events))
+    meta = {"built_at": datetime.now(UTC).isoformat(), "from_runs": [str(p) for p in predictions],
+            "events": len(events), **serving}  # fmt: skip
+    write_atomic(out.with_suffix(".meta.json"), json.dumps(meta, indent=2) + "\n")
+    log.info("reference_built", events=len(events), out=str(out), **serving)
     return 0
 
 
@@ -196,12 +273,14 @@ def main(argv: list[str] | None = None) -> None:
 
     s = get_settings()
     p = argparse.ArgumentParser(description="drift job")
-    p.add_argument("command", nargs="?", default="run", choices=["run", "reference"])
+    p.add_argument("command", nargs="?", default="run", choices=["run", "aa", "reference"])
     p.add_argument("--reference", default="data/monitoring/reference_events.jsonl")
     p.add_argument("--events", default=s.events_dir)
     p.add_argument("--hours", type=float, default=24)
-    p.add_argument("--since", default=None, help="ISO time; overrides --hours (replays)")
-    p.add_argument("--min-samples", type=int, default=50)
+    p.add_argument("--since", default=None, help="ISO time (UTC if no zone); overrides --hours")
+    p.add_argument("--min-samples", type=int, default=50, help="below this: no statistics")
+    p.add_argument("--guard-min-samples", type=int, default=200, help="below this: no trigger")
+    p.add_argument("--runs", type=int, default=100, help="aa: random splits")
     p.add_argument("--out", default="reports/drift")
     p.add_argument("--state", default="reports/drift", help="where the trigger history lives")
     p.add_argument("--textfile", default="monitoring/textfile/drift.prom")
@@ -209,12 +288,17 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--fail-on-drift", action="store_true")
     p.add_argument("--from-runs", nargs="+", default=["reports/eval/e2e-dense-jev/predictions.jsonl",
                                                        "reports/eval/heldout-dense-jev/predictions.jsonl"])  # fmt: skip
+    p.add_argument("--serving", nargs=3, metavar=("LLM_MODEL", "PROMPT_VERSION", "DECIDER"),
+                   default=["gemini-3.1-flash-lite", "v3", "jev"],
+                   help="reference: what produced the evaluation runs")  # fmt: skip
     args = p.parse_args(argv)
     configure_logging("INFO")
     if args.command == "reference":
+        serving = {"llm_model": args.serving[0], "prompt_version": args.serving[1],
+                   "decider": args.serving[2], "index_collection": "eval"}  # fmt: skip
         sys.exit(build_reference([Path(x) for x in args.from_runs], Path(s.articles_path),
-                                 Path(args.reference)))  # fmt: skip
-    sys.exit(run(args))
+                                 Path(args.reference), serving))  # fmt: skip
+    sys.exit(run_aa(args) if args.command == "aa" else run(args))
 
 
 if __name__ == "__main__":

@@ -200,7 +200,8 @@ class RagPipeline:
         context = ctx.chunks
 
         t1 = time.perf_counter()
-        served = self.prompts.get()  # the version behind the label right now (cached)
+        # the version behind the label right now; a cold cache is a network call: not on the loop
+        served = await asyncio.to_thread(self.prompts.get)
         messages = build_messages(safe_question, context, served.text)
         with self.tracer.span("generate", as_type="generation", input=messages,
                               model=self.generator.model, prompt=served.client) as span:  # fmt: skip
@@ -253,11 +254,11 @@ class RagPipeline:
         if ctx is None or not ctx.chunks or ctx.gated:
             yield {"type": "token", "text": refusal_for(language)}
             yield {"type": "done", "refused": True, "sources": [], "invalid_citations": [],
-                   "guardrails": fired, **seen,
+                   "guardrails": fired, "_monitoring": seen,
                    "timings_ms": {**timings, "total": _ms(t0)}}  # fmt: skip
             return
         context = ctx.chunks
-        served = self.prompts.get()
+        served = await asyncio.to_thread(self.prompts.get)
         messages = build_messages(safe_question, context, served.text)
         stream = self.generator.stream(messages)
         parts: list[str] = []
@@ -296,5 +297,5 @@ class RagPipeline:
             },
             "timings_ms": {**timings, "ttft": first_token_ms, "total": _ms(t0)},
             "prompt_version": served.version,
-            **seen,
+            "_monitoring": seen,  # for events and traces; the API removes it before sending
         }

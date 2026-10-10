@@ -16,6 +16,7 @@ Rules this module enforces:
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -39,6 +40,7 @@ GUARDS = ("pii:national_id", "pii:phone", "pii:email", "injection:override",
           "gate:unanswerable", "citation:invalid", "citation:uncited")  # fmt: skip
 DECIDERS = ("jev", "local")
 BACKENDS = ("openrouter", "gemini", "vllm")
+_PROMPT_VERSION = re.compile(r"v\d{1,3}")  # prompt versions come from Langfuse config: bound them
 
 REQUEST_BUCKETS = (0.1, 0.25, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 13, 30)  # SLA: /ask p95 < 5 s
 TTFT_BUCKETS = (0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 5, 10)  # SLA: p95 < 2 s
@@ -47,6 +49,10 @@ STAGE_BUCKETS = (0.001, 0.005, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10)
 
 def _bounded(value: str, allowed: Iterable[str]) -> str:
     return value if value in allowed else "other"
+
+
+def _prompt_label(version: str | None) -> str:
+    return version if version and _PROMPT_VERSION.fullmatch(version) else "other"
 
 
 class RagMetrics:
@@ -65,7 +71,9 @@ class RagMetrics:
                                        buckets=STAGE_BUCKETS, registry=r)  # fmt: skip
         self.ttft = Histogram("rag_ttft_seconds", "Streamed answers: time to the first token",
                               buckets=TTFT_BUCKETS, registry=r)  # fmt: skip
-        self.answers = Counter("rag_answers_total", "Answers by outcome", ["outcome"], registry=r)
+        # prompt_version per answer: a Langfuse label move changes it without a restart
+        self.answers = Counter("rag_answers_total", "Answers by outcome and served prompt",
+                               ["outcome", "prompt_version"], registry=r)  # fmt: skip
         self.guardrails = Counter("rag_guardrail_total", "Guards that fired", ["guard"], registry=r)
         self.decisions = Counter("rag_decisions_total", "Decider verdicts (pass or gated)",
                                  ["decider", "outcome"], registry=r)  # fmt: skip
@@ -86,8 +94,9 @@ class RagMetrics:
         self.request_seconds.labels(endpoint).observe(seconds)
 
     def _common(self, refused: bool, guardrails: Iterable[str], usage: Mapping[str, int],
-                backend: str) -> None:  # fmt: skip
-        self.answers.labels("refused" if refused else "answered").inc()
+                backend: str, prompt_version: str | None) -> None:  # fmt: skip
+        outcome = "refused" if refused else "answered"
+        self.answers.labels(outcome, _prompt_label(prompt_version)).inc()
         for guard in guardrails:
             self.guardrails.labels(_bounded(guard, GUARDS)).inc()
         backend = _bounded(backend, BACKENDS)
@@ -95,21 +104,31 @@ class RagMetrics:
             if tokens := usage.get(f"{kind}_tokens", 0):
                 self.tokens.labels(backend, kind).inc(tokens)
 
-    def observe_answer(self, answer: Any, backend: str) -> None:
-        for stage, ms in answer.timings_ms.items():
-            if stage in STAGES:
+    def _stages(self, timings: Mapping[str, float | None]) -> None:
+        for stage, ms in timings.items():
+            if stage in STAGES and ms is not None:
                 self.stage_seconds.labels(stage).observe(ms / 1000)
-        self._common(answer.refused, answer.guardrails, answer.usage, backend)
+
+    def observe_answer(self, answer: Any, backend: str) -> None:
+        self._stages(answer.timings_ms)
+        self._common(answer.refused, answer.guardrails, answer.usage, backend,
+                     answer.prompt_version)  # fmt: skip
         if decision := answer.decision:
             outcome = "gated" if answer.gated else "pass"
             self.decisions.labels(_bounded(decision.decider, DECIDERS), outcome).inc()
             self.decider_cost.inc(decision.cost_usd)
 
     def observe_stream_done(self, event: Mapping[str, Any], backend: str) -> None:
-        if (ttft := event.get("timings_ms", {}).get("ttft")) is not None:
+        timings = event.get("timings_ms", {})
+        self._stages(timings)
+        if (ttft := timings.get("ttft")) is not None:
             self.ttft.observe(ttft / 1000)
         self._common(event.get("refused", False), event.get("guardrails", []),
-                     event.get("usage", {}), backend)  # fmt: skip
+                     event.get("usage", {}), backend, event.get("prompt_version"))  # fmt: skip
+
+    def observe_stream_error(self) -> None:
+        """The 200 was already sent, so the middleware cannot see a failed stream: count it."""
+        self.answers.labels("error", "none").inc()
 
     def set_info(self, **labels: str) -> None:
         self.info.labels(**labels).set(1)
@@ -120,4 +139,5 @@ def render(registry: CollectorRegistry) -> tuple[bytes, str]:
     if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
         registry = CollectorRegistry()
         multiprocess.MultiProcessCollector(registry)
+        ProcessCollector(registry=registry)  # this worker's start time: the deploy annotation
     return generate_latest(registry), CONTENT_TYPE_LATEST

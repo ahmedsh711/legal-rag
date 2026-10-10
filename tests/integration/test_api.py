@@ -325,7 +325,7 @@ def test_metrics_endpoint_counts_requests_stages_and_guards(client):
     assert 'rag_requests_total{endpoint="ask",status="200"} 2.0' in text
     assert 'rag_stage_seconds_count{stage="retrieve"} 1.0' in text  # the injection never retrieved
     assert 'rag_guardrail_total{guard="injection:override"} 1.0' in text
-    assert 'rag_answers_total{outcome="refused"} 1.0' in text
+    assert 'rag_answers_total{outcome="refused",prompt_version="v3"} 1.0' in text
     assert "rag_info{" in text and "rag_inflight_requests" in text
 
 
@@ -359,3 +359,21 @@ def test_each_request_is_one_trace_with_scores_and_no_raw_pii(tmp_path, qdrant, 
     assert first["output"]["refused"] is False and "sources" in first["output"]
     names = [s["name"] for s in tracer.scores]
     assert names.count("refused") == 2 and "guardrail" in names
+
+
+def test_a_broken_tracer_never_breaks_an_answer(tmp_path, qdrant, embedder):
+    from legalrag.observability.tracing import RecordingTracer
+
+    class BrokenTracer(RecordingTracer):
+        def score(self, *args, **kwargs):
+            raise RuntimeError("langfuse unreachable")
+
+    retriever = Retriever(qdrant, alias="articles", embedder=embedder, top_n=3)
+    pipeline = RagPipeline(retriever, Generator(FakeLLM("Yes [Art. 147]."), "m", 100, 0.0),
+                           tracer=BrokenTracer())  # fmt: skip
+    with make_client(tmp_path, pipeline) as c:
+        assert c.post("/ask", json={"question": "Is a contract binding?"}).status_code == 200
+        r = c.post("/ask?stream=true", json={"question": "Is a contract binding?"})
+    events = [json.loads(ln[5:]) for ln in r.text.splitlines() if ln.startswith("data:")]
+    assert events[-1]["type"] == "done" and not any(e["type"] == "error" for e in events)
+    assert "_monitoring" not in events[-1] and "context_articles" not in events[-1]

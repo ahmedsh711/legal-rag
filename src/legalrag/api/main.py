@@ -12,7 +12,7 @@ import asyncio
 import inspect
 import json
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -130,7 +130,7 @@ def build_components(settings: Settings) -> Components:
         settings.llm_temperature,
     )
     tracer = build_tracer(settings.langfuse_host, settings.langfuse_public_key.get_secret_value(),
-                          settings.langfuse_secret_key.get_secret_value(), settings.llm_backend)  # fmt: skip
+                          settings.langfuse_secret_key.get_secret_value(), settings.deploy_environment)  # fmt: skip
     pipeline = RagPipeline(
         retriever,
         generator,
@@ -255,6 +255,28 @@ def _source(c: Any) -> Source:
     )
 
 
+def _safely(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+    """Telemetry (metrics, traces) must never fail or change an answer: log and carry on."""
+    try:
+        fn(*args, **kwargs)
+    except Exception:  # noqa: BLE001 - observability is best effort by design
+        log.exception("telemetry_failed", what=getattr(fn, "__name__", "?"))
+
+
+async def _after_stream(request: Request, tracer: Any, root: Any, event: dict[str, Any],
+                        question: str) -> None:  # fmt: skip
+    """A finished stream: metrics, prediction event, trace. Internal fields leave the event."""
+    seen = event.pop("_monitoring", {})
+    full = {**event, **seen}
+    backend = request.app.state.settings.llm_backend
+    _safely(request.app.state.metrics.observe_stream_done, full, backend)
+    await request.app.state.record(lambda: event_from_stream_done(
+        full, question, event["request_id"], request.app.state.serving))  # fmt: skip
+    _safely(_close_trace, tracer, root, event.get("replace_with") or "(streamed: see generate)",
+            event["refused"], event.get("guardrails", []), seen.get("answerable_score"),
+            [s["article_number"] for s in event["sources"]])  # fmt: skip
+
+
 def _trace_fields(request: Request, question: str, backend: str) -> dict[str, Any]:
     """What every trace carries: the redacted question (never the raw one), what served it."""
     serving = getattr(request.app.state, "serving", {})
@@ -333,6 +355,8 @@ def create_app(
         except Exception:  # noqa: BLE001 - monitoring must not take answers down
             log.exception("event_write_failed")
 
+    app.state.record = record
+
     @app.exception_handler(RateLimitedError)
     async def _too_many(request: Request, exc: RateLimitedError) -> JSONResponse:
         return JSONResponse(
@@ -398,7 +422,7 @@ def create_app(
         comp: Components = request.app.state.components
         served: Settings = request.app.state.settings
         prompts = getattr(comp.pipeline, "prompts", None) or CodePrompt()
-        served_prompt = prompts.get()  # what the next answer will use (label -> version)
+        served_prompt = await asyncio.to_thread(prompts.get)  # what the next answer will use
         return {
             "app_version": __version__,
             "prompt_version": served_prompt.version,
@@ -430,23 +454,25 @@ def create_app(
             async def events() -> AsyncIterator[str]:
                 with tracer.trace(request_id, "ask_stream", **trace) as root:
                     try:
-                        async for event in pipeline.ask_stream(body.question, book=body.book):
-                            if event["type"] == "done":
-                                event["request_id"] = request_id
-                                metrics.observe_stream_done(event, backend)
-                                await record(lambda e=event: event_from_stream_done(
-                                    e, body.question, request_id, request.app.state.serving))  # fmt: skip
-                                _close_trace(tracer, root, event.get("replace_with") or "(streamed: see generate)",
-                                             event["refused"], event.get("guardrails", []),
-                                             event.get("answerable_score"),
-                                             [s["article_number"] for s in event["sources"]])  # fmt: skip
-                            yield _sse(event)
+                        # aclosing: the stream is closed in this task even if the client leaves
+                        async with aclosing(
+                            pipeline.ask_stream(body.question, book=body.book)
+                        ) as answer:
+                            async for event in answer:
+                                if event["type"] == "done":
+                                    event["request_id"] = request_id
+                                    await _after_stream(request, tracer, root, event, body.question)
+                                yield _sse(event)
                     except (APIConnectionError, APIStatusError) as exc:
+                        _safely(metrics.observe_stream_error)
+                        _safely(root.update, level="ERROR", status_message=type(exc).__name__)
                         # the 200 status line is already sent; tell the client in the stream
                         yield _sse({"type": "error", "detail": _llm_failure(exc)[1],
                                     "request_id": request_id})  # fmt: skip
-                    except Exception:
+                    except Exception as exc:
                         log.exception("stream_failed")
+                        _safely(metrics.observe_stream_error)
+                        _safely(root.update, level="ERROR", status_message=type(exc).__name__)
                         yield _sse({"type": "error", "detail": "Internal server error",
                                     "request_id": request_id})  # fmt: skip
 
@@ -458,10 +484,10 @@ def create_app(
             )
         with tracer.trace(request_id, "ask", **trace) as root:
             result = await pipeline.ask(body.question, book=body.book)
-            _close_trace(tracer, root, result.answer, result.refused, result.guardrails,
-                         result.decision.answerable if result.decision else None,
-                         [c.article_number for c in result.sources])  # fmt: skip
-        metrics.observe_answer(result, backend)
+            _safely(_close_trace, tracer, root, result.answer, result.refused, result.guardrails,
+                    result.decision.answerable if result.decision else None,
+                    [c.article_number for c in result.sources])  # fmt: skip
+        _safely(metrics.observe_answer, result, backend)
         await record(lambda: event_from_answer(result, body.question, request_id, "ask",
                                                request.app.state.serving))  # fmt: skip
         return AskResponse(

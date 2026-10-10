@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import random
+from datetime import UTC, datetime
 
-from legalrag.monitoring.drift_job import compare, textfile_lines
+import pytest
+
+from legalrag.monitoring.drift_job import aa_check, compare, parse_since, textfile_lines
 from legalrag.monitoring.events import PredictionEvent
 
 BOOKS = ["Book 1", "Book 2", "Book 3", "Book 4"]
 
 
 def events(n: int, seed: int, ar_share: float = 0.5, books: list[str] = BOOKS,
-           chars: tuple[int, int] = (20, 80), refused_share: float = 0.1) -> list[PredictionEvent]:  # fmt: skip
+           chars: tuple[int, int] = (20, 80), refused_share: float = 0.1,
+           llm_model: str = "m", prompt_version: str = "v3") -> list[PredictionEvent]:  # fmt: skip
     rng = random.Random(seed)
     out = []
     for i in range(n):
@@ -22,8 +26,13 @@ def events(n: int, seed: int, ar_share: float = 0.5, books: list[str] = BOOKS,
             question_words=max(1, length // 6), pii_redacted=False, top_articles=[1],
             top_book=rng.choice(books), answerable_score=None,
             refused=rng.random() < refused_share, guardrails=[], timings_ms={},
-            prompt_version="v3", llm_model="m", index_collection="c", decider="none"))  # fmt: skip
+            prompt_version=prompt_version, llm_model=llm_model, index_collection="c",
+            decider="none"))  # fmt: skip
     return out
+
+
+def flagged(report) -> set[str]:
+    return {r.feature for r in report.rows if r.drift}
 
 
 def test_traffic_like_the_reference_is_not_drift():
@@ -36,8 +45,25 @@ def test_a_topic_and_language_shift_is_drift_and_names_the_features():
     shifted = events(300, seed=3, ar_share=0.9, books=["Book 4"], chars=(60, 160),
                      refused_share=0.6)  # fmt: skip
     report = compare(events(300, seed=1), shifted)
-    flagged = {r.feature for r in report.rows if r.drift}
-    assert report.drift and {"lang", "top_book", "question_chars", "refused"} <= flagged
+    assert report.drift and {"lang", "top_book", "question_chars", "refused"} <= flagged(report)
+
+
+def test_the_three_kinds_are_reported_apart():
+    # same questions, but the system refuses most of them: inputs and retrieval did not move
+    report = compare(events(300, seed=1), events(300, seed=2, refused_share=0.9))
+    kinds = {r.feature: r.kind for r in report.rows}
+    assert kinds["lang"] == "input" and kinds["top_book"] == "retrieval"
+    assert kinds["refused"] == "behaviour"
+    assert flagged(report) == {"refused"} and "behaviour drift" in report.reason
+
+
+def test_a_model_change_is_not_called_behaviour_drift():
+    # found in review: comparing a vLLM window with a Gemini reference is a change, not drift
+    current = events(300, seed=2, refused_share=0.9, llm_model="vllm-qwen")
+    report = compare(events(300, seed=1), current)
+    assert not any(r.kind == "behaviour" for r in report.rows)
+    assert any("model or prompt changed" in note for note in report.notes)
+    assert not report.drift
 
 
 def test_too_few_current_events_are_not_judged():
@@ -45,30 +71,29 @@ def test_too_few_current_events_are_not_judged():
     assert not report.drift and report.reason == "too few samples (10 < 50)"
 
 
-def test_textfile_has_one_score_per_test_and_the_alert_flag():
+def test_an_empty_reference_fails_loudly():
+    with pytest.raises(ValueError, match="reference"):
+        compare([], events(100, seed=1))
+
+
+def test_textfile_has_scores_the_latest_verdict_and_the_trigger_time():
     report = compare(events(300, seed=1), events(300, seed=2))
     lines = textfile_lines(report, alert=False, last_trigger=None)
-    assert 'rag_drift_score{feature="lang",test="chi2",kind="input"}' in "\n".join(lines)
-    assert "rag_drift_alert 0" in lines and any(ln.startswith("# HELP") for ln in lines)
-    assert not any(ln.startswith("rag_drift_last_trigger") for ln in lines)  # never triggered
-
-
-def test_the_last_trigger_time_survives_later_quiet_runs():
-    # found live: a second run 80 s later reset "this run triggered" to 0 before the alert's
-    # for: 1m elapsed; the alert now reads the time of the last trigger instead
-    from datetime import UTC, datetime
-
-    report = compare(events(300, seed=1), events(300, seed=2))
+    text = "\n".join(lines)
+    assert 'rag_drift_score{feature="lang",test="chi2",kind="input"}' in text
+    assert "rag_drift_detected 0" in lines and "rag_drift_alert 0" in lines
+    assert not any(ln.startswith("rag_drift_last_trigger") for ln in lines)
     when = datetime(2026, 10, 10, 13, 9, 52, tzinfo=UTC)
     lines = textfile_lines(report, alert=False, last_trigger=when)
     assert f"rag_drift_last_trigger_timestamp_seconds {when.timestamp():.0f}" in lines
 
 
-def test_input_drift_and_behaviour_drift_are_reported_apart():
-    # same questions, but a new model refuses most of them: the inputs did not move, the outputs did
-    report = compare(events(300, seed=1), events(300, seed=2, refused_share=0.9))
-    inputs = [r for r in report.rows if r.kind == "input"]
-    outputs = [r for r in report.rows if r.kind == "behaviour"]
-    assert not any(r.drift for r in inputs)
-    assert any(r.drift for r in outputs) and report.drift
-    assert "behaviour" in report.reason
+def test_aa_check_measures_false_alarms_on_two_halves_of_the_same_traffic():
+    rates = aa_check(events(400, seed=5), runs=20, seed=0)
+    assert set(rates) >= {"lang/chi2", "question_chars/ks", "inputs/mmd", "any"}
+    assert all(0 <= v <= 1 for v in rates.values())
+    assert rates["any"] <= 0.2  # one window split in two should rarely look like drift
+
+
+def test_since_without_a_timezone_means_utc():
+    assert parse_since("2026-10-10T13:10:00") == datetime(2026, 10, 10, 13, 10, tzinfo=UTC)

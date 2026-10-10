@@ -256,6 +256,8 @@ async def test_stream_done_event_carries_what_monitoring_needs():
         Generator(FakeLLM("Yes [Art. 147]."), "m", 100, 0.0),
     )
     done = [e async for e in pipe.ask_stream("Is a contract binding?")][-1]
-    assert done["language"] == "en" and done["context_articles"] == [147, 374]
-    assert done["top_book"] == "Book 1" and done["answerable_score"] is None
+    # internal: the API strips "_monitoring" before sending (found in review: it leaked)
+    seen = done["_monitoring"]
+    assert seen["language"] == "en" and seen["context_articles"] == [147, 374]
+    assert seen["top_book"] == "Book 1" and seen["answerable_score"] is None
     assert {"guard", "retrieve", "ttft", "total"} <= set(done["timings_ms"])

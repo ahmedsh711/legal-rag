@@ -101,6 +101,8 @@ class Settings(BaseSettings):
     langfuse_host: str = "http://127.0.0.1:3000"
     langfuse_public_key: SecretStr = SecretStr("")
     langfuse_secret_key: SecretStr = SecretStr("")
+    # dev / staging / production: the "environment" of traces in Langfuse
+    deploy_environment: str = "local"
     # which Langfuse prompt label the API serves (production / canary); code prompt if unreachable
     prompt_label: str = "production"
     # per client (API key, else IP): a burst of rate_limit_burst, then this many per minute.

@@ -16,7 +16,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from legalrag.logging_conf import get_logger
+
+log = get_logger(__name__)
 
 STAGES = ("guard", "retrieve", "decide", "generate", "ttft", "total")
 
@@ -67,6 +71,7 @@ def event_from_answer(answer: Any, question: str, request_id: str, endpoint: str
 
 def event_from_stream_done(done: Mapping[str, Any], question: str, request_id: str,
                            serving: Mapping[str, str]) -> PredictionEvent:  # fmt: skip
+    done = {**done, **done.get("_monitoring", {})}  # language, articles, book, decider score
     articles = done.get("context_articles", [])
     return PredictionEvent(
         request_id=request_id, endpoint="ask_stream", lang=done.get("language", "en"),
@@ -107,11 +112,18 @@ class EventLog:
 
 def read_events(directory: str | Path, since: datetime | None = None,
                 until: datetime | None = None) -> list[PredictionEvent]:  # fmt: skip
-    events = []
+    events, skipped = [], 0
     for path in sorted(Path(directory).glob("events-*.jsonl")):
         for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
+            if not line.strip():
+                continue
+            try:  # the API may be appending this very line: a partial line is skipped, not fatal
                 event = PredictionEvent.model_validate_json(line)
-                if (since is None or event.ts >= since) and (until is None or event.ts < until):
-                    events.append(event)
+            except ValidationError:
+                skipped += 1
+                continue
+            if (since is None or event.ts >= since) and (until is None or event.ts < until):
+                events.append(event)
+    if skipped:
+        log.warning("events_skipped", lines=skipped, directory=str(directory))
     return events

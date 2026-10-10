@@ -37,7 +37,7 @@ def test_an_answer_records_stages_tokens_outcome_and_decision(metrics):
     assert value(reg, "rag_stage_seconds_sum", stage="generate") == pytest.approx(0.9)
     assert value(reg, "rag_stage_seconds_count", stage="total") is None  # total is not a stage
     assert value(reg, "rag_llm_tokens_total", backend="gemini", type="prompt") == 1200
-    assert value(reg, "rag_answers_total", outcome="answered") == 1
+    assert value(reg, "rag_answers_total", outcome="answered", prompt_version="v3") == 1
     assert value(reg, "rag_decisions_total", decider="jev", outcome="pass") == 1
     assert value(reg, "rag_decider_cost_usd_total") == pytest.approx(0.0001)
 
@@ -50,7 +50,7 @@ def test_every_fired_guard_is_counted_and_unknown_names_cannot_add_series(metric
     assert value(reg, "rag_guardrail_total", guard="pii:phone") == 1
     assert value(reg, "rag_guardrail_total", guard="gate:unanswerable") == 1
     assert value(reg, "rag_guardrail_total", guard="other") == 1  # bounded label set
-    assert value(reg, "rag_answers_total", outcome="refused") == 1
+    assert value(reg, "rag_answers_total", outcome="refused", prompt_version="v3") == 1
 
 
 def test_requests_are_labelled_by_route_not_by_raw_path(metrics):
@@ -77,3 +77,22 @@ def test_render_exposes_the_text_format(metrics):
                index_collection="articles_x", config_source="env")  # fmt: skip
     body, content_type = render(reg)
     assert content_type.startswith("text/plain") and b"rag_info{" in body
+
+
+def test_answers_carry_a_bounded_prompt_version(metrics):
+    m, reg = metrics
+    m.observe_answer(answer(prompt_version="v4"), backend="vllm")
+    m.observe_answer(answer(prompt_version="'; DROP TABLE"), backend="vllm")
+    assert value(reg, "rag_answers_total", outcome="answered", prompt_version="v4") == 1
+    assert value(reg, "rag_answers_total", outcome="answered", prompt_version="other") == 1
+
+
+def test_a_stream_records_its_stages_and_errors_are_counted(metrics):
+    m, reg = metrics
+    done = {"type": "done", "refused": False, "guardrails": [], "usage": {},
+            "prompt_version": "v3",
+            "timings_ms": {"guard": 0.1, "retrieve": 200.0, "ttft": 300.0, "total": 900.0}}  # fmt: skip
+    m.observe_stream_done(done, backend="vllm")
+    assert value(reg, "rag_stage_seconds_count", stage="retrieve") == 1
+    m.observe_stream_error()
+    assert value(reg, "rag_answers_total", outcome="error", prompt_version="none") == 1
