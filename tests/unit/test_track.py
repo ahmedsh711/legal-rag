@@ -53,10 +53,14 @@ def test_register_cli_promotes_exactly_the_evaluated_config(tracking, monkeypatc
     from legalrag.settings import get_settings
 
     run_id = log_eval_run("legal-rag-test", "jev", params={"decider_backend": "jev"},
-                          summary={"all": {"mrr": 1.0}}, tags={})  # fmt: skip
+                          summary={"all": {"mrr": 1.0}}, tags={"eval_mode": "end_to_end"})  # fmt: skip
+    retrieval_only = log_eval_run("legal-rag-test", "ret", params={"decider_backend": "jev"},
+                                  summary={}, tags={"eval_mode": "retrieval_only"})  # fmt: skip
     monkeypatch.setenv("MLFLOW_CONFIG_MODEL_NAME", "rag-config-cli")
     get_settings.cache_clear()
     try:
+        with pytest.raises(SystemExit, match="end_to_end"):  # never measured an answer
+            main(["register", "--run-id", retrieval_only, "--alias", "production"])
         main(["register", "--run-id", run_id, "--alias", "production"])
     finally:
         get_settings.cache_clear()

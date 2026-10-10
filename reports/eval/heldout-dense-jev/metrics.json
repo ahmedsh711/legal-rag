@@ -1,39 +1,39 @@
 {
   "all": {
-    "n": 56,
-    "errors": 0,
-    "hit_at_1": 0.9791666666666666,
-    "hit_at_5": 0.9791666666666666,
-    "mrr": 0.9791666666666666,
-    "false_refusal_rate": 0.0,
-    "correct_refusal_rate": 1.0,
-    "latency_p50_ms": 623.8,
-    "latency_p95_ms": 1016.6,
-    "decider_cost_usd": 0.005527
-  },
-  "ar": {
-    "n": 28,
+    "n": 10,
     "errors": 0,
     "hit_at_1": 1.0,
     "hit_at_5": 1.0,
     "mrr": 1.0,
     "false_refusal_rate": 0.0,
     "correct_refusal_rate": 1.0,
-    "latency_p50_ms": 619.2,
-    "latency_p95_ms": 962.3,
-    "decider_cost_usd": 0.002829
+    "latency_p50_ms": 715.2,
+    "latency_p95_ms": 1407.5,
+    "decider_cost_usd": 0.001027
   },
-  "en": {
-    "n": 28,
+  "ar": {
+    "n": 5,
     "errors": 0,
-    "hit_at_1": 0.9583333333333334,
-    "hit_at_5": 0.9583333333333334,
-    "mrr": 0.9583333333333334,
+    "hit_at_1": 1.0,
+    "hit_at_5": 1.0,
+    "mrr": 1.0,
     "false_refusal_rate": 0.0,
     "correct_refusal_rate": 1.0,
-    "latency_p50_ms": 625.3,
-    "latency_p95_ms": 1088.1,
-    "decider_cost_usd": 0.002698
+    "latency_p50_ms": 726.1,
+    "latency_p95_ms": 1406.9,
+    "decider_cost_usd": 0.000535
+  },
+  "en": {
+    "n": 5,
+    "errors": 0,
+    "hit_at_1": 1.0,
+    "hit_at_5": 1.0,
+    "mrr": 1.0,
+    "false_refusal_rate": 0.0,
+    "correct_refusal_rate": 1.0,
+    "latency_p50_ms": 704.2,
+    "latency_p95_ms": 1331.7,
+    "decider_cost_usd": 0.000492
   },
   "gate_sweep": {
     "t0.00.false_refusal_rate": 0.0,
@@ -70,11 +70,11 @@
     "t0.75.correct_refusal_rate": 1.0,
     "t0.80.false_refusal_rate": 0.0,
     "t0.80.correct_refusal_rate": 1.0,
-    "t0.85.false_refusal_rate": 0.020833333333333332,
+    "t0.85.false_refusal_rate": 0.0,
     "t0.85.correct_refusal_rate": 1.0,
-    "t0.90.false_refusal_rate": 0.14583333333333334,
+    "t0.90.false_refusal_rate": 0.16666666666666666,
     "t0.90.correct_refusal_rate": 1.0,
-    "t0.95.false_refusal_rate": 0.3541666666666667,
+    "t0.95.false_refusal_rate": 0.5,
     "t0.95.correct_refusal_rate": 1.0
   }
 }

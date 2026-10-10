@@ -113,3 +113,26 @@ async def test_verbosity_probe_counts_flips():
     report = await calibrate(preds, {p.id: 1 for p in preds},
                              ScriptedJudge("judge", fooled_by_padding=True), None, {})  # fmt: skip
     assert report["verbosity_probe"] == {"verdict_flips": 2, "of": 2}
+
+
+@pytest.mark.parametrize(
+    ("reply", "verdict"),
+    [
+        ('```json\n{"supported": true}\n```', 1),  # fenced JSON is common
+        ('{"supported": false, "unsupported_claims": ["x"]}', 0),
+        ("Sure! The answer is supported.", None),  # not JSON: no verdict, not a 0
+        ('{"verdict": "yes"}', None),  # missing key: no verdict
+        ('{"supported": "true"', None),  # cut off at max_tokens
+    ],
+)
+async def test_judge_verdict_parsing(reply, verdict):
+    assert await Judge(FakeChat([reply]), "m").supported(pred(1)) == verdict
+
+
+def test_read_labels_accepts_excel_spellings(tmp_path):
+    path = tmp_path / "labels.csv"
+    path.write_text("id,supported (1/0)\nA,1.0\nB,TRUE\nC,no\nD,0\n", encoding="utf-8-sig")
+    assert read_labels(path) == {"A": 1, "B": 1, "C": 0, "D": 0}
+    path.write_text("id,supported (1/0)\nE,maybe\n", encoding="utf-8-sig")
+    with pytest.raises(ValueError, match="E"):
+        read_labels(path)

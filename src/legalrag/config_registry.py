@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
 from legalrag.generation import PROMPT_VERSION
 from legalrag.logging_conf import get_logger
@@ -67,11 +68,28 @@ def apply_registry_config(
         # the tracking server being down must not take the answering service down
         log.error("config_registry_unreachable", error=str(exc)[:200])
         return settings, "env (registry unreachable)"
-    if config.get("prompt_version", PROMPT_VERSION) != PROMPT_VERSION:
-        raise ConfigMismatchError(
-            f"{name}@{alias} was evaluated with prompt {config.get('prompt_version')!r}, "
-            f"this code serves {PROMPT_VERSION!r}"
-        )
+    served = _checked(config, settings, f"{name}@{alias} (v{version})")
+    log.info("config_from_registry", model=name, alias=alias, version=version,
+             **{k: getattr(served, k) for k in RUNTIME_KEYS})  # fmt: skip
+    return served, f"{name}@{alias} (v{version})"
+
+
+def _checked(config: Any, settings: Settings, where: str) -> Settings:
+    """Refuse (loudly, at startup) a config this code cannot serve faithfully."""
+    if not isinstance(config, dict):
+        raise ConfigMismatchError(f"{where}: rag_config.json is not a JSON object")
+    if config.get("prompt_version") != PROMPT_VERSION:
+        raise ConfigMismatchError(f"{where} was evaluated with prompt "
+                                  f"{config.get('prompt_version')!r}, this code serves "
+                                  f"{PROMPT_VERSION!r}")  # fmt: skip
+    expected = {"jev": settings.jev_model, "local": settings.reranker_model}
+    backend = config.get("decider_backend", settings.decider_backend)
+    if config.get("decider_model") and config["decider_model"] != expected.get(backend):
+        # the gate threshold was tuned for one decider model
+        raise ConfigMismatchError(f"{where}: decider model {config['decider_model']!r} "
+                                  f"!= {expected.get(backend)!r} in this environment")  # fmt: skip
     update = {k: config[k] for k in RUNTIME_KEYS if k in config}
-    log.info("config_from_registry", model=name, alias=alias, version=version, **update)
-    return settings.model_copy(update=update), f"{name}@{alias} (v{version})"
+    try:  # model_copy would skip validation: a typo like "Hybrid" would silently serve sparse
+        return Settings.model_validate({**settings.model_dump(), **update})
+    except ValidationError as exc:
+        raise ConfigMismatchError(f"{where}: invalid value: {exc.errors()[0]['msg']}") from exc

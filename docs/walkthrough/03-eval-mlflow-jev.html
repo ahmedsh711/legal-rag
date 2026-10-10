@@ -206,7 +206,31 @@ uv run python -m legalrag.eval.run --name baseline --ragas --from-predictions re
     </ul>
   </div>
 </div>
-<!-- E2E -->
+<div class="pair">
+  <div class="en"><p><strong>End to end</strong> (56 questions, Gemini Flash-Lite writes the answer, RAGAS judge, paced under the free-tier limit):</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p><strong>من أول السؤال لحد الإجابة</strong> (‏56 سؤال، Gemini Flash-Lite بيكتب الإجابة، وحَكَم RAGAS، والطلبات متوزعة تحت حد الـ free tier):</p></div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Metric</th><th>baseline (hybrid)</th><th>dense + Jev (gate 0.5)</th></tr></thead>
+  <tbody>
+    <tr><td>MRR</td><td>0.878</td><td><strong>1.000</strong></td></tr>
+    <tr><td>citation recall / RAGAS context recall</td><td>0.979 / 0.979</td><td><strong>1.000 / 1.000</strong></td></tr>
+    <tr><td>RAGAS faithfulness</td><td>0.976</td><td>0.969</td></tr>
+    <tr><td>refusals (wrong / right)</td><td>0 % / 100 %</td><td>0 % / 100 %</td></tr>
+    <tr><td>Jev latency, cost</td><td>—</td><td>+0.43 s, $0.006 / 56 Q</td></tr>
+  </tbody>
+</table></div>
+<div class="pair">
+  <div class="en">
+    <p>Jev fixes <em>retrieval</em>: every question now gets its defining article first. Faithfulness is a tie within judge noise (the cheap judge even marked down two near-verbatim copies of the right article), which is why the judge is calibrated against human labels. Latency differences between runs mostly measured the free tier's load, not our code.</p>
+    <p><strong>Promotion by alias</strong>: v1 (<code>baseline</code>) and v2 (<code>production</code>) are registered from their runs. The API reads <code>@production</code> at startup and <code>/metadata</code> shows <code>legal-rag-config@production (v2)</code>. Moving the alias back to v1 and restarting took 18 s; forward again 22 s. No rebuild, no new image.</p>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <p>Jev بيصلّح الـ <em>retrieval</em>: كل سؤال بقت المادة اللي بتعرّفه بتيجي الأول. والـ faithfulness متعادلة في حدود "دوشة" الحَكَم (الحَكَم الرخيص نزّل درجة إجابتين تقريبًا نسخة حرفية من المادة الصح)، وعشان كده بنعاير الحَكَم بتقييم الإنسان. والفرق في السرعة بين التشغيلات كان بيقيس زحمة الـ free tier أكتر من الكود بتاعنا.</p>
+    <p><strong>الترقية بالـ alias</strong>: v1 (‏<code>baseline</code>) وv2 (‏<code>production</code>) اتسجلوا من التشغيلات بتاعتهم. والـ API بيقرا <code>@production</code> وقت التشغيل، و<code>/metadata</code> بتقول <code>legal-rag-config@production (v2)</code>. ورجوع الـ alias لـ v1 وإعادة التشغيل أخدوا 18 ثانية؛ والرجوع لقدام 22 ثانية. من غير build ومن غير image جديدة.</p>
+  </div>
+</div>
+<!-- CALIBRATION -->
 
 <h2 id="lessons"><span class="en">10. Problems we hit</span><span class="ar">10. مشاكل قابلناها</span></h2>
 <div class="pair">

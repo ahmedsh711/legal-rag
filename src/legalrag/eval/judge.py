@@ -51,7 +51,8 @@ class Judge:
         self.pacer = pacer or Pacer(None)  # stay under the provider's requests-per-minute
         self.extra = extra  # e.g. reasoning_effort="none" for thinking models
 
-    async def supported(self, p: Prediction, pad: bool = False) -> int:
+    async def supported(self, p: Prediction, pad: bool = False) -> int | None:
+        """1 supported, 0 not, None = no usable verdict (left out of agreement, not a 0)."""
         await self.pacer.wait()
         answer = p.answer + (PADDING.get(p.lang, PADDING["en"]) if pad else "")
         articles = "\n\n".join(p.context_texts)
@@ -64,8 +65,16 @@ class Judge:
             max_tokens=600,
             **self.extra,
         )
-        data = json.loads(resp.choices[0].message.content or "{}")
-        return 1 if data.get("supported") is True else 0
+        return _verdict(resp.choices[0].message.content or "")
+
+
+def _verdict(text: str) -> int | None:
+    body = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        value = json.loads(body).get("supported")
+    except (json.JSONDecodeError, AttributeError):  # prose, truncated JSON, a list...
+        return None
+    return int(value) if isinstance(value, bool) else None
 
 
 def write_label_sheet(preds: Sequence[Prediction], path: str | Path, n: int = 20,
@@ -87,9 +96,21 @@ def write_label_sheet(preds: Sequence[Prediction], path: str | Path, n: int = 20
     return [p.id for p in chosen]
 
 
+YES, NO = {"1", "1.0", "true", "yes", "y"}, {"0", "0.0", "false", "no", "n"}
+
+
 def read_labels(path: str | Path) -> dict[str, int]:
+    """Human labels; blank rows are skipped, Excel spellings (1.0, TRUE, yes) are accepted."""
+    labels = {}
     with Path(path).open(encoding="utf-8-sig", newline="") as f:
-        return {r["id"]: int(r[LABEL]) for r in csv.DictReader(f) if r.get(LABEL, "").strip()}
+        for row in csv.DictReader(f):
+            raw = row.get(LABEL, "").strip().lower()
+            if not raw:
+                continue
+            if raw not in YES | NO:
+                raise ValueError(f"row {row['id']}: label {raw!r} is not 1/0")
+            labels[row["id"]] = int(raw in YES)
+    return labels
 
 
 def agreement(human: Mapping[str, int], other: Mapping[str, int]) -> float:
@@ -109,8 +130,9 @@ def cohen_kappa(human: Mapping[str, int], other: Mapping[str, int]) -> float:
 
 
 async def _verdicts(judge: Judge, preds: Sequence[Prediction], pad: bool = False) -> dict:
-    return dict(zip([p.id for p in preds], await asyncio.gather(
-        *(judge.supported(p, pad=pad) for p in preds)), strict=True))  # fmt: skip
+    """Usable verdicts only: an unparseable answer is left out, not counted as a 0."""
+    votes = await asyncio.gather(*(judge.supported(p, pad=pad) for p in preds))
+    return {p.id: v for p, v in zip(preds, votes, strict=True) if v is not None}
 
 
 def with_fabricated_claim(p: Prediction) -> Prediction:
@@ -133,6 +155,7 @@ async def calibrate(preds: Sequence[Prediction], human: Mapping[str, int], judge
     truth = {**human, **{n.id: 0 for n in negatives}}
     ours = await _verdicts(judge, labelled + negatives)
     padded = await _verdicts(judge, labelled, pad=True)
+    both = [p.id for p in labelled if p.id in ours and p.id in padded]
     ragas_vote = {i: int(v >= 0.8) for i, v in ragas.items() if i in truth}
     report: dict[str, Any] = {
         "n_labelled": len(labelled),
@@ -141,8 +164,9 @@ async def calibrate(preds: Sequence[Prediction], human: Mapping[str, int], judge
         "judge": {"model": judge.model, **_scores(truth, ours)},
         "judge_on_real_answers_only": _scores(human, ours),
         "ragas_faithfulness_ge_0_8": _scores(truth, ragas_vote),
-        "verbosity_probe": {"verdict_flips": sum(ours[p.id] != padded[p.id] for p in labelled),
-                            "of": len(labelled)},
+        "verbosity_probe": {"verdict_flips": sum(ours[i] != padded[i] for i in both),
+                            "of": len(both)},
+        "unparseable_verdicts": len(labelled) + len(negatives) - len(ours),
     }  # fmt: skip
     if same_family is None or same_family.model == judge.model:
         report["self_preference_probe"] = "not measured: judge and generator share a model"

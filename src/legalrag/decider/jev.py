@@ -75,12 +75,22 @@ class JevDecider(Decider):
             answerable = float(answers["answerable"]["noul"])
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
             raise DeciderUnavailableError(f"jev: {type(exc).__name__}: {exc}") from exc
-        usage = data.get("usage") or {}
         return Decision(
             relevance=relevance,
             answerable=answerable,
             decider=self.name,
             latency_ms=round((time.perf_counter() - t0) * 1000, 1),
-            cost_usd=float(usage.get("cost") or 0.0),
+            cost_usd=_cost(data),
             model=str(data.get("model", "")),
         )
+
+    async def aclose(self) -> None:
+        await self.client.aclose()
+
+
+def _cost(data: dict[str, Any]) -> float:
+    """OpenRouter's reported cost; a missing or odd value must not lose a good decision."""
+    try:
+        return float((data.get("usage") or {}).get("cost") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0

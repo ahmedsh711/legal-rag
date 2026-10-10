@@ -51,11 +51,13 @@ Full detail (tasks, acceptance checks, decisions, risks) lives in `docs/PLAN.md`
 
 ### Phase 3: Eval, MLflow, Decider + JEV ablation (tag v0.2.0, branch module-3-eval-mlflow-jev)
 
-- [ ] golden_set.jsonl ≥50 Q (25 AR + 25 EN mirrored, categories) + to_label.csv for 20 human faithfulness labels
-- [ ] eval/ragas_run.py (RAGAS 0.4, per-language) → MLflow; eval/judge.py calibration + bias tests
-- [ ] MLflow stack (tracking profile); ≥6 runs: chunking, top-k, embedding, prompt; rag_config artifact; registry alias production
-- [ ] decider/base.py, jev.py, local.py + tests; eval/ablation.py none/local/jev; AR-vs-EN agreement test
-- [ ] walkthrough 03-eval-mlflow-jev.html; reports/module-3.md; PR; tag v0.2.0
+- [x] golden_set.jsonl 56 Q (28 AR/EN mirrored pairs, 5 categories, checked against the corpus) + to_label.csv labelled by the user (20/20 supported)
+- [x] eval/ragas_run.py (RAGAS 0.4, per-language, per-item errors, paced) → MLflow
+- [ ] eval/judge.py calibration (synthetic negatives added; verbosity probe; self-preference not measurable on the free tier) — run blocked until Gemini daily quota resets (500/day on flash-lite)
+- [x] MLflow 3.17 stack (tracking profile); 8 runs: retrieval modes (hybrid/dense/sparse), deciders (none/local/jev × hybrid/dense), end to end baseline vs Jev; rag_config artifact; registry v1 @baseline, v2 @production; API serves @production; alias rollback demo
+- [x] decider/base.py, jev.py, local.py + tests; ablation via eval/run.py flags (no separate ablation.py); AR-vs-EN agreement (25/25 answerable pairs, gate 28/28)
+- [ ] reviewers (python, mle) fixed; walkthrough 03 + reports/module-3.md final; PR #4; tag v0.2.0
+- Deviation from the plan: chunking/embedding/prompt experiments replaced by retrieval-mode and decider ablations (no re-index needed; the decider was the open question). Recorded in progress.md.
 - **Status:** in_progress
 
 ### Phase 4: Production serving, CI/CD, load (tag v0.3.0)

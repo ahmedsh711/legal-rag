@@ -6,8 +6,9 @@
 - context recall: do the retrieved articles cover the reference answer? (retrieval)
 
 Faithfulness and relevancy are only scored for answers the system gave (a refusal has no claims);
-precision and recall for every answerable question. The judge is a different model family from
-the generator (self-preference bias), called through OpenRouter.
+precision and recall for every answerable question. The judge should come from a different model
+family than the generator (self-preference bias); when it cannot (a free tier with one usable
+model), say so next to the numbers: faithfulness is then self-judged.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ def _judge_calls(name: str, p: Prediction) -> int:
 
 async def _score_one(p: Prediction, metrics: Mapping[str, Metric], pacer: Pacer) -> dict[str, Any]:
     row: dict[str, Any] = {"id": p.id, "lang": p.lang}
-    if not p.answerable:
+    if not p.answerable or p.error:  # nothing to judge (or the question never ran)
         return row
     calls = {
         "context_precision": dict(user_input=p.question, reference=p.reference,
