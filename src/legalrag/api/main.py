@@ -23,6 +23,7 @@ from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import APIConnectionError, APIStatusError
+from prometheus_client import CollectorRegistry
 
 from legalrag import __version__
 from legalrag.api.middleware import RequestIdMiddleware
@@ -44,6 +45,7 @@ from legalrag.index.batcher import QueryBatcher
 from legalrag.index.store import alias_target, read_metadata
 from legalrag.ingest.normalize import NORMALIZATION_VERSION
 from legalrag.logging_conf import configure_logging, get_logger, request_id_var
+from legalrag.observability.metrics import RagMetrics, render
 from legalrag.pipeline import RagPipeline
 from legalrag.ratelimit import TokenBucket, build_limiter, client_key, known_key_hashes
 from legalrag.retrieval import Retriever
@@ -208,6 +210,8 @@ async def rate_limit(request: Request, response: Response) -> None:
     ip = request.client.host if request.client else None
     key = client_key(request.headers.get("X-API-Key"), ip, request.app.state.known_keys)
     verdict = await comp.limiter.take(key)
+    outcome = "limited" if not verdict.allowed else "degraded" if verdict.degraded else "allowed"
+    request.app.state.metrics.ratelimit.labels(outcome).inc()
     if not verdict.allowed:
         log.warning("rate_limited", retry_after_s=verdict.retry_after_s)
         raise RateLimitedError(verdict.retry_after_s)
@@ -259,6 +263,12 @@ def create_app(
         app.state.components = build(served)  # load once, never per request
         log.info("startup", collection=app.state.components.collection,
                  llm=served.active_llm_model, config=app.state.config_source)  # fmt: skip
+        app.state.metrics.set_info(
+            app_version=__version__, prompt_version=PROMPT_VERSION,
+            llm_model=served.active_llm_model, decider=served.decider_backend,
+            index_collection=app.state.components.collection,
+            config_source=app.state.config_source,
+        )  # fmt: skip
         try:
             yield
         finally:
@@ -272,6 +282,9 @@ def create_app(
     )
     app.add_middleware(RequestIdMiddleware)
     app.state.known_keys = known_key_hashes(settings.api_keys.get_secret_value())
+    # one registry per app: tests build many apps in one process; production builds one
+    app.state.metrics_registry = CollectorRegistry()
+    app.state.metrics = RagMetrics(app.state.metrics_registry)
 
     @app.exception_handler(RateLimitedError)
     async def _too_many(request: Request, exc: RateLimitedError) -> JSONResponse:
@@ -325,6 +338,13 @@ def create_app(
             index_collection=comp.collection,
         )
 
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics(request: Request) -> Response:
+        """Prometheus scrape endpoint (text format). Only reachable inside the compose network
+        and on 127.0.0.1; a public deployment would put it behind the proxy's allow-list."""
+        body, content_type = render(request.app.state.metrics_registry)
+        return Response(body, media_type=content_type)
+
     @app.get("/metadata", tags=["ops"])
     async def metadata(request: Request) -> dict[str, Any]:
         """What is serving right now: versions of the app, prompt, models and index."""
@@ -350,6 +370,8 @@ def create_app(
         """Answer a question about the Egyptian Civil Code with article citations.
         `?stream=true` sends the answer token by token as Server-Sent Events."""
         pipeline = request.app.state.components.pipeline
+        metrics: RagMetrics = request.app.state.metrics
+        backend = request.app.state.settings.llm_backend
         request_id = request_id_var.get()
         if stream:
 
@@ -358,6 +380,7 @@ def create_app(
                     async for event in pipeline.ask_stream(body.question, book=body.book):
                         if event["type"] == "done":
                             event["request_id"] = request_id
+                            metrics.observe_stream_done(event, backend)
                         yield _sse(event)
                 except (APIConnectionError, APIStatusError) as exc:
                     # the 200 status line is already sent; tell the client in the stream itself
@@ -375,6 +398,7 @@ def create_app(
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         result = await pipeline.ask(body.question, book=body.book)
+        metrics.observe_answer(result, backend)
         return AskResponse(
             answer=result.answer,
             language=result.language,

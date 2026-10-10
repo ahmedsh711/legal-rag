@@ -26,6 +26,9 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         incoming = request.headers.get("x-request-id", "")
         request_id = incoming if _SAFE_ID.fullmatch(incoming) else uuid.uuid4().hex
         token = request_id_var.set(request_id)
+        metrics = getattr(request.app.state, "metrics", None)  # RagMetrics, set by create_app
+        if metrics:
+            metrics.inflight.inc()
         start = time.perf_counter()
         try:
             try:
@@ -36,7 +39,12 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
                     {"detail": "Internal server error", "request_id": request_id}, status_code=500
                 )
             # for a stream this is the time to the first byte, not the whole answer
-            elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+            elapsed = time.perf_counter() - start
+            elapsed_ms = round(elapsed * 1000, 1)
+            if metrics:
+                metrics.observe_request(
+                    request.method, request.url.path, response.status_code, elapsed
+                )
             response.headers["X-Request-ID"] = request_id
             response.headers["X-Process-Time-Ms"] = str(elapsed_ms)
             log.info(
@@ -48,4 +56,6 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
             )
             return response
         finally:
+            if metrics:
+                metrics.inflight.dec()
             request_id_var.reset(token)
