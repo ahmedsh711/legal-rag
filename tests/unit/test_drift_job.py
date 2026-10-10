@@ -47,6 +47,28 @@ def test_too_few_current_events_are_not_judged():
 
 def test_textfile_has_one_score_per_test_and_the_alert_flag():
     report = compare(events(300, seed=1), events(300, seed=2))
-    lines = textfile_lines(report, alert=False)
-    assert 'rag_drift_score{feature="lang",test="chi2"}' in "\n".join(lines)
+    lines = textfile_lines(report, alert=False, last_trigger=None)
+    assert 'rag_drift_score{feature="lang",test="chi2",kind="input"}' in "\n".join(lines)
     assert "rag_drift_alert 0" in lines and any(ln.startswith("# HELP") for ln in lines)
+    assert not any(ln.startswith("rag_drift_last_trigger") for ln in lines)  # never triggered
+
+
+def test_the_last_trigger_time_survives_later_quiet_runs():
+    # found live: a second run 80 s later reset "this run triggered" to 0 before the alert's
+    # for: 1m elapsed; the alert now reads the time of the last trigger instead
+    from datetime import UTC, datetime
+
+    report = compare(events(300, seed=1), events(300, seed=2))
+    when = datetime(2026, 10, 10, 13, 9, 52, tzinfo=UTC)
+    lines = textfile_lines(report, alert=False, last_trigger=when)
+    assert f"rag_drift_last_trigger_timestamp_seconds {when.timestamp():.0f}" in lines
+
+
+def test_input_drift_and_behaviour_drift_are_reported_apart():
+    # same questions, but a new model refuses most of them: the inputs did not move, the outputs did
+    report = compare(events(300, seed=1), events(300, seed=2, refused_share=0.9))
+    inputs = [r for r in report.rows if r.kind == "input"]
+    outputs = [r for r in report.rows if r.kind == "behaviour"]
+    assert not any(r.drift for r in inputs)
+    assert any(r.drift for r in outputs) and report.drift
+    assert "behaviour" in report.reason

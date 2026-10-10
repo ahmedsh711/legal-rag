@@ -91,12 +91,14 @@ groups:
           first_action: "lower --max-num-seqs or --max-model-len, or move to a bigger GPU"
           runbook: docs/runbook.md#kvcachenearlyfull
 
+      # money, not tokens: the local vLLM costs nothing per token (found when the Phase 4 load
+      # tests on vLLM fired this alert)
       - alert: DailyTokenBudget
-        expr: sum(increase(rag_llm_tokens_total[24h])) > 2e6
+        expr: sum(increase(rag_llm_tokens_total{backend!="vllm"}[24h])) > 2e6
         for: 10m
         labels: {severity: ticket, kind: cause}
         annotations:
-          summary: "{{ $value | humanize }} LLM tokens in 24 h (budget 2M)"
+          summary: "{{ $value | humanize }} paid LLM tokens in 24 h (budget 2M)"
           first_action: "rag:tokens:1h by backend; a single client looping? (rate-limit logs); a prompt that grew?"
           runbook: docs/runbook.md#dailytokenbudget
 
@@ -109,11 +111,13 @@ groups:
           first_action: "docker compose ps redis; docker logs legal-rag-redis-1"
           runbook: docs/runbook.md#ratelimiterdegraded
 
+      # the drift job exports when drift last passed its storm guard; the alert stays up for an
+      # hour after that (a flag "this run triggered" was reset by the next quiet run, found live)
       - alert: DriftDetected
-        expr: rag_drift_alert == 1
+        expr: (time() - rag_drift_last_trigger_timestamp_seconds) < 3600
         for: 1m
         labels: {severity: ticket, kind: cause}
         annotations:
-          summary: "question drift: {{ $labels.test }} on {{ $labels.feature }}"
-          first_action: "Grafana row 'Drift & quality'; read the drift report; if the topic mix changed, extend the golden set before retraining anything"
+          summary: "drift passed the storm guard {{ $value | humanizeDuration }} ago"
+          first_action: "Grafana row 'Drift & quality' and reports/drift/ (which features, input or behaviour?); input drift: extend the golden set before retraining anything; behaviour drift: what changed in rag_info?"
           runbook: docs/runbook.md#driftdetected

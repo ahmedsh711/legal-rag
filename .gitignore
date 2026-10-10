@@ -32,3 +32,6 @@ reports/eval/*.log
 node_modules/
 .prometheus-multiproc/
 reports/load/*.html
+data/events/
+data/events-live/
+reports/drift/drift_triggers.json
