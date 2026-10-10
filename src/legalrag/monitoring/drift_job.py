@@ -14,8 +14,10 @@ Current: the API's events of the last ``--hours``. Features come in three kinds,
   the current window was served by the reference's model and prompt; otherwise the difference
   is a *change* we made, not drift, and the report says so.
 P-value tests share a Bonferroni-corrected alpha (several tests at 1 % each would raise false
-alarms); distance tests use effect-size thresholds. ``aa`` measures the false-alarm rate of the
-whole procedure on two random halves of one window (the same traffic: every flag is false).
+alarms). Distance measures (JS, Wasserstein, domain AUC) say how *large* a shift is: they flag
+a feature only when its test is significant too (significant AND material). ``aa`` measures the
+false-alarm rate of the whole procedure on two random halves of one window (the same traffic:
+every flag is false).
 Outputs, all from the same numbers:
 - ``reports/drift/<time>.json`` (what a person reads),
 - Prometheus textfile metrics (``rag_drift_*``) for Grafana and the ``DriftDetected`` alert,
@@ -34,7 +36,7 @@ import random
 import sys
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -49,7 +51,7 @@ from legalrag.monitoring.files import write_atomic
 log = get_logger(__name__)
 
 ALPHA = 0.01
-JS_MAX, WASSERSTEIN_MAX, AUC_MAX = 0.1, 0.25, 0.7  # chosen before the data; A/A reports their FPR
+JS_MAX, WASSERSTEIN_MAX, AUC_MAX = 0.1, 0.25, 0.7  # how large is "material"; chosen before the data
 
 
 @dataclass
@@ -144,7 +146,12 @@ def compare(reference: Sequence[PredictionEvent], current: Sequence[PredictionEv
         notes.append(f"behaviour not compared: model or prompt changed "
                      f"({_serving(reference)} -> {_serving(current)}), that is a change, not drift")  # fmt: skip
     rows = _p_rows(reference, current, seed, behaviour, min_samples)
-    rows += _effect_rows(reference, current, seed, behaviour)
+    # significant AND material: an effect size alone fired on 7% of same-traffic splits in the
+    # live A/A check (small windows make big-looking effects from noise); it now only confirms
+    # that a significant shift on the same feature is large enough to matter
+    significant = {r.feature for r in rows if r.drift}
+    rows += [replace(r, drift=r.drift and r.feature in significant)
+             for r in _effect_rows(reference, current, seed, behaviour)]  # fmt: skip
     parts = []
     for kind in ("input", "retrieval", "behaviour"):
         if hits := sorted({f"{r.feature}/{r.test}" for r in rows if r.drift and r.kind == kind}):
@@ -209,7 +216,8 @@ def run(args: argparse.Namespace) -> int:
     now = datetime.now(UTC)
     reference = _load_reference(Path(args.reference))
     since = parse_since(args.since) if args.since else now - timedelta(hours=args.hours)
-    current = read_events(args.events, since=since)
+    until = parse_since(args.until) if args.until else None
+    current = read_events(args.events, since=since, until=until)
     report = compare(reference, current, min_samples=args.min_samples)
     history_path = Path(args.state) / "drift_triggers.json"
     history = _trigger_history(history_path)
@@ -218,6 +226,7 @@ def run(args: argparse.Namespace) -> int:
     if alert:
         history = [*history, now]
     out = {"run_at": now.isoformat(), "window_hours": args.hours, "since": since.isoformat(),
+           "until": until.isoformat() if until else None,
            "triggered": alert, "guard": why, **asdict(report)}  # fmt: skip
     write_atomic(Path(args.out) / f"{now:%Y%m%dT%H%M%SZ}.json", json.dumps(out, indent=2) + "\n")
     if args.textfile:
@@ -241,9 +250,11 @@ def run_aa(args: argparse.Namespace) -> int:
     since = (
         parse_since(args.since) if args.since else datetime.now(UTC) - timedelta(hours=args.hours)
     )
-    current = read_events(args.events, since=since)
+    until = parse_since(args.until) if args.until else None
+    current = read_events(args.events, since=since, until=until)
     rates = aa_check(current, runs=args.runs)
-    out = {"since": since.isoformat(), "events": len(current), "runs": args.runs, "fpr": rates}
+    out = {"since": since.isoformat(), "until": until.isoformat() if until else None,
+           "events": len(current), "runs": args.runs, "fpr": rates}  # fmt: skip
     write_atomic(Path(args.out) / f"aa-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json",
                  json.dumps(out, indent=2) + "\n")  # fmt: skip
     log.info("drift_aa", events=len(current), runs=args.runs, **{"fpr_any": rates.get("any")})
@@ -278,6 +289,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--events", default=s.events_dir)
     p.add_argument("--hours", type=float, default=24)
     p.add_argument("--since", default=None, help="ISO time (UTC if no zone); overrides --hours")
+    p.add_argument("--until", default=None, help="ISO time (UTC if no zone); end of the window")
     p.add_argument("--min-samples", type=int, default=50, help="below this: no statistics")
     p.add_argument("--guard-min-samples", type=int, default=200, help="below this: no trigger")
     p.add_argument("--runs", type=int, default=100, help="aa: random splits")

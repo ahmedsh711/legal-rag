@@ -58,6 +58,9 @@ def test_events_go_to_one_file_per_day_and_read_back_by_time(tmp_path):
         "events-2026-10-01.jsonl", f"events-{new.ts:%Y-%m-%d}.jsonl"]  # fmt: skip
     recent = read_events(tmp_path, since=new.ts - timedelta(hours=1))
     assert [e.request_id for e in recent] == ["req-new"]
+    # a closed window [since, until): how a drill replays one traffic phase
+    window = read_events(tmp_path, since=old.ts, until=new.ts)
+    assert [e.request_id for e in window] == ["req-old"]
 
 
 def test_reference_events_come_from_an_evaluation_run():

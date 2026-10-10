@@ -95,5 +95,17 @@ def test_aa_check_measures_false_alarms_on_two_halves_of_the_same_traffic():
     assert rates["any"] <= 0.2  # one window split in two should rarely look like drift
 
 
+def test_an_effect_size_alone_is_not_drift():
+    # found by the live A/A check: on halves of 100 events Wasserstein > 0.25 sd fired on 7% of
+    # splits of the same traffic while every test stayed at 0%; small windows make big-looking
+    # effects from noise, so an effect counts only when its feature's test is significant too
+    for seed in range(30):
+        cur = events(25, seed=100 + seed)
+        report = compare(events(25, seed=seed), cur, min_samples=1, seed=seed)
+        significant = {r.feature for r in report.rows if r.drift and r.p_value is not None}
+        effects = {r.feature for r in report.rows if r.drift and r.p_value is None}
+        assert effects <= significant, (seed, report.rows)
+
+
 def test_since_without_a_timezone_means_utc():
     assert parse_since("2026-10-10T13:10:00") == datetime(2026, 10, 10, 13, 10, tzinfo=UTC)
