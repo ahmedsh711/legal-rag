@@ -31,3 +31,4 @@ reports/
 !*.tfvars.example
 data/incoming/
 data/airflow/
+serving/nginx/release/

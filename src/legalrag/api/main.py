@@ -447,6 +447,7 @@ def create_app(
         served_prompt = await asyncio.to_thread(prompts.get)  # what the next answer will use
         return {
             "app_version": __version__,
+            "release": served.release,
             "prompt_version": served_prompt.version,
             "prompt_source": served_prompt.source,
             "config_source": request.app.state.config_source,

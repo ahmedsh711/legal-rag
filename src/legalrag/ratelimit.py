@@ -80,7 +80,7 @@ def client_key(api_key: str | None, ip: str | None, known: frozenset[str]) -> st
     """Bucket key: the hashed API key if it was issued, otherwise the client IP.
 
     Unknown keys are ignored, otherwise a client could send a fresh key per request."""
-    # TODO: behind a reverse proxy, take the IP from X-Forwarded-For set by that proxy
+    # behind nginx, uvicorn sets the client IP from X-Forwarded-For (FORWARDED_ALLOW_IPS)
     if api_key and (hashed := _hash(api_key)) in known:
         return f"key:{hashed}"
     return f"ip:{ip or 'unknown'}"

@@ -21,6 +21,13 @@ scrape_configs:
         labels:
           service: legal-rag-api
 
+  # canary of a rollout (profile serving); the release watcher compares it with job "api"
+  - job_name: api-canary
+    static_configs:
+      - targets: ["api-canary:8000"]
+        labels:
+          service: legal-rag-api
+
   # vLLM engine metrics; the target is down unless the llm profile is running
   - job_name: vllm
     static_configs:
