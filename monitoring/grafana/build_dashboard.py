@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 PROM = {"type": "prometheus", "uid": "prometheus"}
+DRIFT_DB = {"type": "grafana-postgresql-datasource", "uid": "drift-db"}
 OUT = Path(__file__).parent / "dashboards" / "legal-rag.json"
 
 
@@ -50,6 +51,13 @@ class Layout:
             "targets": [{"refId": chr(65 + i), "expr": expr, "legendFormat": legend,
                          "datasource": PROM} for i, (expr, legend) in enumerate(targets)],
         }  # fmt: skip
+        self._add(panel, w, 8)
+
+    def sql_table(self, title: str, sql: str, w: int = 24) -> None:
+        """A table straight from Postgres (drift history written by the drift job)."""
+        panel = {"type": "table", "title": title, "datasource": DRIFT_DB,
+                 "targets": [{"refId": "A", "datasource": DRIFT_DB, "editorMode": "code",
+                              "format": "table", "rawQuery": True, "rawSql": sql}]}  # fmt: skip
         self._add(panel, w, 8)
 
 
@@ -133,6 +141,9 @@ def build() -> dict:
     g.chart("Drift score by test", [("rag_drift_score", "{{test}} {{feature}}")], "short", 12)
     g.chart("Drift alerts", [("sum(rag_drift_alert)", "tests firing")], "short", 6, "stat",
             green_red + [{"color": "red", "value": 1}])  # fmt: skip
+    g.sql_table("Drift runs (Postgres: drift_runs)",
+                "SELECT run_at AS \"time\", window_hours, n_current, drift, triggered, reason, guard "
+                "FROM drift_runs ORDER BY run_at DESC LIMIT 20")  # fmt: skip
 
     return {
         "uid": "legal-rag", "title": "legal-rag: service, resources, RAG, drift",

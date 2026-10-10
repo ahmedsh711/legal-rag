@@ -87,6 +87,8 @@ class Settings(BaseSettings):
     feedback_path: str = "data/feedback/feedback.jsonl"
     # one JSON line per answer for drift / drill-down (no question text); "" = off
     events_dir: str = "data/events"
+    # Postgres for drift history (drift_metrics / drift_runs); "" = files and metrics only
+    monitoring_db_url: SecretStr = SecretStr("")
 
     # --- infra ---
     redis_url: str = "redis://127.0.0.1:6379/0"

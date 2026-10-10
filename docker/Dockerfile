@@ -19,18 +19,18 @@ RUN --mount=type=secret,id=local_ca,required=false \
 # 1) dependencies first: this layer is cached until pyproject.toml / uv.lock change
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --no-install-project
+    uv sync --locked --no-dev --group monitoring --no-install-project
 
 # 2) then our code (changes often, rebuilds in seconds); installed non-editable into the venv
 COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-dev --no-editable
+    uv sync --locked --no-dev --group monitoring --no-editable
 
 # ---------- runtime: only the virtualenv, no uv, no build cache, no source tree ----------
 FROM python:3.12-slim AS runtime
 RUN useradd --create-home --uid 1000 app \
- && mkdir -p /app/feedback /home/app/.cache/huggingface \
- && chown -R app:app /app/feedback /home/app/.cache
+ && mkdir -p /app/feedback /app/events /home/app/.cache/huggingface \
+ && chown -R app:app /app/feedback /app/events /home/app/.cache
 # ^ volume mount points must exist and belong to `app`, or Docker creates them owned by root
 WORKDIR /app
 COPY --from=builder --chown=app:app /app/.venv /app/.venv

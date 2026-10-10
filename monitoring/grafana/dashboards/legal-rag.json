@@ -818,6 +818,34 @@
         "w": 6,
         "h": 8
       }
+    },
+    {
+      "type": "table",
+      "title": "Drift runs (Postgres: drift_runs)",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "drift-db"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "drift-db"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT run_at AS \"time\", window_hours, n_current, drift, triggered, reason, guard FROM drift_runs ORDER BY run_at DESC LIMIT 20"
+        }
+      ],
+      "id": 26,
+      "gridPos": {
+        "x": 0,
+        "y": 60,
+        "w": 24,
+        "h": 8
+      }
     }
   ],
   "templating": {

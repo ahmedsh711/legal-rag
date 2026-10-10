@@ -44,6 +44,7 @@ services:
       REDIS_URL: redis://redis:6379/0  # rate-limit buckets
       VLLM_BASE_URL: http://vllm:8000/v1
       FEEDBACK_PATH: /app/feedback/feedback.jsonl
+      EVENTS_DIR: /app/events  # one prediction event per answer (no text): drift job input
       # CONFIG_SOURCE=mlflow (in .env): runtime knobs from models:/legal-rag-config@production
       MLFLOW_TRACKING_URI: http://mlflow:5000
     volumes:
@@ -52,6 +53,7 @@ services:
       # so the non-root app user cannot write the model there.)
       - hf_cache:/home/app/.cache/huggingface
       - feedback:/app/feedback
+      - events:/app/events
       # only on machines with HTTPS inspection: LOCAL_CA_CERT=<path to root CA pem> in .env
       - ${LOCAL_CA_CERT:-./no-local-ca.pem}:/run/local-ca.pem:ro
     ports: ["127.0.0.1:${API_HOST_PORT:-8000}:8000"]  # port 8000 taken on your machine? set API_HOST_PORT
@@ -65,7 +67,7 @@ services:
   # ---------- tracking: MLflow + DVC remote (Phase 1/3) ----------
   postgres:
     image: postgres:17-alpine
-    profiles: [tracking, llm-observability, airflow]
+    profiles: [tracking, monitoring, llm-observability, airflow]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-legalrag}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -221,6 +223,8 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"  # read-only viewers without a login, on localhost only
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/legal-rag.json
+      POSTGRES_USER: ${POSTGRES_USER:-legalrag}  # for the drift-history data source
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -251,6 +255,27 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
     restart: unless-stopped
 
+  # the drift job, as a batch container (same image as the API + the monitoring group):
+  #   docker compose --env-file .env -f docker/compose.yaml --profile monitoring run --rm drift-job
+  # reads the API's events volume, writes the report, the textfile metrics and Postgres rows
+  drift-job:
+    image: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${API_TAG:-dev}
+    profiles: [monitoring]
+    entrypoint: ["python", "-m", "legalrag.monitoring.drift_job"]
+    command: ["--hours", "24", "--events", "/app/events", "--reference", "/app/reference/reference_events.jsonl",
+              "--out", "/app/reports", "--state", "/app/reports", "--textfile", "/textfile/drift.prom"]
+    user: "0"  # writes into Windows bind mounts (reports, textfile), which only root can write
+    environment:
+      MONITORING_DB_URL: postgresql://${POSTGRES_USER:-legalrag}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/monitoring
+    volumes:
+      - events:/app/events:ro
+      - ../data/monitoring:/app/reference:ro
+      - ../reports/drift:/app/reports
+      - ../monitoring/textfile:/textfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # a synthetic user that calls /health from outside the app (relabelled in prometheus.yml)
   blackbox:
     image: prom/blackbox-exporter:v0.28.0
@@ -269,5 +294,6 @@ volumes:
   postgres_data:
   minio_data:
   vllm_cache:
+  events:
   prometheus_data:
   grafana_data:

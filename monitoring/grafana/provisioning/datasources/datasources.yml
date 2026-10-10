@@ -9,3 +9,13 @@ datasources:
     isDefault: true
     jsonData:
       timeInterval: 15s # = scrape interval, so rate() windows are never too short
+  - name: Drift history
+    uid: drift-db
+    type: grafana-postgresql-datasource
+    url: postgres:5432
+    user: $POSTGRES_USER
+    jsonData:
+      database: monitoring
+      sslmode: disable
+    secureJsonData:
+      password: $POSTGRES_PASSWORD
