@@ -1,0 +1,56 @@
+# Continuous training: re-check answer quality when the Airflow monitoring DAG reports drift,
+# every Monday, or by hand. A rebuild then needs a human approval on the "production"
+# environment; the rebuild itself runs in the Airflow reindex DAG, next to the data and Qdrant.
+name: CT
+
+on:
+  repository_dispatch:
+    types: [drift-detected]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why a rebuild is being considered
+        required: false
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install (locked, with eval group)
+        run: uv sync --locked --group eval
+      - name: Record the trigger
+        run: |
+          echo "### Trigger: ${{ github.event_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ github.event.client_payload.reason || inputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: RAGAS gate on the current prompt and model
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LLM_BACKEND: gemini
+          GEMINI_MODEL: gemini-3.1-flash-lite
+          JUDGE_BACKEND: gemini
+          JUDGE_MODEL: gemini-3.1-flash-lite
+          LLM_RPM: "12"
+          JUDGE_RPM: "12"
+        run: uv run python -m legalrag.eval.smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ct-quality-gate
+          path: reports/eval/smoke/
+          if-no-files-found: ignore
+
+  approve-rebuild:
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    environment: production # required reviewers are set on the environment
+    steps:
+      - name: Record the approval
+        run: |
+          echo "Rebuild approved by ${{ github.actor }}." >> "$GITHUB_STEP_SUMMARY"
+          echo "Put the new corpus in data/incoming/civil_code.pdf; the Airflow reindex DAG builds a candidate index, compares it with production and promotes it only if it is not worse." >> "$GITHUB_STEP_SUMMARY"
