@@ -47,6 +47,7 @@ class Answer:
     usage: dict[str, int] = field(default_factory=dict)
     timings_ms: dict[str, float] = field(default_factory=dict)
     decision: Decision | None = None  # rerank + gate, when a decider ran
+    gated: bool = False  # refused by the gate before any LLM call
 
 
 @dataclass
@@ -146,6 +147,7 @@ class RagPipeline:
                 [],
                 timings_ms={**timings, "total": _ms(t0)},
                 decision=ctx.decision,
+                gated=ctx.gated,
             )
 
         t1 = time.perf_counter()

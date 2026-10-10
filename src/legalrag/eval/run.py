@@ -22,6 +22,7 @@ from typing import Any
 
 from legalrag.eval.golden import GoldenItem, load_golden
 from legalrag.eval.metrics import Prediction, gate_sweep, summarize
+from legalrag.eval.pacing import Pacer
 from legalrag.generation import PROMPT_VERSION, format_article
 from legalrag.logging_conf import configure_logging, get_logger
 from legalrag.settings import Settings
@@ -49,6 +50,7 @@ async def predict(pipeline: Any, item: GoldenItem) -> Prediction:
         prompt_tokens=ans.usage.get("prompt_tokens", 0),
         completion_tokens=ans.usage.get("completion_tokens", 0),
         answerable_score=ans.decision.answerable if ans.decision else None,
+        gated=ans.gated,
         decider_cost_usd=ans.decision.cost_usd if ans.decision else 0.0,
     )
 
@@ -60,7 +62,8 @@ async def predict_context(pipeline: Any, item: GoldenItem) -> Prediction:
     return Prediction(
         id=item.id, lang=item.lang, category=item.category, question=item.question,
         gold_articles=item.gold_articles, reference=item.reference, answer="",
-        refused=ctx.gated, cited=[], context_articles=[c.article_number for c in ctx.chunks],
+        refused=ctx.gated, gated=ctx.gated, cited=[],
+        context_articles=[c.article_number for c in ctx.chunks],
         context_texts=[format_article(c) for c in ctx.chunks],
         latency_ms=round((time.perf_counter() - t0) * 1000, 1),
         answerable_score=ctx.decision.answerable if ctx.decision else None,
@@ -69,14 +72,19 @@ async def predict_context(pipeline: Any, item: GoldenItem) -> Prediction:
 
 
 async def run_golden(
-    pipeline: Any, items: Sequence[GoldenItem], concurrency: int = 4, generate: bool = True
+    pipeline: Any,
+    items: Sequence[GoldenItem],
+    concurrency: int = 4,
+    generate: bool = True,
+    requests_per_minute: float | None = None,
 ) -> list[Prediction]:
-    """All items, a few at a time (provider rate limits), results in input order."""
-    gate = asyncio.Semaphore(concurrency)
+    """All items, a few at a time and paced under the LLM's per-minute limit, in input order."""
+    gate, pacer = asyncio.Semaphore(concurrency), Pacer(requests_per_minute if generate else None)
     step = predict if generate else predict_context
 
     async def one(item: GoldenItem) -> Prediction:
         async with gate:
+            await pacer.wait()
             return await step(pipeline, item)
 
     return list(await asyncio.gather(*(one(i) for i in items)))
@@ -175,8 +183,10 @@ def _ragas(preds: list[Prediction], settings: Settings, out: Path, concurrency: 
     from legalrag.eval.ragas_run import make_metrics, score_predictions, summarize_ragas
 
     judge = make_metrics(settings.judge_base_url, settings.judge_api_key,
-                         settings.judge_model, settings.judge_embedding_model)  # fmt: skip
-    rows = asyncio.run(score_predictions(preds, judge, concurrency))
+                         settings.judge_model, settings.judge_embedding_model,
+                         names=[m.strip() for m in settings.ragas_metrics.split(",") if m.strip()],
+                         reasoning_effort=settings.judge_reasoning_effort)  # fmt: skip
+    rows = asyncio.run(score_predictions(preds, judge, concurrency, settings.judge_rpm))
     lines = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
     (out / "ragas.jsonl").write_text(lines, encoding="utf-8", newline="\n")
     return summarize_ragas(rows)
@@ -198,7 +208,8 @@ def main(argv: list[str] | None = None) -> None:
 
         pipeline = build_components(settings).pipeline
         preds = asyncio.run(run_golden(pipeline, load_golden(golden_path), args.concurrency,
-                                       generate=not args.retrieval_only))  # fmt: skip
+                                       generate=not args.retrieval_only,
+                                       requests_per_minute=settings.llm_rpm))  # fmt: skip
     write_predictions(preds, out / "predictions.jsonl")
     if args.retrieval_only:
         summary = summarize_retrieval(preds)

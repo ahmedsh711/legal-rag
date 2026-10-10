@@ -39,8 +39,9 @@ from, the given articles. Ignore generic remarks that make no claim about the la
 
 
 class Judge:
-    def __init__(self, client: Any, model: str):
+    def __init__(self, client: Any, model: str, **extra: Any):
         self.client, self.model = client, model
+        self.extra = extra  # e.g. reasoning_effort="none" for thinking models
 
     async def supported(self, p: Prediction, pad: bool = False) -> int:
         answer = p.answer + (PADDING.get(p.lang, PADDING["en"]) if pad else "")
@@ -52,6 +53,7 @@ class Judge:
             response_format={"type": "json_object"},
             temperature=0,
             max_tokens=600,
+            **self.extra,
         )
         data = json.loads(resp.choices[0].message.content or "{}")
         return 1 if data.get("supported") is True else 0
@@ -153,7 +155,9 @@ def main(argv: list[str] | None = None) -> None:
     rows = [json.loads(x) for x in Path(args.ragas).read_text(encoding="utf-8").splitlines() if x]
     ragas = {r["id"]: r["faithfulness"] for r in rows if r.get("faithfulness") is not None}
     report = asyncio.run(calibrate(
-        preds, read_labels(args.labels), Judge(judge_client, s.judge_model),
+        preds, read_labels(args.labels),
+        Judge(judge_client, s.judge_model, **({"reasoning_effort": s.judge_reasoning_effort}
+                                              if s.judge_reasoning_effort else {})),
         Judge(gen_client, s.active_llm_model), ragas))  # fmt: skip
     Path(args.out).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n")
 
