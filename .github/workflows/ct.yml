@@ -25,9 +25,12 @@ jobs:
       - name: Install (locked, with eval group)
         run: uv sync --locked --group eval
       - name: Record the trigger
+        env: # passed as data, never interpolated into the script
+          TRIGGER: ${{ github.event_name }}
+          REASON: ${{ github.event.client_payload.reason || inputs.reason }}
         run: |
-          echo "### Trigger: ${{ github.event_name }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ github.event.client_payload.reason || inputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Trigger: $TRIGGER" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$REASON" >> "$GITHUB_STEP_SUMMARY"
       - name: RAGAS gate on the current prompt and model
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

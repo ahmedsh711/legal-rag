@@ -77,13 +77,17 @@ def set_share(percent: int, split: Path = SPLIT, container: str = NGINX) -> None
     log.info("canary_share_set", percent=percent)
 
 
-def rollback(front: str = FRONT, streak: int = 100) -> float:
+def rollback(front: str = FRONT, streak: int = 100, timeout_s: float = 60) -> float:
     """Send everything to stable; seconds until `streak` responses in a row came from stable."""
     t0 = time.perf_counter()
     set_share(0)
     in_a_row = 0
     with httpx.Client(timeout=5) as client:
         while in_a_row < streak:
+            if time.perf_counter() - t0 > timeout_s:
+                raise RuntimeError(
+                    f"no {streak} stable responses within {timeout_s} s; check nginx"
+                )
             try:
                 release = client.get(f"{front}/live").headers.get("x-release")
             except httpx.TransportError:  # nginx closes idle keep-alive connections on reload

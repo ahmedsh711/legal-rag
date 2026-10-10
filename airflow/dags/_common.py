@@ -10,10 +10,10 @@ from docker.types import Mount
 
 # path of the repository as the Docker daemon sees it (on Docker Desktop for Windows:
 # /run/desktop/mnt/host/c/...), because task containers are started by the host daemon
-HOST_DIR = os.environ.get("LEGALRAG_HOST_DIR", "/opt/legal-rag")
-IMAGE = os.environ.get("LEGALRAG_IMAGE", "ahmedshobaki/legal-rag-api:dev")
-DOCKER_URL = os.environ.get("DOCKER_URL", "unix://var/run/docker.sock")
-NETWORK = os.environ.get("LEGALRAG_NETWORK", "legal-rag_default")
+HOST_DIR = os.environ.get("LEGALRAG_HOST_DIR") or "/opt/legal-rag"
+IMAGE = os.environ.get("LEGALRAG_IMAGE") or "ahmedshobaki/legal-rag-api:dev"
+DOCKER_URL = os.environ.get("DOCKER_URL") or "unix://var/run/docker.sock"
+NETWORK = os.environ.get("LEGALRAG_NETWORK") or "legal-rag_default"
 
 PRODUCTION_ALIAS = "articles"
 CANDIDATE_ALIAS = "articles_candidate"
