@@ -3,8 +3,11 @@
     export LOADTEST_API_KEYS=$(seq -f "loadtest-%g" 1 100 | paste -sd, -)   # issued keys
     docker compose --env-file .env -f docker/compose.yaml -f docker/compose.vllm.yaml \
         -f docker/compose.loadtest.yaml --profile core --profile llm up -d
-    uv run --group load locust -f loadtest/locustfile.py --headless -u 50 -r 5 -t 4m \
-        --host http://127.0.0.1:8010 --csv reports/load/<name>
+    uv run python loadtest/sample_stats.py --out reports/load/<name>-stats.csv --seconds 490 &
+    LOCUST_STEPS=5,10,20,40 LOCUST_STEP_SECONDS=120 uv run --group load python -m locust \
+        -f loadtest/locustfile.py --headless --host http://127.0.0.1:8010 --csv reports/load/<name>
+    (then loadtest/analyze.py for the per-step table; `python -m locust`, not the locust.exe
+    shim, which hangs on machines whose antivirus holds new executables)
 
 Traffic mix (per user): 80 % /ask (golden questions, Arabic and English), 15 % /ask?stream=true,
 5 % /metadata. Think time 2-5 s: a person reads an answer before asking the next question (it also
@@ -52,6 +55,8 @@ class LegalQuestionUser(HttpUser):
     def _check(self, response: Any) -> None:
         if response.status_code == 429:
             response.failure("429 rate limited")
+        elif response.status_code == 0:  # no response at all: keep the client-side exception
+            response.failure(f"no response: {getattr(response, 'error', None)!r}")
         elif response.status_code != 200:
             response.failure(f"HTTP {response.status_code}")
 

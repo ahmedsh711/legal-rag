@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     embedding_revision: str = "9a0624b896d81da7492a910ffa53731274b6cf3d"  # pragma: allowlist secret
     embedding_device: Literal["cpu", "cuda"] = "cpu"
     query_max_length: int = 512  # questions are short; shorter max length = faster query embedding
+    # questions that queue up while the embedder is busy are embedded together (1 = off).
+    # Phase 4 load test: one-at-a-time embedding was the first bottleneck at 40 users.
+    query_batch_max: int = 16
     # 127.0.0.1, not "localhost": compose publishes ports on IPv4 loopback only, and on Windows
     # "localhost" tries IPv6 (::1) first -> every Qdrant call waited ~2 s (measured 2,069 vs 17 ms)
     qdrant_url: str = "http://127.0.0.1:6333"

@@ -40,6 +40,7 @@ from legalrag.decider.jev import JevDecider
 from legalrag.decider.local import LocalDecider
 from legalrag.generation import PROMPT_VERSION, Generator, make_client
 from legalrag.guardrails import redact_pii
+from legalrag.index.batcher import QueryBatcher
 from legalrag.index.store import alias_target, read_metadata
 from legalrag.ingest.normalize import NORMALIZATION_VERSION
 from legalrag.logging_conf import configure_logging, get_logger, request_id_var
@@ -106,6 +107,8 @@ def build_components(settings: Settings) -> Components:
         settings.query_max_length,
         revision=settings.embedding_revision,
     )
+    if settings.query_batch_max > 1:
+        embedder = QueryBatcher(embedder, max_batch=settings.query_batch_max)
     retriever = Retriever(
         client,
         settings.qdrant_collection_alias,
@@ -171,11 +174,13 @@ async def _close(comp: Components) -> None:
     must not leave the others open."""
     llm = getattr(getattr(comp.pipeline, "generator", None), "client", None)
     decider = getattr(comp.pipeline, "decider", None)  # Jev holds an HTTP client
+    retriever = getattr(comp.pipeline, "retriever", None)  # its QueryBatcher owns a thread
     closers = [
         ("qdrant", getattr(comp.qdrant, "close", None)),
         ("llm", getattr(llm, "close", None)),
         ("decider", getattr(decider, "aclose", None)),
         ("limiter", comp.limiter.aclose if comp.limiter is not None else None),
+        ("embedder", getattr(getattr(retriever, "embedder", None), "close", None)),
     ]
     for name, close in closers:
         if close is None:
