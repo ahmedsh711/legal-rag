@@ -1,21 +1,11 @@
-"""Serving benchmark for the generation backend: TTFT, decode speed and throughput under load.
+"""Serving benchmark for the generation backend: TTFT, decode speed and throughput.
 
     uv run python -m legalrag.eval.llm_bench --name vllm-awq --levels 1 4 8 16 --vram
 
-Every request is a real RAG prompt (the 10 smoke questions with their five articles, built by
-``build_messages``) sent through ``Generator.stream``, the same code path as ``/ask?stream=true``.
-For each concurrency level N, ``--requests`` requests run with exactly N in flight at a time
-(closed loop: it measures capacity, not latency under a given arrival rate; levels above vLLM's
---max-num-seqs only queue inside the server). Each level is warmed up first with N requests
-(CUDA graphs are captured per batch size). Every request gets a unique marker at the start of its
-user message: the system prompt stays shared and cacheable, as in production, but a repeated
-prompt can no longer be served from vLLM's prefix cache and flatter TTFT.
-
-- TTFT: time to first token, what the user feels as "it started answering".
-- decode tok/s: tokens after the first one / time after the first one, per request.
-- throughput tok/s: all completion tokens / wall time of the level, the server's capacity.
-Writes ``reports/eval/llm-bench/<name>.json``. Warm-up requests run first and are not counted
-(the first request pays for CUDA graph capture / connection setup).
+Sends the smoke-set RAG prompts through ``Generator.stream`` with exactly N requests in flight
+(closed loop) and writes ``reports/eval/llm-bench/<name>.json``. Each level is warmed up first
+(CUDA graphs are captured per batch size), and each request gets a unique marker so vLLM's prefix
+cache cannot flatter TTFT.
 """
 
 from __future__ import annotations
@@ -56,9 +46,9 @@ async def measure(generator: Generator, messages: Messages) -> Sample:
         async for _ in stream.tokens():
             if first is None:
                 first = time.perf_counter()
-    except Exception as exc:  # noqa: BLE001 - one overloaded request must not end the benchmark
+    except Exception as exc:  # noqa: BLE001 - one failed request must not end the benchmark
         error = f"{type(exc).__name__}: {exc}"[:200]
-        log.warning("bench_request_failed", error=error)  # a code bug shows up here, not as nulls
+        log.warning("bench_request_failed", error=error)
         return Sample(0.0, 0.0, 0, error)
     end = time.perf_counter()
     first = first or end
@@ -71,7 +61,7 @@ def _p(values: Sequence[float], q: float) -> float | None:
 
 def summarize(samples: Sequence[Sample], wall_s: float, concurrency: int) -> dict[str, Any]:
     ok = [s for s in samples if not s.error]
-    decode = [  # the first token is TTFT; decode speed is the rest over the time after it
+    decode = [  # tokens after the first, over the time after the first
         (s.completion_tokens - 1) / ((s.total_ms - s.ttft_ms) / 1000)
         for s in ok
         if s.completion_tokens > 1 and s.total_ms > s.ttft_ms
@@ -94,10 +84,12 @@ def summarize(samples: Sequence[Sample], wall_s: float, concurrency: int) -> dic
 
 
 def require_answers(level: dict[str, Any], what: str) -> None:
-    """Stop when nothing was answered: a report of nulls from a dead server looks like data."""
+    """Exit when every request failed; a report full of nulls would look like data."""
     if level["requests"] and level["errors"] == level["requests"]:
-        raise SystemExit(f"{what}: all {level['requests']} requests failed "
-                         f"(first error: {level.get('first_error', '?')})")  # fmt: skip
+        raise SystemExit(
+            f"{what}: all {level['requests']} requests failed "
+            f"(first error: {level.get('first_error', '?')})"
+        )
 
 
 async def run_level(
@@ -118,7 +110,7 @@ async def run_level(
 
 
 def _unique(messages: Messages, marker: str) -> Messages:
-    """A copy whose user message starts with a marker: unique after the shared system prompt."""
+    """Prefix the user message so only the shared system prompt hits the prefix cache."""
     return [
         {**m, "content": f"(request {marker})\n{m['content']}"} if m["role"] == "user" else m
         for m in messages
@@ -130,8 +122,11 @@ def gpu_memory_mib() -> dict[str, int] | None:
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10, check=True,
-        ).stdout  # fmt: skip
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        ).stdout
         used, total = (int(x) for x in out.strip().splitlines()[0].split(","))
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):  # no GPU, "[N/A]", empty
         return None
@@ -153,8 +148,12 @@ async def _bench(args: argparse.Namespace) -> dict[str, Any]:
     client = make_client(s.active_llm_base_url, s.active_llm_api_key, s.llm_timeout_s)
     generator = Generator(client, s.active_llm_model, s.llm_max_tokens, s.llm_temperature)
     prompts = smoke_prompts()
-    result: dict[str, Any] = {"backend": s.llm_backend, "model": s.active_llm_model,
-                              "max_tokens": s.llm_max_tokens, "levels": []}  # fmt: skip
+    result: dict[str, Any] = {
+        "backend": s.llm_backend,
+        "model": s.active_llm_model,
+        "max_tokens": s.llm_max_tokens,
+        "levels": [],
+    }
     try:
         warmup = await run_level(generator, prompts, concurrency=1, requests=args.warmup)
         require_answers(warmup, "warm-up")
@@ -181,12 +180,13 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     configure_logging("INFO")
     result = asyncio.run(_bench(args))
-    if args.vram:  # vLLM reserves its share of VRAM up front: this is not "idle" memory
+    if args.vram:  # vLLM preallocates VRAM, so this is not idle usage
         result["gpu_after_run"] = gpu_memory_mib()
     out = Path("reports/eval/llm-bench")
     out.mkdir(parents=True, exist_ok=True)
-    (out / f"{args.name}.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8",
-                                           newline="\n")  # fmt: skip
+    (out / f"{args.name}.json").write_text(
+        json.dumps(result, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
 
 
 if __name__ == "__main__":

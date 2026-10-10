@@ -68,7 +68,7 @@ async def test_concurrency_must_be_positive(bad):
 
 
 def test_a_level_where_every_request_failed_stops_the_benchmark():
-    # found in review: a dead server used to produce a report full of nulls, exit code 0
+    # a dead server must not produce a report full of nulls with exit code 0
     with pytest.raises(SystemExit, match="all 2 requests failed"):
         require_answers({"requests": 2, "errors": 2}, "warm-up")
     require_answers({"requests": 2, "errors": 1}, "level 4")  # partial failure: keep going

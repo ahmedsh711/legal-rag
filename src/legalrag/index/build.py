@@ -1,13 +1,6 @@
-"""Build the Qdrant index from articles.json (a DVC stage).
+"""Build the Qdrant index from articles.json (DVC stage, params from params.yaml -> index).
 
-Steps: read articles -> texts per language -> bge-m3 dense + sparse -> new collection
-``articles_<hash>`` -> metadata -> move the alias ``articles`` to it -> write a manifest.
-
-The collection name is a hash of everything that changes the vectors (articles.json, embedding
-model and revision, max_length, normalization version), so the same inputs always give the same collection
-and a changed input never overwrites what is being served.
-
-    uv run python -m legalrag.index.build            # uses params.yaml -> index
+uv run python -m legalrag.index.build
 """
 
 from __future__ import annotations
@@ -58,10 +51,17 @@ def load_index_params(path: str | Path) -> IndexParams:
 
 
 def collection_name(alias: str, articles_md5: str, params: IndexParams) -> str:
+    """Hash every input that changes the vectors, so equal inputs map to one collection."""
     key = "|".join(
-        [articles_md5, params.embedding_model, params.embedding_revision,
-         str(params.max_length), NORMALIZATION_VERSION, TEXT_FORMAT_VERSION]
-    )  # fmt: skip
+        [
+            articles_md5,
+            params.embedding_model,
+            params.embedding_revision,
+            str(params.max_length),
+            NORMALIZATION_VERSION,
+            TEXT_FORMAT_VERSION,
+        ]
+    )
     return f"{alias}_{hashlib.sha1(key.encode()).hexdigest()[:10]}"
 
 
@@ -86,12 +86,18 @@ def build_index(
         raise ValueError("no articles to index; refusing to publish an empty index")
     name = collection_name(params.alias, articles_md5, params)
     if done := finished_build(client, name):
-        # Same inputs as a finished build: reuse it. Deleting and refilling it would take the
-        # serving index down for the whole embedding run. (embedder is not needed here.)
+        # same inputs as a finished build: reuse it, a rebuild would take the serving index down
+        # for the whole embedding run (embedder is None here)
         previous = swap_alias(client, params.alias, name)
         log.info("index_reused", collection=name, previous=previous)
-        return {**done, "collection": name, "alias": params.alias, "previous_collection": previous,
-                "embed_seconds": 0.0, "reused": True}  # fmt: skip
+        return {
+            **done,
+            "collection": name,
+            "alias": params.alias,
+            "previous_collection": previous,
+            "embed_seconds": 0.0,
+            "reused": True,
+        }
     t0 = time.perf_counter()
     embeddings = embedder.encode([text for _, text in _texts(articles)], params.batch_size)
     embed_s = time.perf_counter() - t0
@@ -120,13 +126,18 @@ def build_index(
         points=points,
         embed_seconds=round(embed_s, 1),
     )
-    return {**metadata, "collection": name, "alias": params.alias, "previous_collection": previous,
-            "embed_seconds": round(embed_s, 1), "reused": False}  # fmt: skip
+    return {
+        **metadata,
+        "collection": name,
+        "alias": params.alias,
+        "previous_collection": previous,
+        "embed_seconds": round(embed_s, 1),
+        "reused": False,
+    }
 
 
 def finished_build(client: Any, name: str) -> dict[str, Any] | None:
-    """Metadata of a completed build of this exact collection, else None (metadata is written
-    last, so a crashed build has none)."""
+    """Metadata of a completed build, else None; a crashed build has none (it is written last)."""
     return read_metadata(client, name) if client.collection_exists(name) else None
 
 
@@ -159,8 +170,8 @@ def main(argv: list[str] | None = None) -> None:
 
     client = QdrantClient(url=settings.qdrant_url, timeout=60)
     md5 = hashlib.md5(path.read_bytes()).hexdigest()
-    # DVC runs this stage every time (Qdrant is state DVC cannot see); when the index is already
-    # there it is reused in seconds, so only load the 2.3 GB model when we really embed.
+    # DVC reruns this stage every time since it cannot see Qdrant state; only load the 2.3 GB
+    # model when there is something to embed
     needed = not finished_build(client, collection_name(params.alias, md5, params))
     embedder = (
         BgeM3Embedder(
@@ -182,13 +193,13 @@ def main(argv: list[str] | None = None) -> None:
         for k, v in manifest.items()
         if k not in ("embed_seconds", "previous_collection", "git_sha", "reused")
     }
-    # deterministic -> DVC out; newline="\n" so the bytes (and DVC's hash) are the same on every
-    # OS, and a final newline so the end-of-file pre-commit hook never rewrites it
+    # DVC output: LF keeps the hash identical across OSes, the final newline keeps the
+    # end-of-file hook from rewriting it
     Path(args.manifest).write_text(
         json.dumps(stable, indent=2) + "\n", encoding="utf-8", newline="\n"
     )
     Path(args.metrics).parent.mkdir(parents=True, exist_ok=True)
-    metrics = {k: manifest[k] for k in ("points", "embed_seconds", "reused")}  # of THIS run
+    metrics = {k: manifest[k] for k in ("points", "embed_seconds", "reused")}  # this run only
     Path(args.metrics).write_text(
         json.dumps(metrics, indent=2) + "\n", encoding="utf-8", newline="\n"
     )

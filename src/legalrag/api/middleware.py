@@ -1,8 +1,4 @@
-"""Request-id middleware: one id per request, in every log line, the response header and (later)
-the Langfuse trace. An incoming ``X-Request-ID`` is reused so ids can cross service boundaries.
-
-It is also the last line of defence: an unexpected exception becomes a clean 500 that carries the
-request id (so the user can report it) but never the traceback (that stays in the logs)."""
+"""Request-id and timing middleware; unhandled errors become a 500 without the traceback."""
 
 from __future__ import annotations
 
@@ -18,7 +14,7 @@ from legalrag.api.schemas import REQUEST_ID_PATTERN
 from legalrag.logging_conf import get_logger, request_id_var
 
 log = get_logger("legalrag.api")
-_SAFE_ID = re.compile(REQUEST_ID_PATTERN)  # never trust a header blindly: it ends up in logs
+_SAFE_ID = re.compile(REQUEST_ID_PATTERN)  # the incoming id ends up in logs, validate it
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):

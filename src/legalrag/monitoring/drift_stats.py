@@ -1,22 +1,8 @@
-"""Drift tests: is today's traffic still like the traffic the system was evaluated on?
+"""Label-free drift statistics between a reference window and the current one.
 
-No labels are needed: these compare the *inputs* and the system's own *behaviour* (language mix,
-question length, which book retrieval lands in, the decider's answerability score) between a
-reference window and the current one.
-
-- ``ks_test``: two numeric samples, any shape difference (Kolmogorov-Smirnov), p-value.
-- ``wasserstein_distance``: how far the numbers moved, in reference standard deviations
-  (an effect size: KS on 10,000 samples flags differences too small to matter).
-- ``chi2_test``: two category mixes (language, book), p-value. A two-sample test: both windows
-  are samples, the reference is not treated as the truth. Categories too rare for the
-  approximation (expected count < 5) are merged into "other" first.
-- ``js_divergence``: the same comparison as a bounded distance 0..1 (Jensen-Shannon, base 2).
-- ``mmd_test``: several numbers at once (maximum mean discrepancy, RBF kernel, permutation
-  p-value): catches a shift no single feature shows.
-- ``domain_classifier_auc``: train a model to tell reference from current; AUC ~0.5 = cannot,
-  so no drift; close to 1 = the two windows are easy to tell apart.
-- ``StormGuard``: drift is a *signal*, not an order. It may trigger an alert or a retraining
-  only with enough samples, after a cooldown, and a few times a day at most.
+Numeric features: KS test plus Wasserstein distance as the effect size. Category mixes: two-sample
+chi-square plus Jensen-Shannon divergence. Several features at once: MMD with a permutation
+p-value and a domain classifier's AUC.
 """
 
 from __future__ import annotations
@@ -30,7 +16,7 @@ import numpy as np
 from scipy import stats
 
 MIN_EXPECTED = 5  # chi-square's approximation needs this many expected counts per cell
-MMD_MAX_POINTS = 1000  # per window: MMD costs O(n^2), a random subsample keeps it seconds
+MMD_MAX_POINTS = 1000  # per window; MMD is O(n^2)
 
 
 @dataclass(frozen=True)
@@ -43,7 +29,7 @@ class TestResult:
 
 
 def ks_test(ref: Sequence[float], cur: Sequence[float], alpha: float = 0.01) -> TestResult:
-    """Do two numeric samples come from the same distribution? (Kolmogorov-Smirnov)"""
+    """Two-sample Kolmogorov-Smirnov test."""
     res = stats.ks_2samp(ref, cur)
     return TestResult(float(res.statistic), float(res.pvalue), bool(res.pvalue < alpha))
 
@@ -66,7 +52,7 @@ def chi2_test(ref: Mapping[str, int], cur: Mapping[str, int], alpha: float = 0.0
     _, table = _aligned(ref, cur)
     expected = table.sum(1, keepdims=True) * table.sum(0, keepdims=True) / table.sum()
     rare = (expected < MIN_EXPECTED).any(axis=0)
-    if rare.any():  # one "other" column instead of several near-empty ones
+    if rare.any():  # merge rare categories into one "other" column
         table = np.column_stack([table[:, ~rare], table[:, rare].sum(1)])
     table = table[:, table.sum(0) > 0]
     if table.shape[1] < 2:
@@ -92,14 +78,14 @@ def _subsample(x: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     return x[rng.choice(len(x), MMD_MAX_POINTS, replace=False)] if len(x) > MMD_MAX_POINTS else x
 
 
-def mmd_test(ref: np.ndarray, cur: np.ndarray, n_perm: int = 2000, alpha: float = 0.01,
-             seed: int = 0) -> TestResult:  # fmt: skip
+def mmd_test(
+    ref: np.ndarray, cur: np.ndarray, n_perm: int = 2000, alpha: float = 0.01, seed: int = 0
+) -> TestResult:
     """Maximum mean discrepancy with an RBF kernel and a permutation p-value.
 
-    The kernel matrix of the pooled points is computed once; each permutation only re-weights
-    it (MMD^2 = w^T K w with weights +1/n_x and -1/n_y), done for many permutations at a time.
-    The smallest possible p-value is 1 / (n_perm + 1), so n_perm must be large enough for alpha
-    (found in review: 200 permutations could never reach a Bonferroni-corrected 0.0017)."""
+    The pooled kernel matrix is computed once; each permutation only re-weights it
+    (MMD^2 = w^T K w, weights +1/n_x and -1/n_y). The smallest possible p-value is
+    1 / (n_perm + 1), so n_perm must be large enough to reach a Bonferroni-corrected alpha."""
     if 1 / (n_perm + 1) >= alpha:
         raise ValueError(f"{n_perm} permutations cannot give p < {alpha}; use more")
     rng = np.random.default_rng(seed)
@@ -138,12 +124,15 @@ def domain_classifier_auc(ref: np.ndarray, cur: np.ndarray, seed: int = 0) -> fl
 
 @dataclass(frozen=True)
 class StormGuard:
-    min_samples: int = 200  # fewer questions than this: the test has no power, stay quiet
-    cooldown: timedelta = timedelta(hours=6)  # one trigger, then time to look at it
-    daily_cap: int = 2  # never more than this per 24 h, whatever the tests say
+    """Decides whether a detected drift may trigger alerts or retraining."""
 
-    def allow(self, drifted: bool, samples: int, now: datetime,
-              history: Sequence[datetime]) -> tuple[bool, str]:  # fmt: skip
+    min_samples: int = 200  # below this the tests have too little power
+    cooldown: timedelta = timedelta(hours=6)
+    daily_cap: int = 2  # triggers per 24 h
+
+    def allow(
+        self, drifted: bool, samples: int, now: datetime, history: Sequence[datetime]
+    ) -> tuple[bool, str]:
         if samples < self.min_samples:
             return False, f"too few samples ({samples} < {self.min_samples})"
         if not drifted:

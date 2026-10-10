@@ -1,5 +1,5 @@
-# Runs on `git commit`. Pin revs so the whole team formats identically (course session 2).
-# "The hook is a convenience, the CI workflow is the guarantee" (GitHub Actions deck).
+# Runs on `git commit`. Revs are pinned so everyone formats identically; CI enforces the same
+# lint and format checks.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.10
@@ -23,6 +23,5 @@ repos:
     hooks:
       - id: detect-secrets
         args: [--baseline, .secrets.baseline]
-        # lock files, DVC pointers and the index manifest hold content hashes (random-looking,
-        # not secrets)
-        exclude: ^(uv\.lock|dvc\.lock|.*\.dvc|data/processed/index_manifest\.json|docs/research/.*)$
+        # lock files, DVC pointers and the index manifest hold content hashes, not secrets
+        exclude: ^(uv\.lock|dvc\.lock|.*\.dvc|data/processed/index_manifest\.json)$

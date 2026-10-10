@@ -1,19 +1,4 @@
-"""Input guardrails, run on every question before retrieval, the decider or the LLM see it.
-
-- PII (Egyptian national ID, mobile number, email) is replaced by a typed placeholder, so it never
-  reaches an external API (Gemini, OpenRouter/Jev) or a log line. The question is still answered.
-- Prompt injection (override / prompt leak / role play / chat-template delimiters, Arabic and
-  English) is blocked: the user gets the normal refusal and no tokens are spent.
-
-Every guard that fires is reported by name ("pii:phone", "injection:override"), so the API can
-count them and the evaluation can measure detection rate and false-positive rate per guard.
-
-These are regular expressions, chosen on purpose: microseconds per question, no model, no
-download, and their mistakes are readable. They miss paraphrased or obfuscated attacks
-(measured in reports/module-4.md); prompt rule 7 and the citation check stay behind them.
-Presidio was rejected: its value is NER for names/addresses, it has no Arabic model, and the
-three PII types that matter here are fixed-format numbers that a pattern finds exactly.
-"""
+"""Input guardrails: PII redaction and prompt-injection detection, run before retrieval."""
 
 from __future__ import annotations
 
@@ -24,11 +9,10 @@ from dataclasses import dataclass
 
 from legalrag.ingest.normalize import normalize_for_search
 
-_DIGITS = str.maketrans(  # Arabic-Indic, Persian and fullwidth digits -> 0-9, one char for one
+_DIGITS = str.maketrans(  # Arabic-Indic, Persian and fullwidth digits -> 0-9, one-to-one
     "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹０１２３４５６７８９", "012345678901234567890123456789"
 )
-# zero-width and direction marks: invisible, meaningless here, and a classic way to split a word
-# ("ig​nore") so a pattern no longer sees it
+# zero-width and direction marks, often used to split a word so a pattern misses it
 _INVISIBLE = re.compile("[​-‏‪-‮⁠-⁤﻿]")
 _QUOTES = str.maketrans({"‘": "'", "’": "'", "ʼ": "'"})
 
@@ -38,15 +22,13 @@ PII_PATTERNS: dict[str, re.Pattern[str]] = {
         r"(?<!\d)[23]\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{7}(?!\d)"
     ),
     "phone": re.compile(r"(?<![\d+])(?:\+20|0020|20|0)[\s-]?1[0125](?:[\s-]?\d){8}(?!\d)"),
-    # bounded parts (RFC limits): no slow backtracking on a long run of letters without "@"
+    # bounded parts (RFC limits) avoid slow backtracking on long input without "@"
     "email": re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}"),
 }
 
-# Matched against _fold(text): Arabic spelling folded (أ→ا, ة→ه, ى→ي, no diacritics), lower case,
-# so the Arabic patterns are written in that folded form.
-# Each pattern needs a sign that the target is the assistant ("your rules", "previous
-# instructions", "you are now an AI"): legal questions say "ignore the clause" or "you are now
-# the tenant", and those must pass (tested in tests/unit/test_guardrails.py).
+# Patterns run on _fold(text), so Arabic ones are written folded (أ→ا, ة→ه, ى→ي, no diacritics).
+# Each needs the assistant as target ("your rules", "you are now an AI"): legal questions such as
+# "ignore the clause" or "you are now the tenant" must pass.
 _EN_NOUN = r"(?:instructions?|rules|prompts?|directions|guidelines|directives)\b"
 _EN_EARLIER = r"(?:previous|prior|above|earlier|preceding)"
 _EN_AI = r"(?:assistant|ai|bot|chatbot|model|poet|unrestricted|unfiltered|jailbroken)\b"
@@ -108,11 +90,10 @@ INJECTION_PATTERNS: dict[str, list[re.Pattern[str]]] = {
             _AND + r"من\s+الان\s+(?:فصاعدا\s+)?(?:انت|ستكون|ستصبح|تصرف)\s+(?:\S+\s+){0,3}?" + _AR_AI
         ),
         re.compile(_AND + r"تظاهر\s+(?:بانك|انك)"),
-        re.compile(
-            _AND + r"(?:العب|خذ)\s+دور\b"
-        ),  # not مثل: "مثل دور" also means "such as the role"
+        # not مثل: "مثل دور" also means "such as the role"
+        re.compile(_AND + r"(?:العب|خذ)\s+دور\b"),
     ],
-    "delimiter": [  # pieces of a chat template or of our own prompt, typed by the user
+    "delimiter": [  # chat-template or prompt delimiters typed by the user
         re.compile(r"</?\s*(?:system|articles|assistant|user|instructions?)\s*>"),
         re.compile(r"\[/?inst\]"),
         re.compile(r"<\|im_(?:start|end)\|>"),
@@ -144,14 +125,13 @@ def redact_pii(text: str) -> tuple[str, list[str]]:
 
 
 def _fold(text: str) -> str:
-    """One spelling for everything the patterns compare: no invisible characters, NFKC (fullwidth
-    and presentation forms -> plain letters), straight quotes, folded Arabic, lower case."""
+    """Matching form: strip invisible chars, NFKC, straight quotes, fold Arabic, lowercase."""
     text = unicodedata.normalize("NFKC", _INVISIBLE.sub("", text)).translate(_QUOTES)
     return normalize_for_search(text).lower()
 
 
 def detect_injection(text: str) -> list[str]:
-    """Which injection kinds the text matches (empty list = none)."""
+    """Injection kinds the text matches."""
     folded = _fold(text)
     return [
         kind

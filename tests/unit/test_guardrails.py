@@ -76,7 +76,7 @@ def test_injections_are_detected_in_both_languages(text):
         "هل يجوز للقاضي أن يتجاهل الشرط الجزائي؟",
         "هل يلتزم الوكيل باتباع تعليمات الموكل؟",
         "ما هي القواعد العامة لتقادم الالتزامات؟",
-        # found by code review: legal sentences the first patterns blocked
+        # legal questions phrased like an override
         "ما حكم الوكيل مثل دور المحامي في العقد؟",
         "If the landlord sells, you are now the tenant of the buyer?",
         "What are the original rules on rent?",

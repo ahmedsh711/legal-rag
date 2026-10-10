@@ -75,8 +75,7 @@ async def test_scores_go_back_to_the_traces_and_the_mean_to_prometheus():
 
 
 async def test_the_rate_applies_to_judgeable_answers_and_failures_are_counted():
-    # found in review: sampling before dropping refusals shrank the real sample; a failed
-    # judge call vanished from the mean instead of being reported
+    # refusals are dropped before sampling; a failed judge call is counted, not skipped
     class FlakyMetric:
         async def ascore(self, **kwargs):
             from types import SimpleNamespace
@@ -89,8 +88,9 @@ async def test_the_rate_applies_to_judgeable_answers_and_failures_are_counted():
         generation(10 + i, answer=REFUSAL_EN) for i in range(10)
     ]
     gens.append(generation(99, question="What is a lease?"))
-    summary, lines = await run_online_eval(gens, {"faithfulness": FlakyMetric()}, FakeLangfuse(),
-                                           rate=1.0)  # fmt: skip
+    summary, lines = await run_online_eval(
+        gens, {"faithfulness": FlakyMetric()}, FakeLangfuse(), rate=1.0
+    )
     assert summary["sampled"] == 11 and summary["scored"] == 10 and summary["unscored"] == 1
     assert "rag_eval_unscored 1" in lines
     half = await run_online_eval(

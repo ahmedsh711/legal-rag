@@ -17,11 +17,23 @@ def metrics():
 
 
 def answer(**kw) -> Answer:
-    base = {"question": "q", "answer": "a [Art. 1]", "language": "en", "sources": [],
-            "context": [], "refused": False, "invalid_citations": [],
-            "usage": {"prompt_tokens": 1200, "completion_tokens": 40},
-            "timings_ms": {"guard": 0.1, "retrieve": 250.0, "decide": 400.0, "generate": 900.0,
-                           "total": 1550.0}}  # fmt: skip
+    base = {
+        "question": "q",
+        "answer": "a [Art. 1]",
+        "language": "en",
+        "sources": [],
+        "context": [],
+        "refused": False,
+        "invalid_citations": [],
+        "usage": {"prompt_tokens": 1200, "completion_tokens": 40},
+        "timings_ms": {
+            "guard": 0.1,
+            "retrieve": 250.0,
+            "decide": 400.0,
+            "generate": 900.0,
+            "total": 1550.0,
+        },
+    }
     return Answer(**{**base, **kw})
 
 
@@ -44,9 +56,12 @@ def test_an_answer_records_stages_tokens_outcome_and_decision(metrics):
 
 def test_every_fired_guard_is_counted_and_unknown_names_cannot_add_series(metrics):
     m, reg = metrics
-    m.observe_answer(answer(refused=True, gated=True,
-                            guardrails=["pii:phone", "gate:unanswerable", "made-up:guard"]),
-                     backend="vllm")  # fmt: skip
+    m.observe_answer(
+        answer(
+            refused=True, gated=True, guardrails=["pii:phone", "gate:unanswerable", "made-up:guard"]
+        ),
+        backend="vllm",
+    )
     assert value(reg, "rag_guardrail_total", guard="pii:phone") == 1
     assert value(reg, "rag_guardrail_total", guard="gate:unanswerable") == 1
     assert value(reg, "rag_guardrail_total", guard="other") == 1  # bounded label set
@@ -64,8 +79,13 @@ def test_requests_are_labelled_by_route_not_by_raw_path(metrics):
 
 def test_a_stream_records_time_to_first_token(metrics):
     m, reg = metrics
-    done = {"type": "done", "refused": False, "guardrails": [], "usage": {"prompt_tokens": 10,
-            "completion_tokens": 5}, "timings_ms": {"ttft": 310.0, "total": 900.0}}  # fmt: skip
+    done = {
+        "type": "done",
+        "refused": False,
+        "guardrails": [],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        "timings_ms": {"ttft": 310.0, "total": 900.0},
+    }
     m.observe_stream_done(done, backend="vllm")
     assert value(reg, "rag_ttft_seconds_sum") == pytest.approx(0.31)
     assert value(reg, "rag_llm_tokens_total", backend="vllm", type="completion") == 5
@@ -73,8 +93,14 @@ def test_a_stream_records_time_to_first_token(metrics):
 
 def test_render_exposes_the_text_format(metrics):
     m, reg = metrics
-    m.set_info(app_version="0.3.0", prompt_version="v3", llm_model="m", decider="jev",
-               index_collection="articles_x", config_source="env")  # fmt: skip
+    m.set_info(
+        app_version="0.3.0",
+        prompt_version="v3",
+        llm_model="m",
+        decider="jev",
+        index_collection="articles_x",
+        config_source="env",
+    )
     body, content_type = render(reg)
     assert content_type.startswith("text/plain") and b"rag_info{" in body
 
@@ -89,9 +115,14 @@ def test_answers_carry_a_bounded_prompt_version(metrics):
 
 def test_a_stream_records_its_stages_and_errors_are_counted(metrics):
     m, reg = metrics
-    done = {"type": "done", "refused": False, "guardrails": [], "usage": {},
-            "prompt_version": "v3",
-            "timings_ms": {"guard": 0.1, "retrieve": 200.0, "ttft": 300.0, "total": 900.0}}  # fmt: skip
+    done = {
+        "type": "done",
+        "refused": False,
+        "guardrails": [],
+        "usage": {},
+        "prompt_version": "v3",
+        "timings_ms": {"guard": 0.1, "retrieve": 200.0, "ttft": 300.0, "total": 900.0},
+    }
     m.observe_stream_done(done, backend="vllm")
     assert value(reg, "rag_stage_seconds_count", stage="retrieve") == 1
     m.observe_stream_error()

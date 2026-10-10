@@ -1,9 +1,9 @@
-"""A stand-in for Slack/Discord: receives Alertmanager webhooks and records each one.
+"""Local Alertmanager webhook receiver, used in place of Slack/Discord.
 
-    python monitoring/alert_sink.py            # listens on :8080, appends to /data/alerts.jsonl
+    python monitoring/alert_sink.py    # listens on :8080, appends to $ALERT_LOG
 
-One JSON line per alert per delivery (channel = /page or /ticket, status firing/resolved, name,
-labels, first action). Standard library only, so it runs in the plain python image.
+Writes one JSON line per alert per delivery: channel (/page or /ticket), status, alert name,
+labels, summary and first action. Standard library only, so it runs in the stock python image.
 """
 
 from __future__ import annotations
@@ -35,11 +35,11 @@ class Sink(BaseHTTPRequestHandler):
         with open(OUT, "a", encoding="utf-8") as f:
             f.write("".join(line + "\n" for line in lines))
         for line in lines:
-            print(line, flush=True)  # noqa: T201 - the container log is the point
+            print(line, flush=True)  # noqa: T201 - stdout is the container log
         self.send_response(200)
         self.end_headers()
 
-    def log_message(self, *args: object) -> None:  # the JSON lines above are the log
+    def log_message(self, *args: object) -> None:  # no access log; the JSON lines cover it
         pass
 
 

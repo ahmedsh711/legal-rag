@@ -1,20 +1,17 @@
-# One compose file, many profiles, so the laptop only runs what the current phase needs.
+# Local stack. Start only the profiles you need:
 #   docker compose -f docker/compose.yaml --profile core up -d
-# Profiles: core | tracking | llm | monitoring | llm-observability | airflow | serving
-# Services are added phase by phase (see task_plan.md). Phase 4: llm (vLLM on the GPU);
-# Phase 5: monitoring (Prometheus, Alertmanager, Grafana, exporters), llm-observability (Langfuse).
+# Profiles: core | tracking | llm | monitoring | llm-observability | airflow
 name: legal-rag
 
 services:
   # ---------- core: what /ask needs ----------
-  # Ports are published on 127.0.0.1 only: these services have no auth (or dev passwords), so
-  # nobody else on the Wi-Fi should reach them. Containers talk to each other by service name.
+  # Host ports bind to 127.0.0.1 only: these services have no auth or use dev passwords.
   qdrant:
     image: qdrant/qdrant:v1.19.2  # keep within one minor version of qdrant-client in uv.lock
     profiles: [core]
     ports: ["127.0.0.1:6333:6333", "127.0.0.1:6334:6334"]
     volumes: [qdrant_data:/qdrant/storage]
-    healthcheck:  # the image has bash but no curl: "is the port accepting connections?"
+    healthcheck:  # no curl in the image; check that the port accepts connections
       test: ["CMD", "bash", "-c", ":> /dev/tcp/127.0.0.1/6333"]
       interval: 5s
       timeout: 3s
@@ -44,20 +41,19 @@ services:
       REDIS_URL: redis://redis:6379/0  # rate-limit buckets
       VLLM_BASE_URL: http://vllm:8000/v1
       FEEDBACK_PATH: /app/feedback/feedback.jsonl
-      EVENTS_DIR: /app/events  # one prediction event per answer (no text): drift job input
+      EVENTS_DIR: /app/events  # one prediction event per answer (no text), read by drift-job
       # CONFIG_SOURCE=mlflow (in .env): runtime knobs from models:/legal-rag-config@production
       MLFLOW_TRACKING_URI: http://mlflow:5000
       LANGFUSE_HOST: http://langfuse-web:3000  # traces, when LANGFUSE_*_KEY are set in .env
     volumes:
-      # bge-m3 (~2.3 GB) is downloaded once into this volume, not baked into the image.
-      # (A Windows bind mount was tried: it appears as root:root 755 inside the container,
-      # so the non-root app user cannot write the model there.)
+      # bge-m3 (~2.3 GB) downloads here once. Named volume, not a bind mount: Windows bind
+      # mounts show up as root:root 755 and the non-root app user cannot write to them.
       - hf_cache:/home/app/.cache/huggingface
       - feedback:/app/feedback
       - events:/app/events
       # only on machines with HTTPS inspection: LOCAL_CA_CERT=<path to root CA pem> in .env
       - ${LOCAL_CA_CERT:-./no-local-ca.pem}:/run/local-ca.pem:ro
-    ports: ["127.0.0.1:${API_HOST_PORT:-8000}:8000"]  # port 8000 taken on your machine? set API_HOST_PORT
+    ports: ["127.0.0.1:${API_HOST_PORT:-8000}:8000"]  # set API_HOST_PORT if 8000 is taken
     depends_on:
       qdrant:
         condition: service_healthy
@@ -65,7 +61,7 @@ services:
         condition: service_started
     restart: unless-stopped
 
-  # ---------- tracking: MLflow + DVC remote (Phase 1/3) ----------
+  # ---------- tracking: MLflow + DVC remote ----------
   postgres:
     image: postgres:17-alpine
     profiles: [tracking, monitoring, llm-observability, airflow]
@@ -86,9 +82,9 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # S3-compatible object store: DVC remote, MLflow artifacts, Langfuse events.
-  # MinIO withdrew its community images from Docker Hub in 2025; this is the frozen Bitnami
-  # build of MinIO (fine for local dev). Production would use AWS S3 or a maintained store.
+  # S3-compatible store for the DVC remote, MLflow artifacts and Langfuse events.
+  # Upstream MinIO no longer publishes community images on Docker Hub; this is Bitnami's frozen
+  # build, fine for local dev only.
   minio:
     image: bitnamilegacy/minio:2025.7.23
     profiles: [tracking, llm-observability]
@@ -105,9 +101,9 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Experiment tracking + model registry. Runs/params/metrics in Postgres, artifacts in MinIO.
-  # The server proxies artifacts (--serve-artifacts is the default), so clients only need
-  # MLFLOW_TRACKING_URI; the S3 credentials stay here. "-full" = Postgres + S3 drivers included.
+  # Tracking + model registry: metadata in Postgres, artifacts in MinIO. The server proxies
+  # artifacts, so clients need only MLFLOW_TRACKING_URI and never see the S3 credentials.
+  # The -full image includes the Postgres and S3 drivers.
   mlflow:
     image: ghcr.io/mlflow/mlflow:v3.17.0-full
     profiles: [tracking]
@@ -118,7 +114,7 @@ services:
       - --port=5000
       - --backend-store-uri=postgresql+psycopg2://${POSTGRES_USER:-legalrag}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/mlflow
       - --artifacts-destination=s3://mlflow
-      # MLflow rejects unknown Host headers (DNS-rebinding protection); allow our names
+      # MLflow rejects unknown Host headers (DNS-rebinding protection)
       - --allowed-hosts=mlflow:5000,localhost:5000,127.0.0.1:5000
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
@@ -138,22 +134,21 @@ services:
       start_period: 30s
     restart: unless-stopped
 
-  # ---------- llm: our own model server on the GPU (Phase 4) ----------
-  # vLLM speaks the OpenAI API, so the app switches to it with LLM_BACKEND=vllm and nothing else.
-  # Sized for a 4 GB laptop GPU (RTX 3050): Qwen2.5-1.5B-Instruct with 4-bit AWQ weights,
-  # 78 % of VRAM (Windows keeps part of it for the desktop), a 4,096-token window (our longest
-  # prompt is 1,896 Qwen tokens + up to 800 answer tokens) and at most 8 sequences decoded together.
+  # ---------- llm: local vLLM server on the GPU ----------
+  # OpenAI-compatible; the API switches to it with LLM_BACKEND=vllm (see compose.vllm.yaml).
+  # Sized for a 4 GB RTX 3050: Qwen2.5-1.5B-Instruct AWQ (4-bit), 78 % of VRAM (Windows keeps
+  # some for the desktop), 4,096-token context (longest prompt is 1,896 tokens + up to 800
+  # generated), at most 8 concurrent sequences.
   vllm:
     image: vllm/vllm-openai:v0.30.0
     profiles: [llm]
-    # same start-up script as the API: trusts a local HTTPS-inspection CA if one is mounted,
-    # then runs the image's own command (`vllm serve ...`)
+    # the API's entrypoint: trusts a mounted HTTPS-inspection CA, then runs `vllm serve`
     entrypoint: ["sh", "/usr/local/bin/ca-entrypoint.sh", "vllm", "serve"]
     environment:
       HF_HUB_DISABLE_XET: "1"  # plain HTTPS download, so the trusted bundle above applies
     command:
       - --model=Qwen/Qwen2.5-1.5B-Instruct-AWQ
-      - --revision=3ecffa0ceb27851800f45519bab9c457a04405e1  # pinned, like bge-m3
+      - --revision=3ecffa0ceb27851800f45519bab9c457a04405e1  # pinned commit
       - --tokenizer-revision=3ecffa0ceb27851800f45519bab9c457a04405e1
       - --quantization=awq_marlin  # Marlin kernels: fast 4-bit matmul on Ampere (sm_86)
       - --gpu-memory-utilization=0.78
@@ -182,9 +177,8 @@ services:
       start_period: 300s
     restart: unless-stopped
 
-  # ---------- monitoring: metrics, dashboards, alerts (Phase 5) ----------
-  # Prometheus pulls /metrics from the API, vLLM, the exporters; Alertmanager routes the alerts
-  # its rules fire; Grafana draws it all from files in monitoring/ (nothing configured by hand).
+  # ---------- monitoring: metrics, dashboards, alerts, logs ----------
+  # All configuration is provisioned from monitoring/; nothing is set up by hand in the UIs.
   prometheus:
     image: prom/prometheus:v3.15.0
     profiles: [monitoring]
@@ -206,7 +200,7 @@ services:
     ports: ["127.0.0.1:9093:9093"]
     restart: unless-stopped
 
-  # stands in for Slack/Discord: records every alert delivery (monitoring/alerts/alerts.jsonl)
+  # local webhook receiver in place of Slack/Discord; logs to monitoring/alerts/alerts.jsonl
   alert-sink:
     image: python:3.12-slim
     profiles: [monitoring]
@@ -223,7 +217,7 @@ services:
     profiles: [monitoring]
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
-      GF_AUTH_ANONYMOUS_ENABLED: "true"  # read-only viewers without a login, on localhost only
+      GF_AUTH_ANONYMOUS_ENABLED: "true"  # anonymous viewers are read-only; port is localhost-only
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/legal-rag.json
       GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:?set GRAFANA_DB_PASSWORD in .env}  # read-only role
@@ -231,12 +225,12 @@ services:
       - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
-    ports: ["127.0.0.1:3001:3000"]  # 3000 is kept for Langfuse
+    ports: ["127.0.0.1:3001:3000"]  # 3000 is Langfuse
     depends_on: [prometheus]
     restart: unless-stopped
 
-  # the machine (Docker Desktop's Linux VM) + the textfile collector: batch jobs (nightly
-  # evaluation, drift) leave their last numbers as *.prom files in monitoring/textfile
+  # host metrics plus the textfile collector (*.prom files the batch jobs write to
+  # monitoring/textfile)
   node-exporter:
     image: prom/node-exporter:v1.12.1
     profiles: [monitoring]
@@ -257,16 +251,16 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
     restart: unless-stopped
 
-  # the drift job, as a batch container (same image as the API + the monitoring group):
+  # Batch drift job (API image). Reads the events volume; writes the report, textfile metrics
+  # and Postgres rows.
   #   docker compose --env-file .env -f docker/compose.yaml --profile monitoring run --rm drift-job
-  # reads the API's events volume, writes the report, the textfile metrics and Postgres rows
   drift-job:
     image: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${API_TAG:-dev}
     profiles: [monitoring]
     entrypoint: ["python", "-m", "legalrag.monitoring.drift_job"]
     command: ["--hours", "24", "--events", "/app/events", "--reference", "/app/reference/reference_events.jsonl",
               "--out", "/app/reports", "--state", "/app/reports", "--textfile", "/textfile/drift.prom"]
-    user: "0"  # writes into Windows bind mounts (reports, textfile), which only root can write
+    user: "0"  # Windows bind mounts (reports, textfile) are writable by root only
     environment:
       MONITORING_DB_URL: postgresql://${POSTGRES_USER:-legalrag}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/monitoring
     volumes:
@@ -278,14 +272,13 @@ services:
       postgres:
         condition: service_healthy
 
-  # a synthetic user that calls /health from outside the app (relabelled in prometheus.yml)
+  # probes /health from outside the app (blackbox-health job in prometheus.yml)
   blackbox:
     image: prom/blackbox-exporter:v0.28.0
     profiles: [monitoring]
     restart: unless-stopped
 
-  # logs: Loki stores them, Alloy ships every legal-rag container's stdout to it. Lighter than an
-  # ELK stack (no full-text index: labels + grep-like filters), and Grafana already reads it.
+  # Logs: Alloy ships stdout of the services listed in config.alloy to Loki.
   loki:
     image: grafana/loki:3.7.8
     profiles: [monitoring]
@@ -304,11 +297,10 @@ services:
     depends_on: [loki]
     restart: unless-stopped
 
-  # ---------- llm-observability: Langfuse v4 (Phase 5) ----------
-  # Traces of every answer (one span per stage, the LLM call with tokens and cost), scores,
-  # and prompt management with labels. Reuses our Postgres (database "langfuse"), Redis and MinIO
-  # (bucket "langfuse"); adds ClickHouse for the trace data. First start is headless: organisation,
-  # project, API keys and an admin user come from LANGFUSE_INIT_* (values in .env).
+  # ---------- llm-observability: Langfuse v4 ----------
+  # Traces (one span per stage, LLM calls with tokens and cost), scores and prompt labels.
+  # Shares Postgres (db "langfuse"), Redis and MinIO (bucket "langfuse"); ClickHouse stores traces.
+  # Org, project, API keys and the admin user are created on first start from LANGFUSE_INIT_*.
   langfuse-worker:
     image: langfuse/langfuse-worker:4.46.0
     profiles: [llm-observability]

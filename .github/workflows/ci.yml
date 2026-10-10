@@ -1,7 +1,5 @@
-# Continuous integration: runs on every pull request and on pushes to main.
-#   lint -> test (coverage gate in pyproject.toml) -> ragas-smoke (quality gate) + image (build,
-#   import check, push to Docker Hub on main only).
-# A PR can merge only when all four are green (branch protection on main).
+# lint -> test (coverage gate in pyproject.toml) -> ragas-smoke + image (pushed on main only).
+# monitoring-config runs in parallel. Branch protection on main requires these checks.
 name: CI
 
 on:
@@ -27,25 +25,27 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - name: Install (exactly what uv.lock says)
+      - name: Install (locked)
         run: uv sync --locked
       - name: Ruff lint
         run: uv run ruff check src tests loadtest
       - name: Ruff format check
         run: uv run ruff format --check src tests loadtest
 
-  # alert rules and Prometheus/Alertmanager config are code too: validated and unit-tested
   monitoring-config:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: promtool check config + rule unit tests
         run: |
-          docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/etc/prometheus:ro"             prom/prometheus:v3.15.0 check config /etc/prometheus/prometheus.yml
-          docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/etc/prometheus:ro"             prom/prometheus:v3.15.0 test rules /etc/prometheus/tests/alerts_test.yml
+          docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v3.15.0 check config /etc/prometheus/prometheus.yml
+          docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v3.15.0 test rules /etc/prometheus/tests/alerts_test.yml
       - name: amtool check-config
         run: |
-          docker run --rm --entrypoint amtool -v "$PWD/monitoring/alertmanager:/etc/alertmanager:ro"             prom/alertmanager:v0.34.1 check-config /etc/alertmanager/alertmanager.yml
+          docker run --rm --entrypoint amtool -v "$PWD/monitoring/alertmanager:/etc/alertmanager:ro" \
+            prom/alertmanager:v0.34.1 check-config /etc/alertmanager/alertmanager.yml
 
   test:
     needs: lint
@@ -55,14 +55,13 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - name: Install (eval + monitoring groups, so MLflow/RAGAS and drift code are tested too)
+      - name: Install (locked, with eval and monitoring groups)
         run: uv sync --locked --group eval --group monitoring
       - name: Tests with coverage gate
         run: uv run pytest
 
-  # Quality gate: the current prompt + generation model on 10 frozen golden questions, judged by
-  # RAGAS (faithfulness >= 0.75, gold citation >= 0.8). It spends free-tier quota, so on a PR it
-  # runs only when something that changes answers changed; on main it always runs.
+  # RAGAS gate on 10 frozen golden questions (faithfulness >= 0.75, gold citation >= 0.8).
+  # Uses free-tier quota: on PRs it runs only when answer-affecting files change; always on main.
   ragas-smoke:
     needs: test
     runs-on: ubuntu-latest
@@ -79,8 +78,7 @@ jobs:
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          # anything that can change an answer or its scoring: prompt/pipeline code, settings
-          # (model knobs), the eval package, the frozen set, dependencies, this workflow
+          # files that can change an answer or its score
           pattern='^(src/legalrag/(generation|pipeline|guardrails|retrieval|settings)\.py|src/legalrag/eval/.*\.py|data/golden/smoke\.jsonl|pyproject\.toml|uv\.lock|\.github/workflows/ci\.yml)$'
           if git diff --name-only "$BASE" HEAD | grep -qE "$pattern"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -119,8 +117,8 @@ jobs:
           path: reports/eval/smoke/
           if-no-files-found: ignore
 
-  # Build the image every time (a broken Dockerfile fails the PR), check it starts Python and
-  # imports the app, and push exactly that image on main: sha-<commit> (immutable) + latest.
+  # Built on every run so a broken Dockerfile fails the PR. On main, the tested image is pushed
+  # as sha-<commit> (immutable) and latest.
   image:
     needs: test
     runs-on: ubuntu-latest

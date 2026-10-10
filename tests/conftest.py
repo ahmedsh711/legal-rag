@@ -49,17 +49,43 @@ def art(n: int, ar: str, en: str, **kw) -> Article:
 
 
 SAMPLE_ARTICLES = [
-    art(147, "العقد شريعة المتعاقدين فلا يجوز نقضه ولا تعديله", "The contract makes the law of the parties",
-        book="الكتاب الأول", section="الفصل الأول: العقد", topic="آثار العقد"),
-    art(374, "يتقادم الالتزام بانقضاء خمس عشرة سنة", "The term of prescription for obligations is fifteen years",
-        book="الكتاب الأول", topic="التقادم المسقط"),
-    art(418, "البيع عقد يلتزم به البائع أن ينقل للمشتري ملكية شيء", "Sale is a contract whereby the vendor transfers ownership",
-        book="الكتاب الثاني", topic="البيع"),
-    art(558, "الإيجار عقد يلتزم المؤجر بمقتضاه أن يمكن المستأجر من الانتفاع", "A lease is a contract by which the lessor undertakes",
-        book="الكتاب الثاني", topic="الإيجار"),
-    Article(article_number=60, is_repealed=True, note="Articles 54-80 have been repealed by Presidential Decree.",
-            source_page=7, book=""),
-]  # fmt: skip
+    art(
+        147,
+        "العقد شريعة المتعاقدين فلا يجوز نقضه ولا تعديله",
+        "The contract makes the law of the parties",
+        book="الكتاب الأول",
+        section="الفصل الأول: العقد",
+        topic="آثار العقد",
+    ),
+    art(
+        374,
+        "يتقادم الالتزام بانقضاء خمس عشرة سنة",
+        "The term of prescription for obligations is fifteen years",
+        book="الكتاب الأول",
+        topic="التقادم المسقط",
+    ),
+    art(
+        418,
+        "البيع عقد يلتزم به البائع أن ينقل للمشتري ملكية شيء",
+        "Sale is a contract whereby the vendor transfers ownership",
+        book="الكتاب الثاني",
+        topic="البيع",
+    ),
+    art(
+        558,
+        "الإيجار عقد يلتزم المؤجر بمقتضاه أن يمكن المستأجر من الانتفاع",
+        "A lease is a contract by which the lessor undertakes",
+        book="الكتاب الثاني",
+        topic="الإيجار",
+    ),
+    Article(
+        article_number=60,
+        is_repealed=True,
+        note="Articles 54-80 have been repealed by Presidential Decree.",
+        source_page=7,
+        book="",
+    ),
+]
 
 
 @pytest.fixture

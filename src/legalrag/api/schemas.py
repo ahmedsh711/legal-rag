@@ -1,5 +1,4 @@
-"""Request and response contracts. Validation here keeps bad input away from the model and the
-token budget: an invalid request gets a 422 and never reaches Qdrant or the LLM."""
+"""API request and response models; invalid input is rejected with a 422 before any model call."""
 
 from __future__ import annotations
 
@@ -9,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from legalrag.ingest.normalize import has_arabic, has_latin
 
-REQUEST_ID_PATTERN = r"^[A-Za-z0-9._-]{8,64}$"  # letters, digits, . _ - only: safe in logs/headers
+REQUEST_ID_PATTERN = r"^[A-Za-z0-9._-]{8,64}$"  # safe in logs and headers
 
 
 class AskRequest(BaseModel):

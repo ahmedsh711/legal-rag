@@ -14,8 +14,7 @@ from legalrag.eval.track import (  # noqa: E402
 
 @pytest.fixture
 def tracking(tmp_path, monkeypatch):
-    # MLflow keeps global state: a tracking URI, the active experiment id, and artifacts under
-    # ./mlruns of the current directory. Isolate all three per test.
+    # MLflow keeps a global tracking URI, active experiment and ./mlruns; isolate all three
     monkeypatch.chdir(tmp_path)
     uri = f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}"
     monkeypatch.setenv("MLFLOW_TRACKING_URI", uri)
@@ -52,10 +51,20 @@ def test_register_cli_promotes_exactly_the_evaluated_config(tracking, monkeypatc
     from legalrag.eval.track import main
     from legalrag.settings import get_settings
 
-    run_id = log_eval_run("legal-rag-test", "jev", params={"decider_backend": "jev"},
-                          summary={"all": {"mrr": 1.0}}, tags={"eval_mode": "end_to_end"})  # fmt: skip
-    retrieval_only = log_eval_run("legal-rag-test", "ret", params={"decider_backend": "jev"},
-                                  summary={}, tags={"eval_mode": "retrieval_only"})  # fmt: skip
+    run_id = log_eval_run(
+        "legal-rag-test",
+        "jev",
+        params={"decider_backend": "jev"},
+        summary={"all": {"mrr": 1.0}},
+        tags={"eval_mode": "end_to_end"},
+    )
+    retrieval_only = log_eval_run(
+        "legal-rag-test",
+        "ret",
+        params={"decider_backend": "jev"},
+        summary={},
+        tags={"eval_mode": "retrieval_only"},
+    )
     monkeypatch.setenv("MLFLOW_CONFIG_MODEL_NAME", "rag-config-cli")
     get_settings.cache_clear()
     try:

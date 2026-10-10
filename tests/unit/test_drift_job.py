@@ -13,21 +13,41 @@ from legalrag.monitoring.events import PredictionEvent
 BOOKS = ["Book 1", "Book 2", "Book 3", "Book 4"]
 
 
-def events(n: int, seed: int, ar_share: float = 0.5, books: list[str] = BOOKS,
-           chars: tuple[int, int] = (20, 80), refused_share: float = 0.1,
-           llm_model: str = "m", prompt_version: str = "v3") -> list[PredictionEvent]:  # fmt: skip
+def events(
+    n: int,
+    seed: int,
+    ar_share: float = 0.5,
+    books: list[str] = BOOKS,
+    chars: tuple[int, int] = (20, 80),
+    refused_share: float = 0.1,
+    llm_model: str = "m",
+    prompt_version: str = "v3",
+) -> list[PredictionEvent]:
     rng = random.Random(seed)
     out = []
     for i in range(n):
         lang = "ar" if rng.random() < ar_share else "en"
         length = rng.randint(*chars)
-        out.append(PredictionEvent(
-            request_id=f"r{seed}-{i}", endpoint="ask", lang=lang, question_chars=length,
-            question_words=max(1, length // 6), pii_redacted=False, top_articles=[1],
-            top_book=rng.choice(books), answerable_score=None,
-            refused=rng.random() < refused_share, guardrails=[], timings_ms={},
-            prompt_version=prompt_version, llm_model=llm_model, index_collection="c",
-            decider="none"))  # fmt: skip
+        out.append(
+            PredictionEvent(
+                request_id=f"r{seed}-{i}",
+                endpoint="ask",
+                lang=lang,
+                question_chars=length,
+                question_words=max(1, length // 6),
+                pii_redacted=False,
+                top_articles=[1],
+                top_book=rng.choice(books),
+                answerable_score=None,
+                refused=rng.random() < refused_share,
+                guardrails=[],
+                timings_ms={},
+                prompt_version=prompt_version,
+                llm_model=llm_model,
+                index_collection="c",
+                decider="none",
+            )
+        )
     return out
 
 
@@ -42,8 +62,9 @@ def test_traffic_like_the_reference_is_not_drift():
 
 
 def test_a_topic_and_language_shift_is_drift_and_names_the_features():
-    shifted = events(300, seed=3, ar_share=0.9, books=["Book 4"], chars=(60, 160),
-                     refused_share=0.6)  # fmt: skip
+    shifted = events(
+        300, seed=3, ar_share=0.9, books=["Book 4"], chars=(60, 160), refused_share=0.6
+    )
     report = compare(events(300, seed=1), shifted)
     assert report.drift and {"lang", "top_book", "question_chars", "refused"} <= flagged(report)
 
@@ -58,7 +79,7 @@ def test_the_three_kinds_are_reported_apart():
 
 
 def test_a_model_change_is_not_called_behaviour_drift():
-    # found in review: comparing a vLLM window with a Gemini reference is a change, not drift
+    # a vLLM window vs a Gemini reference is a model change, not drift
     current = events(300, seed=2, refused_share=0.9, llm_model="vllm-qwen")
     report = compare(events(300, seed=1), current)
     assert not any(r.kind == "behaviour" for r in report.rows)
@@ -96,9 +117,8 @@ def test_aa_check_measures_false_alarms_on_two_halves_of_the_same_traffic():
 
 
 def test_an_effect_size_alone_is_not_drift():
-    # found by the live A/A check: on halves of 100 events Wasserstein > 0.25 sd fired on 7% of
-    # splits of the same traffic while every test stayed at 0%; small windows make big-looking
-    # effects from noise, so an effect counts only when its feature's test is significant too
+    # small windows make big-looking effects from noise, so an effect counts only when its
+    # feature's test is significant too
     for seed in range(30):
         cur = events(25, seed=100 + seed)
         report = compare(events(25, seed=seed), cur, min_samples=1, seed=seed)

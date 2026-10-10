@@ -1,7 +1,6 @@
-"""Drift history in Postgres: one row per run (drift_runs), one per test (drift_metrics).
+"""Drift history in Postgres: one row per run (``drift_runs``) and per test (``drift_metrics``).
 
-Grafana reads these tables directly (a SQL panel), so "how did drift look over the last weeks?"
-needs no extra service. The tables are created on first use.
+Grafana queries these tables directly. They are created on first use.
 """
 
 from __future__ import annotations
@@ -39,11 +38,21 @@ def store_run(db_url: str, run: Mapping[str, Any]) -> None:
         cur.execute(SCHEMA)
         cur.execute(
             "INSERT INTO drift_runs VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (run["run_at"], run["window_hours"], run["n_reference"], run["n_current"],
-             run["drift"], run["triggered"], run["reason"], run["guard"]),
-        )  # fmt: skip
+            (
+                run["run_at"],
+                run["window_hours"],
+                run["n_reference"],
+                run["n_current"],
+                run["drift"],
+                run["triggered"],
+                run["reason"],
+                run["guard"],
+            ),
+        )
         cur.executemany(
             "INSERT INTO drift_metrics VALUES (%s, %s, %s, %s, %s, %s)",
-            [(run["run_at"], r["feature"], r["test"], r["statistic"], r["p_value"], r["drift"])
-             for r in run["rows"]],
-        )  # fmt: skip
+            [
+                (run["run_at"], r["feature"], r["test"], r["statistic"], r["p_value"], r["drift"])
+                for r in run["rows"]
+            ],
+        )

@@ -1,7 +1,7 @@
-# Answer with the local vLLM server instead of a hosted API (no quota, no per-token cost):
+# Generate with the local vLLM server instead of a hosted API. Retrieval, decider and guards
+# are unchanged.
 #   docker compose --env-file .env -f docker/compose.yaml -f docker/compose.vllm.yaml \
 #     --profile core --profile llm up -d
-# Only the generation backend changes; retrieval, decider and guards are the same.
 services:
   api:
     environment:

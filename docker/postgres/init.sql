@@ -1,4 +1,4 @@
--- One Postgres instance, several databases (handbook: reuse the MLflow Postgres for drift metrics, Langfuse, Airflow).
+-- Extra databases on the shared Postgres instance (mlflow is created from POSTGRES_DB).
 CREATE DATABASE langfuse;
 CREATE DATABASE airflow;
 CREATE DATABASE monitoring;

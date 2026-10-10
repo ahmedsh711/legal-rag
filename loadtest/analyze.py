@@ -1,10 +1,10 @@
-"""Per-step table of a stepped load test: which stage slows down, and which resource is full.
+"""Per-step table for a stepped load test: which stage slows down and which resource saturates.
 
     docker logs --since 30m legal-rag-api-1 2>&1 | grep '"event": "answered"' > reports/load/<name>-api.jsonl
     uv run python loadtest/analyze.py --name <name> --steps 5,10,20,40 --hold 120
 
-Joins three sources by time: the API's own "answered" log lines (per-stage timings of every
-answer), Locust's history CSV (when the test started) and sample_stats.py (CPU, vLLM queue, GPU).
+Joins three sources on time: the API's "answered" log lines (per-stage timings), Locust's
+history CSV (test start time) and the sample_stats.py CSV (CPU, vLLM queue, GPU).
 Writes reports/load/<name>-steps.md.
 """
 
@@ -43,9 +43,11 @@ def load_samples(path: Path) -> list[dict]:
 
 
 def step_rows(answers: list[dict], samples: list[dict], steps: list[int], hold: int) -> list[str]:
-    lines = ["| users | answers/s | retrieve p50 / p95 ms | generate p50 / p95 ms | total p50 / p95 ms"
-             " | API CPU % mean / max | vLLM running max · waiting max | GPU util % mean |",
-             "|---|---|---|---|---|---|---|---|"]  # fmt: skip
+    lines = [
+        "| users | answers/s | retrieve p50 / p95 ms | generate p50 / p95 ms | total p50 / p95 ms"
+        " | API CPU % mean / max | vLLM running max · waiting max | GPU util % mean |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
     for k, users in enumerate(steps):
         lo, hi = k * hold, (k + 1) * hold
         a = [r for r in answers if lo <= r["t"] < hi]

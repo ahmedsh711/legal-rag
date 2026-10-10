@@ -1,11 +1,11 @@
-"""Dashboard as code: writes monitoring/grafana/dashboards/legal-rag.json.
+"""Generate monitoring/grafana/dashboards/legal-rag.json.
 
     uv run python monitoring/grafana/build_dashboard.py
 
-Grafana loads that file at start-up (provisioning), so the dashboard lives in git, is reviewed
-like code and survives `docker compose down -v`. Four rows, top to bottom in the order you
-debug: is it serving (Service) -> is a box full (Resources) -> which stage or guard changed
-(RAG behaviour) -> are the questions or the quality drifting (Drift & quality).
+Grafana provisions the file at start-up, so the dashboard is versioned with the code and
+survives `docker compose down -v`. Rows follow the debugging order: Service (is it serving)
+-> Resources (what is saturated) -> RAG behaviour (which stage or guard changed) -> Drift &
+quality.
 """
 
 from __future__ import annotations
@@ -40,24 +40,47 @@ class Layout:
         self._add({"type": "row", "title": title, "collapsed": False, "panels": []}, 24, 1)
         self.x, self.y = 0, self.y + 1
 
-    def chart(self, title: str, targets: list[tuple[str, str]], unit: str = "short",
-              w: int = 8, kind: str = "timeseries", thresholds: list | None = None) -> None:  # fmt: skip
+    def chart(
+        self,
+        title: str,
+        targets: list[tuple[str, str]],
+        unit: str = "short",
+        w: int = 8,
+        kind: str = "timeseries",
+        thresholds: list | None = None,
+    ) -> None:
         defaults: dict = {"unit": unit}
         if thresholds:
             defaults["thresholds"] = {"mode": "absolute", "steps": thresholds}
         panel = {
-            "type": kind, "title": title, "datasource": PROM,
+            "type": kind,
+            "title": title,
+            "datasource": PROM,
             "fieldConfig": {"defaults": defaults, "overrides": []},
-            "targets": [{"refId": chr(65 + i), "expr": expr, "legendFormat": legend,
-                         "datasource": PROM} for i, (expr, legend) in enumerate(targets)],
-        }  # fmt: skip
+            "targets": [
+                {"refId": chr(65 + i), "expr": expr, "legendFormat": legend, "datasource": PROM}
+                for i, (expr, legend) in enumerate(targets)
+            ],
+        }
         self._add(panel, w, 8)
 
     def sql_table(self, title: str, sql: str, w: int = 24) -> None:
         """A table straight from Postgres (drift history written by the drift job)."""
-        panel = {"type": "table", "title": title, "datasource": DRIFT_DB,
-                 "targets": [{"refId": "A", "datasource": DRIFT_DB, "editorMode": "code",
-                              "format": "table", "rawQuery": True, "rawSql": sql}]}  # fmt: skip
+        panel = {
+            "type": "table",
+            "title": title,
+            "datasource": DRIFT_DB,
+            "targets": [
+                {
+                    "refId": "A",
+                    "datasource": DRIFT_DB,
+                    "editorMode": "code",
+                    "format": "table",
+                    "rawQuery": True,
+                    "rawSql": sql,
+                }
+            ],
+        }
         self._add(panel, w, 8)
 
 
@@ -70,18 +93,54 @@ def build() -> dict:
         [('sum by (status) (rag:request_rate:5m{endpoint="ask"})', "{{status}}")],
         "reqps",
     )
-    g.chart("/ask latency p50 / p95 (SLO p95 < 5 s)",
-            [('histogram_quantile(0.5, sum by (le) (rate(rag_request_seconds_bucket{endpoint="ask"}[5m])))', "p50"),
-             ("rag:ask_latency_p95:5m", "p95")], "s")  # fmt: skip
-    g.chart("5xx ratio (5 min)", [("rag:ask_error_ratio:5m", "5xx")], "percentunit", 4, "stat",
-            green_red + [{"color": "red", "value": 0.01}])  # fmt: skip
-    g.chart("Time to first token p95", [("rag:ttft_p95:5m", "ttft")], "s", 4, "stat",
-            green_red + [{"color": "red", "value": 2}])  # fmt: skip
+    g.chart(
+        "/ask latency p50 / p95 (SLO p95 < 5 s)",
+        [
+            (
+                'histogram_quantile(0.5, sum by (le) (rate(rag_request_seconds_bucket{endpoint="ask"}[5m])))',
+                "p50",
+            ),
+            ("rag:ask_latency_p95:5m", "p95"),
+        ],
+        "s",
+    )
+    g.chart(
+        "5xx ratio (5 min)",
+        [("rag:ask_error_ratio:5m", "5xx")],
+        "percentunit",
+        4,
+        "stat",
+        green_red + [{"color": "red", "value": 0.01}],
+    )
+    g.chart(
+        "Time to first token p95",
+        [("rag:ttft_p95:5m", "ttft")],
+        "s",
+        4,
+        "stat",
+        green_red + [{"color": "red", "value": 2}],
+    )
     g.chart("Requests in flight", [("sum(rag_inflight_requests)", "in flight")], "short", 6)
-    g.chart("Health probe (blackbox)", [('probe_success{job="blackbox-health"}', "up")], "short",
-            6, "stat", [{"color": "red", "value": None}, {"color": "green", "value": 1}])  # fmt: skip
-    g.chart("What is serving", [("rag_info", "{{llm_model}} · prompt {{prompt_version}} · "
-                                 "{{decider}} · {{index_collection}}")], "short", 12, "stat")  # fmt: skip
+    g.chart(
+        "Health probe (blackbox)",
+        [('probe_success{job="blackbox-health"}', "up")],
+        "short",
+        6,
+        "stat",
+        [{"color": "red", "value": None}, {"color": "green", "value": 1}],
+    )
+    g.chart(
+        "What is serving",
+        [
+            (
+                "rag_info",
+                "{{llm_model}} · prompt {{prompt_version}} · {{decider}} · {{index_collection}}",
+            )
+        ],
+        "short",
+        12,
+        "stat",
+    )
 
     g.row("Resources: which box is full?")
     g.chart(
@@ -106,8 +165,12 @@ def build() -> dict:
         ],
     )
     g.chart("vLLM KV cache used", [("max(vllm:kv_cache_usage_perc)", "kv cache")], "percentunit", 6)
-    g.chart("Rate limiter", [("sum by (outcome) (rate(rag_ratelimit_total[5m]))", "{{outcome}}")],
-            "reqps", 6)  # fmt: skip
+    g.chart(
+        "Rate limiter",
+        [("sum by (outcome) (rate(rag_ratelimit_total[5m]))", "{{outcome}}")],
+        "reqps",
+        6,
+    )
 
     g.row("RAG behaviour: which stage, which guard?")
     g.chart("Stage p95", [("rag:stage_latency_p95:5m", "{{stage}}")], "s")
@@ -136,33 +199,73 @@ def build() -> dict:
     )
 
     g.row("Drift & quality: are the questions or the answers changing?")
-    g.chart("Nightly RAGAS faithfulness", [("rag_eval_faithfulness", "faithfulness")], "percentunit",
-            6, "stat", [{"color": "red", "value": None}, {"color": "green", "value": 0.8}])  # fmt: skip
+    g.chart(
+        "Nightly RAGAS faithfulness",
+        [("rag_eval_faithfulness", "faithfulness")],
+        "percentunit",
+        6,
+        "stat",
+        [{"color": "red", "value": None}, {"color": "green", "value": 0.8}],
+    )
     g.chart("Drift score by test", [("rag_drift_score", "{{test}} {{feature}}")], "short", 12)
-    g.chart("Drift alerts", [("sum(rag_drift_alert)", "tests firing")], "short", 6, "stat",
-            green_red + [{"color": "red", "value": 1}])  # fmt: skip
-    g.sql_table("Drift runs (Postgres: drift_runs)",
-                "SELECT run_at AS \"time\", window_hours, n_current, drift, triggered, reason, guard "
-                "FROM drift_runs ORDER BY run_at DESC LIMIT 20")  # fmt: skip
+    g.chart(
+        "Drift alerts",
+        [("sum(rag_drift_alert)", "tests firing")],
+        "short",
+        6,
+        "stat",
+        green_red + [{"color": "red", "value": 1}],
+    )
+    g.sql_table(
+        "Drift runs (Postgres: drift_runs)",
+        'SELECT run_at AS "time", window_hours, n_current, drift, triggered, reason, guard '
+        "FROM drift_runs ORDER BY run_at DESC LIMIT 20",
+    )
 
     return {
-        "uid": "legal-rag", "title": "legal-rag: service, resources, RAG, drift",
-        "schemaVersion": 39, "version": 1, "refresh": "30s", "time": {"from": "now-1h", "to": "now"},
-        "tags": ["legal-rag"], "panels": g.panels,
-        "templating": {"list": [{
-            "name": "backend", "type": "query", "datasource": PROM, "label": "LLM backend",
-            "query": {"query": "label_values(rag_llm_tokens_total, backend)", "refId": "backend"},
-            "definition": "label_values(rag_llm_tokens_total, backend)",
-            "includeAll": True, "multi": True, "allValue": ".*", "refresh": 2,
-            "current": {"text": "All", "value": "$__all"},
-        }]},
-        "annotations": {"list": [{
-            # a restarted API process = a deploy (or a crash): drawn as a line on every chart
-            "name": "Deploys / restarts", "datasource": PROM, "enable": True, "iconColor": "orange",
-            "expr": 'changes(process_start_time_seconds{job="api"}[2m]) > 0',
-            "step": "60s", "titleFormat": "API (re)started",
-        }]},
-    }  # fmt: skip
+        "uid": "legal-rag",
+        "title": "legal-rag: service, resources, RAG, drift",
+        "schemaVersion": 39,
+        "version": 1,
+        "refresh": "30s",
+        "time": {"from": "now-1h", "to": "now"},
+        "tags": ["legal-rag"],
+        "panels": g.panels,
+        "templating": {
+            "list": [
+                {
+                    "name": "backend",
+                    "type": "query",
+                    "datasource": PROM,
+                    "label": "LLM backend",
+                    "query": {
+                        "query": "label_values(rag_llm_tokens_total, backend)",
+                        "refId": "backend",
+                    },
+                    "definition": "label_values(rag_llm_tokens_total, backend)",
+                    "includeAll": True,
+                    "multi": True,
+                    "allValue": ".*",
+                    "refresh": 2,
+                    "current": {"text": "All", "value": "$__all"},
+                }
+            ]
+        },
+        "annotations": {
+            "list": [
+                {
+                    # API process restart (deploy or crash), drawn on every panel
+                    "name": "Deploys / restarts",
+                    "datasource": PROM,
+                    "enable": True,
+                    "iconColor": "orange",
+                    "expr": 'changes(process_start_time_seconds{job="api"}[2m]) > 0',
+                    "step": "60s",
+                    "titleFormat": "API (re)started",
+                }
+            ]
+        },
+    }
 
 
 if __name__ == "__main__":

@@ -1,15 +1,8 @@
-"""Traces: the story of one request, stage by stage (Langfuse, on OpenTelemetry).
+"""Per-request tracing in Langfuse, behind a small tracer interface.
 
-A metric says "p95 retrieve time doubled"; a trace says "this request spent 3.1 s in retrieve,
-saw articles 147 and 148, the model wrote 41 tokens and they cost $0.00002". Every API request
-becomes one trace whose id is derived from our request id, so a log line leads straight to it.
-
-The pipeline only knows the small ``Tracer`` interface below:
-- ``NoopTracer`` (default): nothing is sent; evaluation runs and tests stay unchanged.
-- ``RecordingTracer``: keeps the observations in memory (tests, debugging).
-- ``LangfuseTracer``: the real one, used by the API when Langfuse keys are configured.
-What is traced: the *redacted* question, the articles, the prompt and the answer. It goes to our
-own self-hosted Langfuse only; PII never gets this far (the guard runs first).
+``NoopTracer`` sends nothing (the default), ``RecordingTracer`` keeps observations in memory for
+tests, and ``LangfuseTracer`` is used when Langfuse keys are set. The trace id is derived from the
+request id. Traces hold the redacted question, since the PII guard runs first.
 """
 
 from __future__ import annotations
@@ -36,8 +29,13 @@ class NoopTracer:
     def span(self, name: str, as_type: str = "span", **fields: Any) -> Iterator[Any]:
         yield _NoSpan()
 
-    def score(self, name: str, value: float | str, data_type: str | None = None,
-              comment: str | None = None) -> None:  # fmt: skip
+    def score(
+        self,
+        name: str,
+        value: float | str,
+        data_type: str | None = None,
+        comment: str | None = None,
+    ) -> None:
         pass
 
     def flush(self) -> None:
@@ -70,8 +68,13 @@ class RecordingTracer(NoopTracer):
         self.spans.append(record)
         yield _Recorded(record)
 
-    def score(self, name: str, value: float | str, data_type: str | None = None,
-              comment: str | None = None) -> None:  # fmt: skip
+    def score(
+        self,
+        name: str,
+        value: float | str,
+        data_type: str | None = None,
+        comment: str | None = None,
+    ) -> None:
         self.scores.append({"name": name, "value": value, "data_type": data_type})
 
 
@@ -82,13 +85,23 @@ class LangfuseTracer(NoopTracer):
         self.client = client
 
     @contextmanager
-    def trace(self, request_id: str, name: str, tags: Sequence[str] = (),
-              metadata: dict[str, Any] | None = None, version: str | None = None,
-              input: Any = None) -> Iterator[Any]:  # noqa: A002 - Langfuse's own field name  # fmt: skip
-        trace_id = self.client.create_trace_id(seed=request_id)  # request id -> trace id
-        # every log line of this request carries trace_id: a log line links to its trace
-        with structlog.contextvars.bound_contextvars(trace_id=trace_id), propagate_attributes(trace_name=name, tags=list(tags), metadata=metadata or {},
-                                  version=version):  # fmt: skip
+    def trace(
+        self,
+        request_id: str,
+        name: str,
+        tags: Sequence[str] = (),
+        metadata: dict[str, Any] | None = None,
+        version: str | None = None,
+        input: Any = None,  # noqa: A002 - Langfuse's field name
+    ) -> Iterator[Any]:
+        trace_id = self.client.create_trace_id(seed=request_id)
+        # every log line of this request carries the trace id
+        with (
+            structlog.contextvars.bound_contextvars(trace_id=trace_id),
+            propagate_attributes(
+                trace_name=name, tags=list(tags), metadata=metadata or {}, version=version
+            ),
+        ):
             with self.client.start_as_current_observation(
                 trace_context={"trace_id": trace_id}, name=name, as_type="span", input=input
             ) as root:
@@ -99,10 +112,16 @@ class LangfuseTracer(NoopTracer):
         with self.client.start_as_current_observation(name=name, as_type=as_type, **fields) as obs:
             yield obs
 
-    def score(self, name: str, value: float | str, data_type: str | None = None,
-              comment: str | None = None) -> None:  # fmt: skip
-        self.client.score_current_trace(name=name, value=value, data_type=data_type,
-                                        comment=comment)  # fmt: skip
+    def score(
+        self,
+        name: str,
+        value: float | str,
+        data_type: str | None = None,
+        comment: str | None = None,
+    ) -> None:
+        self.client.score_current_trace(
+            name=name, value=value, data_type=data_type, comment=comment
+        )
 
     def flush(self) -> None:
         self.client.flush()
@@ -114,6 +133,11 @@ def build_tracer(host: str, public_key: str, secret_key: str, environment: str) 
         return NoopTracer()
     from langfuse import Langfuse
 
-    client = Langfuse(public_key=public_key, secret_key=secret_key, base_url=host,
-                      environment=environment, timeout=5)  # fmt: skip
+    client = Langfuse(
+        public_key=public_key,
+        secret_key=secret_key,
+        base_url=host,
+        environment=environment,
+        timeout=5,
+    )
     return LangfuseTracer(client)

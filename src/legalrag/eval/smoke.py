@@ -1,24 +1,12 @@
-"""CI quality gate: the current prompt + model on 10 frozen questions, judged by RAGAS.
+"""CI quality gate: the current prompt and model on 10 frozen questions, judged by RAGAS.
 
-    uv run python -m legalrag.eval.smoke                  # generate, judge, pass/fail (exit 1)
-    uv run python -m legalrag.eval.smoke freeze           # rebuild data/golden/smoke.jsonl
+    uv run python -m legalrag.eval.smoke           # generate, judge, exit 1 on failure
+    uv run python -m legalrag.eval.smoke freeze    # rebuild data/golden/smoke.jsonl
 
-The CI runner has no Qdrant, no bge-m3 and no articles.json (DVC), and this gate does not need
-them: ``data/golden/smoke.jsonl`` holds 10 golden questions (5 pairs, AR + EN) with the exact
-five articles the production config (dense + Jev) put in front of the model. Generation runs
-through the real ``RagPipeline`` (guards, prompt, citation check) with a retriever that returns
-those articles. So the gate guards the prompt and the generation model; retrieval is guarded by
-exact metrics on the full golden set (``eval/run.py``).
-
-Three checks, all must hold:
-- faithfulness (RAGAS judge) >= 0.75, mean over the judged items;
-- no single judged answer below 0.5 (a mean of 10 can hide one made-up answer);
-- cited_gold: share of answers that cite a gold article >= 0.8 (exact, no judge).
-It fails closed: if more than 1 item could not be generated or judged (quota, outage), the gate
-fails. A gate that passes whenever it cannot measure is not a gate.
-What it can and cannot catch: n = 10 (5 translated pairs) with a stochastic judge, so it stops
-gross breakage (a prompt that drops the grounding rule, a model that ignores the articles), not
-a 0.05 drift; the full golden run (eval/run.py) is the place for small differences.
+``smoke.jsonl`` stores each question with the articles the production config retrieved, so the
+gate needs no Qdrant or corpus. Defaults: mean faithfulness >= 0.75, no answer below 0.5, a gold
+article cited in >= 80% of answers, at most one unmeasured item. With n = 10 it catches gross
+breakage only; the full golden run (``eval/run.py``) measures small differences.
 """
 
 from __future__ import annotations
@@ -45,7 +33,7 @@ GOLDEN_FIELDS = set(GoldenItem.model_fields)
 
 
 class FrozenRetriever:
-    """Returns the articles stored for a question: retrieval replayed, not recomputed."""
+    """Replays the stored articles for each question instead of searching."""
 
     def __init__(self, contexts: Mapping[str, list[Chunk]]):
         self.contexts = contexts
@@ -53,14 +41,13 @@ class FrozenRetriever:
     def retrieve(
         self, question: str, top_n: int | None = None, book: str | None = None
     ) -> list[Chunk]:
-        if question not in self.contexts:  # e.g. the guards rewrote it (PII placeholder)
+        if question not in self.contexts:  # e.g. a guard rewrote it (PII placeholder)
             raise KeyError(f"no frozen articles for {question!r}")
         return list(self.contexts[question])
 
 
 def freeze(predictions: Path, articles: Path, golden: Path, pairs: int = 5) -> list[dict[str, Any]]:
-    """Smoke rows from a production run: the first ``pairs`` in-scope pairs, AR + EN, each
-    with the full payload of the articles that run showed the model."""
+    """The first ``pairs`` in-scope AR/EN pairs of a run, with the articles it showed the model."""
     from legalrag.eval.track import git_sha
     from legalrag.index.store import payload
     from legalrag.ingest.validate import load_articles
@@ -73,13 +60,16 @@ def freeze(predictions: Path, articles: Path, golden: Path, pairs: int = 5) -> l
             shown[row["id"]] = row["context_articles"]
     items = [it for it in load_golden(golden) if it.category == "in_scope" and it.id in shown]
     keep = sorted({it.pair for it in items})[:pairs]
-    source = f"{predictions.parent.name} (frozen at {git_sha()})"  # where the contexts came from
+    source = f"{predictions.parent.name} (frozen at {git_sha()})"
     return [
-        {**it.model_dump(), "frozen_from": source,
-         "context": [payload(by_number[n], "ar") for n in shown[it.id]]}
+        {
+            **it.model_dump(),
+            "frozen_from": source,
+            "context": [payload(by_number[n], "ar") for n in shown[it.id]],
+        }
         for it in items
         if it.pair in keep
-    ]  # fmt: skip
+    ]
 
 
 def load_smoke(path: Path) -> tuple[list[GoldenItem], dict[str, list[Chunk]]]:
@@ -132,17 +122,30 @@ def verdict(
         reasons.append(f"answers below {min_item} faithfulness: {', '.join(below_floor)}")
     if cited is None or cited < min_cited:
         reasons.append(f"cited_gold {cited} < {min_cited}")
-    return {"passed": not reasons, "faithfulness": faith, "cited_gold": cited,
-            "below_floor": below_floor, "n": len(preds), "unmeasured": unmeasured,
-            "reasons": reasons}  # fmt: skip
+    return {
+        "passed": not reasons,
+        "faithfulness": faith,
+        "cited_gold": cited,
+        "below_floor": below_floor,
+        "n": len(preds),
+        "unmeasured": unmeasured,
+        "reasons": reasons,
+    }
 
 
 def _summary_markdown(v: Mapping[str, Any], model: str) -> str:
     status = "PASSED" if v["passed"] else "FAILED"
-    lines = [f"### RAGAS smoke gate: {status}", "", f"Generator: `{model}`", "",
-             "| metric | value |", "|---|---|",
-             f"| faithfulness | {v['faithfulness']} |", f"| cited_gold | {v['cited_gold']} |",
-             f"| unmeasured items | {v['unmeasured']} of {v['n']} |"]  # fmt: skip
+    lines = [
+        f"### RAGAS smoke gate: {status}",
+        "",
+        f"Generator: `{model}`",
+        "",
+        "| metric | value |",
+        "|---|---|",
+        f"| faithfulness | {v['faithfulness']} |",
+        f"| cited_gold | {v['cited_gold']} |",
+        f"| unmeasured items | {v['unmeasured']} of {v['n']} |",
+    ]
     return "\n".join(lines + [f"- {r}" for r in v["reasons"]]) + "\n"
 
 
@@ -171,9 +174,14 @@ async def _generate_and_judge(
         preds = await smoke_predictions(pipeline, items, s.llm_rpm)
     finally:
         await client.close()
-    judge = make_metrics(s.judge_base_url, s.judge_api_key, s.judge_model,
-                         s.judge_embedding_model, names=["faithfulness"],
-                         reasoning_effort=s.judge_reasoning_effort)  # fmt: skip
+    judge = make_metrics(
+        s.judge_base_url,
+        s.judge_api_key,
+        s.judge_model,
+        s.judge_embedding_model,
+        names=["faithfulness"],
+        reasoning_effort=s.judge_reasoning_effort,
+    )
     return preds, await score_predictions(preds, judge, 2, s.judge_rpm)
 
 
@@ -187,7 +195,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     prompts = prompt_under_test(args.prompt_file, args.prompt_version)
     preds, rows = asyncio.run(_generate_and_judge(s, items, contexts, prompts))
     v = verdict(preds, rows, args.min_faithfulness, args.min_cited, args.max_errors, args.min_item)
-    served = prompts.get()  # what promotion checks: this exact text passed (or not)
+    served = prompts.get()  # promotion checks the hash of this exact text
     v.update(prompt_version=served.version, prompt_sha256=prompt_sha256(served.text))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -221,8 +229,11 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     configure_logging("INFO")
     if args.command == "freeze":
-        rows = freeze(Path(args.from_run), Path("data/processed/articles.json"),
-                      Path("data/golden/golden_set.jsonl"))  # fmt: skip
+        rows = freeze(
+            Path(args.from_run),
+            Path("data/processed/articles.json"),
+            Path("data/golden/golden_set.jsonl"),
+        )
         text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
         Path(args.smoke).write_text(text, encoding="utf-8", newline="\n")
         log.info("smoke_frozen", items=len(rows), path=args.smoke)

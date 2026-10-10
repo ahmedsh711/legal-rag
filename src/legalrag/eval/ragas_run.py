@@ -1,14 +1,8 @@
-"""RAGAS: an LLM judge for the four classic RAG metrics, each blaming a different stage.
+"""RAGAS scoring of saved predictions.
 
-- faithfulness: is every claim in the answer supported by the retrieved articles? (generation)
-- answer relevancy: does the answer address the question? (generation)
-- context precision: are the relevant articles ranked high? (retrieval/rerank)
-- context recall: do the retrieved articles cover the reference answer? (retrieval)
-
-Faithfulness and relevancy are only scored for answers the system gave (a refusal has no claims);
-precision and recall for every answerable question. The judge should come from a different model
-family than the generator (self-preference bias); when it cannot (a free tier with one usable
-model), say so next to the numbers: faithfulness is then self-judged.
+Faithfulness and answer relevancy (generation) are scored for answers that were not refused;
+context precision and recall (retrieval) for every answerable question. The judge should be from
+a different model family than the generator to avoid self-preference bias.
 """
 
 from __future__ import annotations
@@ -40,20 +34,22 @@ def _value(result: Any) -> float | None:
 
 
 def _judge_calls(name: str, p: Prediction) -> int:
-    """Provider requests one metric makes (for pacing under a requests-per-minute limit)."""
+    """Provider calls one metric makes, for pacing."""
     return {"faithfulness": 2, "context_precision": max(len(p.context_texts), 1)}.get(name, 1)
 
 
 async def _score_one(p: Prediction, metrics: Mapping[str, Metric], pacer: Pacer) -> dict[str, Any]:
     row: dict[str, Any] = {"id": p.id, "lang": p.lang}
-    if not p.answerable or p.error:  # nothing to judge (or the question never ran)
+    if not p.answerable or p.error:
         return row
     calls = {
-        "context_precision": dict(user_input=p.question, reference=p.reference,
-                                  retrieved_contexts=p.context_texts),
-        "context_recall": dict(user_input=p.question, reference=p.reference,
-                               retrieved_contexts=p.context_texts),
-    }  # fmt: skip
+        "context_precision": dict(
+            user_input=p.question, reference=p.reference, retrieved_contexts=p.context_texts
+        ),
+        "context_recall": dict(
+            user_input=p.question, reference=p.reference, retrieved_contexts=p.context_texts
+        ),
+    }
     if not p.refused:
         calls["faithfulness"] = dict(
             user_input=p.question, response=p.answer, retrieved_contexts=p.context_texts
@@ -64,7 +60,7 @@ async def _score_one(p: Prediction, metrics: Mapping[str, Metric], pacer: Pacer)
             await pacer.wait(_judge_calls(name, p))
             try:
                 row[name] = _value(await metrics[name].ascore(**kwargs))
-            except Exception as exc:  # noqa: BLE001 - rate limit / credits / bad JSON: keep the rest
+            except Exception as exc:  # noqa: BLE001 - one failed metric must not lose the row
                 row.setdefault("errors", []).append(f"{name}: {type(exc).__name__}")
                 log.warning("ragas_metric_failed", id=p.id, metric=name, error=str(exc)[:200])
     return row
@@ -92,22 +88,29 @@ def summarize_ragas(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, fl
         subset = [r for r in rows if group == "all" or r["lang"] == group]
         if subset:
             out[group] = {
-                m: (statistics.fmean(vals) if (vals := [r[m] for r in subset
-                                                         if r.get(m) is not None]) else None)
+                m: (
+                    statistics.fmean(vals)
+                    if (vals := [r[m] for r in subset if r.get(m) is not None])
+                    else None
+                )
                 for m in GENERATION + RETRIEVAL
-            }  # fmt: skip
+            }
             out[group]["ragas_errors"] = sum(len(r.get("errors", [])) for r in subset)
     return out
 
 
-def make_metrics(base_url: str, api_key: str, judge_model: str, embedding_model: str,
-                 names: Sequence[str] = GENERATION + RETRIEVAL,
-                 reasoning_effort: str | None = None) -> dict:  # fmt: skip
-    """The real RAGAS 0.4 metrics, judged through an OpenAI-compatible endpoint.
+def make_metrics(
+    base_url: str,
+    api_key: str,
+    judge_model: str,
+    embedding_model: str,
+    names: Sequence[str] = GENERATION + RETRIEVAL,
+    reasoning_effort: str | None = None,
+) -> dict:
+    """RAGAS 0.4 metrics judged through an OpenAI-compatible endpoint.
 
-    ``names`` picks a subset: each metric costs judge calls (context precision = one per article),
-    which matters on a free tier with a daily request quota. ``reasoning_effort`` ("none") turns
-    off hidden thinking on models whose reasoning tokens would otherwise eat ``max_tokens``."""
+    ``names`` selects a subset; context precision costs one judge call per article.
+    ``reasoning_effort="none"`` keeps thinking models from spending ``max_tokens`` on reasoning."""
     import os
 
     os.environ.setdefault("RAGAS_DO_NOT_TRACK", "true")

@@ -15,20 +15,32 @@ from tests.fakes import FakeLLM
 
 
 def chunk(n: int, **kw) -> Chunk:
-    return Chunk(article_number=n, citation=f"Egyptian Civil Code, Article {n}",
-                 citation_ar=f"القانون المدني المصري، المادة {n}",
-                 text_ar=kw.pop("text_ar", f"نص {n}"), text_en=kw.pop("text_en", f"Text {n}."), **kw)  # fmt: skip
+    return Chunk(
+        article_number=n,
+        citation=f"Egyptian Civil Code, Article {n}",
+        citation_ar=f"القانون المدني المصري، المادة {n}",
+        text_ar=kw.pop("text_ar", f"نص {n}"),
+        text_en=kw.pop("text_en", f"Text {n}."),
+        **kw,
+    )
 
 
 def jev_reply(request: httpx.Request) -> httpx.Response:
     body = json.loads(request.content)
     answers = {
-        qid: {"type": "score", "score": 3.0 if qid == "rel_558" else 0.3} for qid in body["questions"]
+        qid: {"type": "score", "score": 3.0 if qid == "rel_558" else 0.3}
+        for qid in body["questions"]
         if qid.startswith("rel_")
-    }  # fmt: skip
+    }
     answers["answerable"] = {"type": "noul", "noul": 0.9}
-    return httpx.Response(200, json={"model": "typesafe/jev-1.13-x", "answers": answers,
-                                     "usage": {"input_tokens": 500, "cost": 2e-5}})  # fmt: skip
+    return httpx.Response(
+        200,
+        json={
+            "model": "typesafe/jev-1.13-x",
+            "answers": answers,
+            "usage": {"input_tokens": 500, "cost": 2e-5},
+        },
+    )
 
 
 async def test_jev_sends_english_passages_and_parses_scores():
@@ -88,9 +100,13 @@ class StubRetriever:
 
 def make_pipe(decider, reply="Lease [Art. 558]."):
     llm = FakeLLM(reply)
-    pipe = RagPipeline(StubRetriever([chunk(147), chunk(374), chunk(558)]),
-                       Generator(llm, "m", 100, 0.0), context_size=2, decider=decider,
-                       gate_threshold=0.5)  # fmt: skip
+    pipe = RagPipeline(
+        StubRetriever([chunk(147), chunk(374), chunk(558)]),
+        Generator(llm, "m", 100, 0.0),
+        context_size=2,
+        decider=decider,
+        gate_threshold=0.5,
+    )
     return pipe, llm
 
 

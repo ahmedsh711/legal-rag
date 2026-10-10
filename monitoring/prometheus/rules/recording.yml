@@ -1,5 +1,4 @@
-# Recording rules: expensive queries computed once every 15 s and stored as new series.
-# Dashboards and alerts read these, so they all agree on the definition (one formula, one place).
+# Shared by the dashboard and the alerts so each formula is defined once.
 groups:
   - name: rag-recording
     rules:
@@ -15,7 +14,7 @@ groups:
       - record: rag:ttft_p95:5m
         expr: histogram_quantile(0.95, sum by (le) (rate(rag_ttft_seconds_bucket[5m])))
 
-      # error ratio over two windows: the SLO burn-rate alert needs both
+      # /ask 5xx ratio over the windows the burn-rate alerts use
       - record: rag:ask_error_ratio:5m
         expr: |
           sum(rate(rag_requests_total{endpoint="ask", status=~"5.."}[5m]))

@@ -1,24 +1,15 @@
-"""Prompts by label: which system prompt is live is a pointer in Langfuse, not a code deploy.
+"""System prompt versions in Langfuse; the ``production`` label picks the one the API serves.
 
-    # 1. a new version enters as a candidate (never straight to production)
     uv run python -m legalrag.observability.prompts push --text-file new.txt --prompt-version v4
-    # 2. the quality gate runs on exactly that text and writes a verdict with its sha256
     uv run python -m legalrag.eval.smoke --prompt-file new.txt --prompt-version v4
-    # 3. promotion checks the verdict against the version's text, then moves the label
     uv run python -m legalrag.observability.prompts promote --version 2 --verdict reports/eval/smoke/verdict.json
-    # rollback: only to a version that passed the gate before (no new evaluation needed)
     uv run python -m legalrag.observability.prompts rollback --version 1
 
-Langfuse keeps every version of ``legal-rag-system``; the label ``production`` points at one.
-The API asks for the version behind its label (``PROMPT_LABEL``) through the SDK's cache
-(60 s per process), so a promotion or a rollback reaches every worker within about a minute,
-with no build and no restart. If Langfuse cannot be reached, the prompt in the code is served
-(``generation.SYSTEM_PROMPT``): that text must always be the last gated one.
-
-The gate is in code, not only in a docstring (found in review): ``promote`` refuses unless the
-verdict passed AND its ``prompt_sha256`` equals the hash of the version's text, and it records
-the hash in ``reports/prompts/approved.json``; ``rollback`` only accepts recorded hashes. (The
-Langfuse UI can still move labels by hand: access to it is the remaining trust boundary.)
+``promote`` requires a passed smoke verdict whose ``prompt_sha256`` matches the version's text and
+records the hash in ``reports/prompts/approved.json``; ``rollback`` only accepts recorded hashes.
+Labels moved by hand in the Langfuse UI bypass this check. The API caches the prompt for 60 s and
+serves ``generation.SYSTEM_PROMPT`` when Langfuse is unreachable, so keep that text the last gated
+version.
 """
 
 from __future__ import annotations
@@ -54,7 +45,7 @@ class CodePrompt:
 
 
 class StaticPrompt:
-    """A prompt from a file: what the quality gate evaluates before the text gets a label."""
+    """A candidate prompt from a file, gated before it gets a label."""
 
     def __init__(self, text: str, version: str):
         self.text, self.version = text, version
@@ -69,8 +60,13 @@ class LangfusePrompt:
 
     def get(self) -> ServedPrompt:
         try:
-            p = self.client.get_prompt(PROMPT_NAME, label=self.label, type="text",
-                                       cache_ttl_seconds=self.ttl, fallback=SYSTEM_PROMPT)  # fmt: skip
+            p = self.client.get_prompt(
+                PROMPT_NAME,
+                label=self.label,
+                type="text",
+                cache_ttl_seconds=self.ttl,
+                fallback=SYSTEM_PROMPT,
+            )
         except Exception as exc:  # noqa: BLE001 - answers must not depend on Langfuse being up
             log.warning("prompt_fetch_failed", error=type(exc).__name__)
             return CodePrompt().get()
@@ -99,8 +95,10 @@ def _approved(path: Path) -> dict[str, Any]:
 
 def check_push_labels(labels: list[str]) -> list[str]:
     if "production" in labels:
-        raise SystemExit("a new version cannot be pushed as production: push it as a candidate, "
-                         "run the quality gate on it, then promote")  # fmt: skip
+        raise SystemExit(
+            "a new version cannot be pushed as production: push it as a candidate, "
+            "run the quality gate on it, then promote"
+        )
     return labels or ["candidate"]
 
 
@@ -111,8 +109,11 @@ def promote(client: Any, version: int, verdict: dict[str, Any], approved_path: P
     if verdict.get("prompt_sha256") != prompt_sha256(text):
         raise SystemExit("the verdict is for a different prompt text than this version")
     approved = _approved(approved_path)
-    approved[prompt_sha256(text)] = {"version": version, "approved_at": datetime.now(UTC).isoformat(),
-                                     "faithfulness": verdict.get("faithfulness")}  # fmt: skip
+    approved[prompt_sha256(text)] = {
+        "version": version,
+        "approved_at": datetime.now(UTC).isoformat(),
+        "faithfulness": verdict.get("faithfulness"),
+    }
     approved_path.parent.mkdir(parents=True, exist_ok=True)
     approved_path.write_text(json.dumps(approved, indent=2) + "\n", encoding="utf-8", newline="\n")
     move_label(client, version, "production")
@@ -139,17 +140,25 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
     configure_logging("INFO")
     s = get_settings()
-    client = Langfuse(public_key=s.langfuse_public_key.get_secret_value(),
-                      secret_key=s.langfuse_secret_key.get_secret_value(),
-                      base_url=s.langfuse_host)  # fmt: skip
+    client = Langfuse(
+        public_key=s.langfuse_public_key.get_secret_value(),
+        secret_key=s.langfuse_secret_key.get_secret_value(),
+        base_url=s.langfuse_host,
+    )
     if args.command == "push":
         text = args.text_file.read_text(encoding="utf-8") if args.text_file else SYSTEM_PROMPT
         labels = check_push_labels(args.labels)
-        created = client.create_prompt(name=PROMPT_NAME, prompt=text, labels=labels, type="text",
-                                       config={"prompt_version": args.prompt_version},
-                                       commit_message=f"prompt {args.prompt_version}")  # fmt: skip
-        log.info("prompt_pushed", version=created.version, labels=labels,
-                 sha256=prompt_sha256(text)[:12])  # fmt: skip
+        created = client.create_prompt(
+            name=PROMPT_NAME,
+            prompt=text,
+            labels=labels,
+            type="text",
+            config={"prompt_version": args.prompt_version},
+            commit_message=f"prompt {args.prompt_version}",
+        )
+        log.info(
+            "prompt_pushed", version=created.version, labels=labels, sha256=prompt_sha256(text)[:12]
+        )
     elif args.command == "promote":
         verdict = json.loads(args.verdict.read_text(encoding="utf-8"))
         promote(client, args.version, verdict, APPROVED)

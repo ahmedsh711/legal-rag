@@ -1,8 +1,7 @@
-# Prometheus pulls ("scrapes") every target's /metrics every 15 s and keeps the numbers 15 days.
-# Hand-written on purpose: every job here is something we decided to watch.
+# Retention (15d) is set on the command line in docker/compose.yaml.
 global:
   scrape_interval: 15s
-  evaluation_interval: 15s # how often recording and alerting rules run
+  evaluation_interval: 15s
   external_labels:
     project: legal-rag
 
@@ -15,29 +14,28 @@ alerting:
         - targets: ["alertmanager:9093"]
 
 scrape_configs:
-  # our FastAPI service: the metric contract in reports/module-5.md
+  # FastAPI app: rag_* metrics
   - job_name: api
     static_configs:
       - targets: ["api:8000"]
         labels:
           service: legal-rag-api
 
-  # vLLM's own metrics (queue, KV cache, tokens/s); only up when the `llm` profile runs
+  # vLLM engine metrics; the target is down unless the llm profile is running
   - job_name: vllm
     static_configs:
       - targets: ["vllm:8000"]
     metric_relabel_configs:
-      - source_labels: [__name__] # keep the vLLM series we chart and alert on, drop the rest
+      - source_labels: [__name__] # keep only the series used by the dashboard and alerts
         regex: "vllm:(num_requests_running|num_requests_waiting|kv_cache_usage_perc|prompt_tokens_total|generation_tokens_total|time_to_first_token_seconds_.*|e2e_request_latency_seconds_.*|prefix_cache_.*)"
         action: keep
 
-  # the machine (here: Docker Desktop's Linux VM): CPU, memory, disk; plus the textfile
-  # collector, where batch jobs (nightly evaluation, drift) leave their latest numbers
+  # host metrics (Docker Desktop VM) plus *.prom files written by the batch jobs (eval, drift)
   - job_name: node
     static_configs:
       - targets: ["node-exporter:9100"]
 
-  # per-container CPU / memory; only our containers, the rest of the machine is not our budget
+  # per-container CPU/memory, limited to legal-rag-* containers
   - job_name: cadvisor
     scrape_interval: 30s
     static_configs:
@@ -50,9 +48,8 @@ scrape_configs:
         regex: "legal-rag-.+"
         action: keep
 
-  # a synthetic user: is /health answering from outside the app? (the app can be "up" for
-  # Prometheus and still unreachable for people). Relabelling turns the target into a parameter
-  # of the blackbox exporter, which does the HTTP call and reports probe_success.
+  # External /health probe: the app can expose /metrics and still fail requests.
+  # Relabelling passes the URL to the blackbox exporter as ?target= and keeps it as `instance`.
   - job_name: blackbox-health
     metrics_path: /probe
     params:

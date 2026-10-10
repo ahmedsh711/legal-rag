@@ -1,30 +1,15 @@
-"""The drift job: is the last window of traffic still like the traffic we evaluated on?
+"""Drift job: compare a recent window of prediction events with the evaluation reference.
 
     uv run python -m legalrag.monitoring.drift_job --hours 24                  # report + metrics
     uv run python -m legalrag.monitoring.drift_job --hours 24 --fail-on-drift  # as a CI gate
     uv run python -m legalrag.monitoring.drift_job aa --since <time>           # false-alarm rate
     uv run python -m legalrag.monitoring.drift_job reference                   # rebuild reference
 
-Reference: prediction events of the golden + held-out evaluation (``data/monitoring/
-reference_events.jsonl``, tagged with the model and prompt that produced them; no question text).
-Current: the API's events of the last ``--hours``. Features come in three kinds, reported apart:
-- input (what people ask): language, question length, and both together (MMD, domain AUC);
-- retrieval (where the search lands): the book of the top article;
-- behaviour (what the system does with it): refusals, the decider's score. Only compared when
-  the current window was served by the reference's model and prompt; otherwise the difference
-  is a *change* we made, not drift, and the report says so.
-P-value tests share a Bonferroni-corrected alpha (several tests at 1 % each would raise false
-alarms). Distance measures (JS, Wasserstein, domain AUC) say how *large* a shift is: they flag
-a feature only when its test is significant too (significant AND material). ``aa`` measures the
-false-alarm rate of the whole procedure on two random halves of one window (the same traffic:
-every flag is false).
-Outputs, all from the same numbers:
-- ``reports/drift/<time>.json`` (what a person reads),
-- Prometheus textfile metrics (``rag_drift_*``) for Grafana and the ``DriftDetected`` alert,
-- rows in Postgres ``drift_metrics`` / ``drift_runs`` (history, Grafana table) when a database
-  URL is configured,
-- the exit code with ``--fail-on-drift`` (the Phase 6 retraining gate; on drift itself, not on
-  the storm guard, which only decides whether a drift may *trigger* actions).
+Features are input (language, question length, both via MMD and domain AUC), retrieval (book of
+the top article) and behaviour (refusals, decider score; only compared when the reference's model
+and prompt served the window). P-value tests share a Bonferroni-corrected alpha; effect sizes
+(JS, Wasserstein, domain AUC) only confirm a significant test. Writes a JSON report, Prometheus
+textfile metrics (``rag_drift_*``) and, with a database URL, ``drift_runs``/``drift_metrics`` rows.
 """
 
 from __future__ import annotations
@@ -51,7 +36,7 @@ from legalrag.monitoring.files import write_atomic
 log = get_logger(__name__)
 
 ALPHA = 0.01
-JS_MAX, WASSERSTEIN_MAX, AUC_MAX = 0.1, 0.25, 0.7  # how large is "material"; chosen before the data
+JS_MAX, WASSERSTEIN_MAX, AUC_MAX = 0.1, 0.25, 0.7  # smallest effect sizes that count as material
 
 
 @dataclass
@@ -84,23 +69,39 @@ def _serving(events: Sequence[PredictionEvent]) -> tuple[str, str]:
 
 
 def _inputs(events: Sequence[PredictionEvent]) -> np.ndarray:
-    """Pure inputs only (no retrieval or answer outputs): log length and language."""
+    """Input features only: log question length and is-Arabic."""
     return np.array([[math.log1p(e.question_chars), float(e.lang == "ar")] for e in events])
 
 
-def _p_rows(ref: Sequence[PredictionEvent], cur: Sequence[PredictionEvent], seed: int,
-            behaviour: bool, min_samples: int) -> list[Row]:  # fmt: skip
-    """Every p-value test, drift decided later (the corrected alpha needs their count)."""
+def _p_rows(
+    ref: Sequence[PredictionEvent],
+    cur: Sequence[PredictionEvent],
+    seed: int,
+    behaviour: bool,
+    min_samples: int,
+) -> list[Row]:
+    """P-value tests, flagged against a Bonferroni-corrected alpha."""
     tests: list[tuple[str, str, Callable[[], Any]]] = [
         ("lang", "input", lambda: ds.chi2_test(_counts(ref, "lang"), _counts(cur, "lang"))),
-        ("question_chars", "input", lambda: ds.ks_test([e.question_chars for e in ref],
-                                                       [e.question_chars for e in cur])),
-        ("top_book", "retrieval",
-         lambda: ds.chi2_test(_counts(ref, "top_book"), _counts(cur, "top_book"))),
-    ]  # fmt: skip
+        (
+            "question_chars",
+            "input",
+            lambda: ds.ks_test([e.question_chars for e in ref], [e.question_chars for e in cur]),
+        ),
+        (
+            "top_book",
+            "retrieval",
+            lambda: ds.chi2_test(_counts(ref, "top_book"), _counts(cur, "top_book")),
+        ),
+    ]
     if behaviour:
-        tests.append(("refused", "behaviour",
-                      lambda: ds.chi2_test(_counts(ref, "refused"), _counts(cur, "refused"))))  # fmt: skip
+        tests.append(
+            (
+                "refused",
+                "behaviour",
+                lambda: ds.chi2_test(_counts(ref, "refused"), _counts(cur, "refused")),
+            )
+        )
         scores = [
             [e.answerable_score for e in x if e.answerable_score is not None] for x in (ref, cur)
         ]
@@ -119,11 +120,15 @@ def _p_rows(ref: Sequence[PredictionEvent], cur: Sequence[PredictionEvent], seed
     return rows
 
 
-def _effect_rows(ref: Sequence[PredictionEvent], cur: Sequence[PredictionEvent], seed: int,
-                 behaviour: bool) -> list[Row]:  # fmt: skip
+def _effect_rows(
+    ref: Sequence[PredictionEvent], cur: Sequence[PredictionEvent], seed: int, behaviour: bool
+) -> list[Row]:
     rows = []
-    for feature, kind in (("lang", "input"), ("top_book", "retrieval"),
-                          *([("refused", "behaviour")] if behaviour else [])):  # fmt: skip
+    for feature, kind in (
+        ("lang", "input"),
+        ("top_book", "retrieval"),
+        *([("refused", "behaviour")] if behaviour else []),
+    ):
         js = ds.js_divergence(_counts(ref, feature), _counts(cur, feature))
         rows.append(Row(feature, "js", js, None, js > JS_MAX, kind))
     w = ds.wasserstein_distance([e.question_chars for e in ref], [e.question_chars for e in cur])
@@ -133,8 +138,12 @@ def _effect_rows(ref: Sequence[PredictionEvent], cur: Sequence[PredictionEvent],
     return rows
 
 
-def compare(reference: Sequence[PredictionEvent], current: Sequence[PredictionEvent],
-            min_samples: int = 50, seed: int = 0) -> DriftReport:  # fmt: skip
+def compare(
+    reference: Sequence[PredictionEvent],
+    current: Sequence[PredictionEvent],
+    min_samples: int = 50,
+    seed: int = 0,
+) -> DriftReport:
     if not reference:
         raise ValueError("empty reference: build it first (drift_job reference)")
     n_ref, n_cur = len(reference), len(current)
@@ -143,15 +152,17 @@ def compare(reference: Sequence[PredictionEvent], current: Sequence[PredictionEv
     notes = []
     behaviour = _serving(reference) == _serving(current)
     if not behaviour:
-        notes.append(f"behaviour not compared: model or prompt changed "
-                     f"({_serving(reference)} -> {_serving(current)}), that is a change, not drift")  # fmt: skip
+        notes.append(
+            f"behaviour not compared: model or prompt changed "
+            f"({_serving(reference)} -> {_serving(current)}), that is a change, not drift"
+        )
     rows = _p_rows(reference, current, seed, behaviour, min_samples)
-    # significant AND material: an effect size alone fired on 7% of same-traffic splits in the
-    # live A/A check (small windows make big-looking effects from noise); it now only confirms
-    # that a significant shift on the same feature is large enough to matter
+    # on small windows an effect size alone fires on noise, so it only confirms a significant test
     significant = {r.feature for r in rows if r.drift}
-    rows += [replace(r, drift=r.drift and r.feature in significant)
-             for r in _effect_rows(reference, current, seed, behaviour)]  # fmt: skip
+    rows += [
+        replace(r, drift=r.drift and r.feature in significant)
+        for r in _effect_rows(reference, current, seed, behaviour)
+    ]
     parts = []
     for kind in ("input", "retrieval", "behaviour"):
         if hits := sorted({f"{r.feature}/{r.test}" for r in rows if r.drift and r.kind == kind}):
@@ -160,8 +171,7 @@ def compare(reference: Sequence[PredictionEvent], current: Sequence[PredictionEv
 
 
 def aa_check(events: Sequence[PredictionEvent], runs: int = 100, seed: int = 0) -> dict[str, float]:
-    """A/A test: split one window into two random halves `runs` times. Both halves are the same
-    traffic, so every flag is a false alarm: the share of runs flagged per test is its FPR."""
+    """A/A test: false-alarm rate per test over ``runs`` random half splits of one window."""
     rng = random.Random(seed)
     flags: Counter[str] = Counter()
     for i in range(runs):
@@ -178,20 +188,32 @@ def aa_check(events: Sequence[PredictionEvent], runs: int = 100, seed: int = 0) 
 
 def textfile_lines(report: DriftReport, alert: bool, last_trigger: datetime | None) -> list[str]:
     """Prometheus text format for node-exporter's textfile collector."""
-    lines = ["# HELP rag_drift_score Drift test statistic (current window vs reference)",
-             "# TYPE rag_drift_score gauge"]  # fmt: skip
-    lines += [f'rag_drift_score{{feature="{r.feature}",test="{r.test}",kind="{r.kind}"}} '
-              f"{r.statistic:.6g}" for r in report.rows]  # fmt: skip
-    lines += ["# HELP rag_drift_detected 1 when the latest run found drift (the DriftDetected alert)",
-              "# TYPE rag_drift_detected gauge", f"rag_drift_detected {int(report.drift)}",
-              "# HELP rag_drift_alert 1 when the latest drift passed the storm guard",
-              "# TYPE rag_drift_alert gauge", f"rag_drift_alert {int(alert)}",
-              "# HELP rag_drift_window_events Events in the current window",
-              "# TYPE rag_drift_window_events gauge", f"rag_drift_window_events {report.n_current}"]  # fmt: skip
+    lines = [
+        "# HELP rag_drift_score Drift test statistic (current window vs reference)",
+        "# TYPE rag_drift_score gauge",
+    ]
+    lines += [
+        f'rag_drift_score{{feature="{r.feature}",test="{r.test}",kind="{r.kind}"}} '
+        f"{r.statistic:.6g}"
+        for r in report.rows
+    ]
+    lines += [
+        "# HELP rag_drift_detected 1 when the latest run found drift (the DriftDetected alert)",
+        "# TYPE rag_drift_detected gauge",
+        f"rag_drift_detected {int(report.drift)}",
+        "# HELP rag_drift_alert 1 when the latest drift passed the storm guard",
+        "# TYPE rag_drift_alert gauge",
+        f"rag_drift_alert {int(alert)}",
+        "# HELP rag_drift_window_events Events in the current window",
+        "# TYPE rag_drift_window_events gauge",
+        f"rag_drift_window_events {report.n_current}",
+    ]
     if last_trigger is not None:
-        lines += ["# HELP rag_drift_last_trigger_timestamp_seconds When drift last passed the guard",
-                  "# TYPE rag_drift_last_trigger_timestamp_seconds gauge",
-                  f"rag_drift_last_trigger_timestamp_seconds {last_trigger.timestamp():.0f}"]  # fmt: skip
+        lines += [
+            "# HELP rag_drift_last_trigger_timestamp_seconds When drift last passed the guard",
+            "# TYPE rag_drift_last_trigger_timestamp_seconds gauge",
+            f"rag_drift_last_trigger_timestamp_seconds {last_trigger.timestamp():.0f}",
+        ]
     return lines
 
 
@@ -225,9 +247,15 @@ def run(args: argparse.Namespace) -> int:
     alert, why = guard.allow(report.drift, report.n_current, now, history)
     if alert:
         history = [*history, now]
-    out = {"run_at": now.isoformat(), "window_hours": args.hours, "since": since.isoformat(),
-           "until": until.isoformat() if until else None,
-           "triggered": alert, "guard": why, **asdict(report)}  # fmt: skip
+    out = {
+        "run_at": now.isoformat(),
+        "window_hours": args.hours,
+        "since": since.isoformat(),
+        "until": until.isoformat() if until else None,
+        "triggered": alert,
+        "guard": why,
+        **asdict(report),
+    }
     write_atomic(Path(args.out) / f"{now:%Y%m%dT%H%M%SZ}.json", json.dumps(out, indent=2) + "\n")
     if args.textfile:
         last = max(history) if history else None
@@ -237,12 +265,20 @@ def run(args: argparse.Namespace) -> int:
 
         try:
             store_run(args.db_url, out)
-        except Exception:  # noqa: BLE001 - history is lost for one run; the alert still works
+        except Exception:  # noqa: BLE001 - losing one history row must not block the alert
             log.exception("drift_store_failed")
-    if alert:  # last: a crash above must not use up the cooldown without an alert
+    if alert:  # written last so a crash above does not use up the cooldown
         write_atomic(history_path, json.dumps([t.isoformat() for t in history][-20:]) + "\n")
-    log.info("drift_run", drift=report.drift, triggered=alert, guard=why, reason=report.reason,
-             notes=report.notes, n_reference=report.n_reference, n_current=report.n_current)  # fmt: skip
+    log.info(
+        "drift_run",
+        drift=report.drift,
+        triggered=alert,
+        guard=why,
+        reason=report.reason,
+        notes=report.notes,
+        n_reference=report.n_reference,
+        n_current=report.n_current,
+    )
     return 1 if args.fail_on_drift and report.drift else 0
 
 
@@ -253,27 +289,42 @@ def run_aa(args: argparse.Namespace) -> int:
     until = parse_since(args.until) if args.until else None
     current = read_events(args.events, since=since, until=until)
     rates = aa_check(current, runs=args.runs)
-    out = {"since": since.isoformat(), "until": until.isoformat() if until else None,
-           "events": len(current), "runs": args.runs, "fpr": rates}  # fmt: skip
-    write_atomic(Path(args.out) / f"aa-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json",
-                 json.dumps(out, indent=2) + "\n")  # fmt: skip
+    out = {
+        "since": since.isoformat(),
+        "until": until.isoformat() if until else None,
+        "events": len(current),
+        "runs": args.runs,
+        "fpr": rates,
+    }
+    write_atomic(
+        Path(args.out) / f"aa-{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json",
+        json.dumps(out, indent=2) + "\n",
+    )
     log.info("drift_aa", events=len(current), runs=args.runs, **{"fpr_any": rates.get("any")})
     return 0
 
 
-def build_reference(predictions: list[Path], articles: Path, out: Path,
-                    serving: dict[str, str]) -> int:  # fmt: skip
+def build_reference(
+    predictions: list[Path], articles: Path, out: Path, serving: dict[str, str]
+) -> int:
     from legalrag.eval.metrics import Prediction
     from legalrag.ingest.validate import load_articles
     from legalrag.monitoring.events import event_from_prediction
 
     books = {a.article_number: a.book for a in load_articles(articles)}
-    events = [event_from_prediction(Prediction.model_validate_json(line), books, serving)
-              for path in predictions
-              for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]  # fmt: skip
+    events = [
+        event_from_prediction(Prediction.model_validate_json(line), books, serving)
+        for path in predictions
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     write_atomic(out, "".join(e.model_dump_json() + "\n" for e in events))
-    meta = {"built_at": datetime.now(UTC).isoformat(), "from_runs": [str(p) for p in predictions],
-            "events": len(events), **serving}  # fmt: skip
+    meta = {
+        "built_at": datetime.now(UTC).isoformat(),
+        "from_runs": [str(p) for p in predictions],
+        "events": len(events),
+        **serving,
+    }
     write_atomic(out.with_suffix(".meta.json"), json.dumps(meta, indent=2) + "\n")
     log.info("reference_built", events=len(events), out=str(out), **serving)
     return 0
@@ -298,18 +349,38 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--textfile", default="monitoring/textfile/drift.prom")
     p.add_argument("--db-url", default=s.monitoring_db_url.get_secret_value() or None)
     p.add_argument("--fail-on-drift", action="store_true")
-    p.add_argument("--from-runs", nargs="+", default=["reports/eval/e2e-dense-jev/predictions.jsonl",
-                                                       "reports/eval/heldout-dense-jev/predictions.jsonl"])  # fmt: skip
-    p.add_argument("--serving", nargs=3, metavar=("LLM_MODEL", "PROMPT_VERSION", "DECIDER"),
-                   default=["gemini-3.1-flash-lite", "v3", "jev"],
-                   help="reference: what produced the evaluation runs")  # fmt: skip
+    p.add_argument(
+        "--from-runs",
+        nargs="+",
+        default=[
+            "reports/eval/e2e-dense-jev/predictions.jsonl",
+            "reports/eval/heldout-dense-jev/predictions.jsonl",
+        ],
+    )
+    p.add_argument(
+        "--serving",
+        nargs=3,
+        metavar=("LLM_MODEL", "PROMPT_VERSION", "DECIDER"),
+        default=["gemini-3.1-flash-lite", "v3", "jev"],
+        help="reference: what produced the evaluation runs",
+    )
     args = p.parse_args(argv)
     configure_logging("INFO")
     if args.command == "reference":
-        serving = {"llm_model": args.serving[0], "prompt_version": args.serving[1],
-                   "decider": args.serving[2], "index_collection": "eval"}  # fmt: skip
-        sys.exit(build_reference([Path(x) for x in args.from_runs], Path(s.articles_path),
-                                 Path(args.reference), serving))  # fmt: skip
+        serving = {
+            "llm_model": args.serving[0],
+            "prompt_version": args.serving[1],
+            "decider": args.serving[2],
+            "index_collection": "eval",
+        }
+        sys.exit(
+            build_reference(
+                [Path(x) for x in args.from_runs],
+                Path(s.articles_path),
+                Path(args.reference),
+                serving,
+            )
+        )
     sys.exit(run_aa(args) if args.command == "aa" else run(args))
 
 

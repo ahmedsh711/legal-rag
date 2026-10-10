@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Alert drill: break things on purpose and check that the right alert reaches the right channel.
-#   bash monitoring/alert_drill.sh            (monitoring + core + llm profiles running)
-# Timeline (minutes): 0 start a trickle of traffic (3 users, 45 min) | 5 stop Redis | 9 start
-# Redis | 14 stop the API | 17 start the API. Expected deliveries in monitoring/alerts/alerts.jsonl:
-#   RateLimiterDegraded (ticket, cause)  ~2-3 min after Redis stops, resolved after it is back
-#   ApiDown (page, symptom)              ~1-2 min after the API stops, resolved after it is back
-#   RefusalRateHigh (ticket, symptom)    ~30 min in: the small vLLM model's answers are refused
+# Alert drill: stop Redis, then the API, under light traffic and check which alerts arrive where.
+# Needs the core, llm and monitoring profiles running.
+#   bash monitoring/alert_drill.sh
+# Timeline (min): 0 traffic starts (3 users, 45 min) | 5 stop redis | 9 start redis
+#                 | 14 stop api | 17 start api
+# Expected in monitoring/alerts/alerts.jsonl:
+#   RateLimiterDegraded (ticket, cause)  ~2-3 min after Redis stops, resolved once it is back
+#   ApiDown (page, symptom)              ~1-2 min after the API stops, resolved once it is back
+#   RefusalRateHigh (ticket, symptom)    ~30 min in, from the small vLLM model's refusals
 set -euo pipefail
 OUT=${OUT:-monitoring/alerts/drill.log}
 log() { echo "$(date -u +%FT%TZ) $*" | tee -a "$OUT"; }

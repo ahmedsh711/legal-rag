@@ -1,15 +1,4 @@
-"""Per-client rate limit: a token bucket in Redis, answered with 429 + an honest Retry-After.
-
-- Token bucket: a client may burst up to ``capacity`` requests, then gets ``per_minute`` new
-  tokens per minute. Fair to people who ask three questions in a row, firm with a script.
-- Redis + one Lua script: every API replica shares the same buckets, and "refill, take, save"
-  runs atomically inside Redis (two requests of one client cannot both take the last token).
-  The clock is Redis's own (``TIME``), so replicas with skewed clocks still agree.
-- Honest Retry-After: the seconds until a token really exists, not a fixed guess, so a
-  well-behaved client retries once instead of hammering.
-- Fail open: if Redis is down the request is served without a limit and a warning is logged.
-  A rate limiter that takes the whole API down with it does more harm than the traffic it stops.
-"""
+"""Per-client rate limiting with a token bucket shared by all replicas through Redis."""
 
 from __future__ import annotations
 
@@ -24,7 +13,8 @@ from legalrag.logging_conf import get_logger
 
 log = get_logger(__name__)
 
-# KEYS[1] = bucket; ARGV[1] = capacity, ARGV[2] = refill in tokens per millisecond
+# KEYS[1] = bucket; ARGV[1] = capacity, ARGV[2] = refill in tokens per millisecond.
+# Runs atomically in Redis and uses Redis TIME, so replicas with skewed clocks agree.
 _TAKE = """
 local cap = tonumber(ARGV[1])
 local rate = tonumber(ARGV[2])
@@ -53,7 +43,7 @@ class Verdict:
     allowed: bool
     remaining: int  # whole tokens left after this request
     retry_after_s: int  # 0 when allowed
-    degraded: bool = False  # Redis unreachable: allowed without checking
+    degraded: bool = False  # Redis unreachable, allowed without checking
 
 
 class TokenBucket:
@@ -68,6 +58,7 @@ class TokenBucket:
                 keys=[f"{self.prefix}:{client}"], args=[self.capacity, repr(self.per_ms)]
             )
         except RedisError as exc:
+            # fail open: a dead Redis must not take the API down with it
             log.warning("ratelimit_unavailable", error=type(exc).__name__)
             return Verdict(allowed=True, remaining=-1, retry_after_s=0, degraded=True)
         return Verdict(bool(allowed), int(remaining), math.ceil(int(retry_ms) / 1000))
@@ -81,29 +72,25 @@ def _hash(key: str) -> str:
 
 
 def known_key_hashes(api_keys: str) -> frozenset[str]:
-    """Hashes of the API keys this deployment issued (``API_KEYS``, comma-separated)."""
+    """Hashes of the issued API keys (``API_KEYS``, comma-separated)."""
     return frozenset(_hash(k.strip()) for k in api_keys.split(",") if k.strip())
 
 
 def client_key(api_key: str | None, ip: str | None, known: frozenset[str]) -> str:
-    """Who is asking. An issued key gets its own bucket (stored hashed, never in clear); any other
-    header value is ignored and the IP is used, or a script could send a new made-up key with every
-    request and never be limited (found in code review).
-    # ponytail: behind a proxy (Phase 6 nginx) the IP must come from X-Forwarded-For, trusted
-    # only when it is set by our own proxy."""
+    """Bucket key: the hashed API key if it was issued, otherwise the client IP.
+
+    Unknown keys are ignored, otherwise a client could send a fresh key per request."""
+    # TODO: behind a reverse proxy, take the IP from X-Forwarded-For set by that proxy
     if api_key and (hashed := _hash(api_key)) in known:
         return f"key:{hashed}"
     return f"ip:{ip or 'unknown'}"
 
 
 def build_limiter(redis_url: str, per_minute: float, burst: int) -> TokenBucket | None:
-    """None when the limit is switched off (per_minute <= 0)."""
     if per_minute <= 0:
         return None
     from redis.asyncio import Redis
 
-    # measured: a take costs p50 0.8 ms / p95 1.9 ms (host -> container). 0.2 s is 100x that,
-    # and caps what a dead Redis adds to each question.
-    # ponytail: a circuit breaker would skip even those 0.2 s while Redis is down
+    # a take costs ~1-2 ms; 0.2 s caps what a dead Redis adds to each request
     client = Redis.from_url(redis_url, socket_timeout=0.2, socket_connect_timeout=0.2)
     return TokenBucket(client, capacity=burst, per_minute=per_minute)

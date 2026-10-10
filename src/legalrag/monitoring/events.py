@@ -1,12 +1,8 @@
-"""Prediction events: one JSON line per answer, the raw material for drift and log drill-down.
+"""Prediction events: one JSON line per answer, for drift detection and log drill-down.
 
-What is in an event: the features a drift test compares (language, question length, which
-articles and which book retrieval landed on, the decider's answerability score), what happened
-(refused, guards fired, stage timings) and what served it (prompt, model, index, decider).
-What is never in it: the question or the answer text, the IP or the API key. The request id is
-the link to the full logs of that one request when someone needs to drill down.
-
-Files: ``data/events/events-YYYY-MM-DD.jsonl`` (one per UTC day, easy to expire).
+An event holds the drift features, the outcome, stage timings and what served it; never the
+question or answer text, the IP or the API key. ``request_id`` links it to the request's logs.
+Files are ``data/events/events-YYYY-MM-DD.jsonl``, one per UTC day.
 """
 
 from __future__ import annotations
@@ -36,8 +32,8 @@ class PredictionEvent(BaseModel):
     question_words: int
     pii_redacted: bool
     top_articles: list[int]  # what the model was shown, best first
-    top_book: str  # book of the first article: the "topic" of the question, as retrieval saw it
-    answerable_score: float | None  # the decider's gate score, when a decider ran
+    top_book: str  # book of the first article
+    answerable_score: float | None  # decider gate score, when a decider ran
     refused: bool
     guardrails: list[str]
     timings_ms: dict[str, float]
@@ -48,55 +44,76 @@ class PredictionEvent(BaseModel):
 
 
 def _common(question: str, serving: Mapping[str, str]) -> dict[str, Any]:
-    return {"question_chars": len(question), "question_words": len(question.split()),
-            **{k: serving[k] for k in ("prompt_version", "llm_model", "index_collection",
-                                       "decider")}}  # fmt: skip
+    return {
+        "question_chars": len(question),
+        "question_words": len(question.split()),
+        **{k: serving[k] for k in ("prompt_version", "llm_model", "index_collection", "decider")},
+    }
 
 
-def event_from_answer(answer: Any, question: str, request_id: str, endpoint: str,
-                      serving: Mapping[str, str]) -> PredictionEvent:  # fmt: skip
+def event_from_answer(
+    answer: Any, question: str, request_id: str, endpoint: str, serving: Mapping[str, str]
+) -> PredictionEvent:
     """``question`` is only measured (length), never stored."""
     context = answer.context
     return PredictionEvent(
-        request_id=request_id, endpoint=endpoint, lang=answer.language,
+        request_id=request_id,
+        endpoint=endpoint,
+        lang=answer.language,
         pii_redacted=any(g.startswith("pii:") for g in answer.guardrails),
         top_articles=[c.article_number for c in context],
         top_book=context[0].book if context else "",
         answerable_score=answer.decision.answerable if answer.decision else None,
-        refused=answer.refused, guardrails=list(answer.guardrails),
+        refused=answer.refused,
+        guardrails=list(answer.guardrails),
         timings_ms={k: v for k, v in answer.timings_ms.items() if k in STAGES},
         **{**_common(question, serving), "prompt_version": answer.prompt_version},
-    )  # fmt: skip
+    )
 
 
-def event_from_stream_done(done: Mapping[str, Any], question: str, request_id: str,
-                           serving: Mapping[str, str]) -> PredictionEvent:  # fmt: skip
+def event_from_stream_done(
+    done: Mapping[str, Any], question: str, request_id: str, serving: Mapping[str, str]
+) -> PredictionEvent:
     done = {**done, **done.get("_monitoring", {})}  # language, articles, book, decider score
     articles = done.get("context_articles", [])
     return PredictionEvent(
-        request_id=request_id, endpoint="ask_stream", lang=done.get("language", "en"),
+        request_id=request_id,
+        endpoint="ask_stream",
+        lang=done.get("language", "en"),
         pii_redacted=any(g.startswith("pii:") for g in done.get("guardrails", [])),
-        top_articles=articles, top_book=done.get("top_book", ""),
-        answerable_score=done.get("answerable_score"), refused=done.get("refused", False),
+        top_articles=articles,
+        top_book=done.get("top_book", ""),
+        answerable_score=done.get("answerable_score"),
+        refused=done.get("refused", False),
         guardrails=list(done.get("guardrails", [])),
-        timings_ms={k: v for k, v in done.get("timings_ms", {}).items() if k in STAGES and v is not None},
-        **{**_common(question, serving),
-           "prompt_version": done.get("prompt_version", serving["prompt_version"])},
-    )  # fmt: skip
+        timings_ms={
+            k: v for k, v in done.get("timings_ms", {}).items() if k in STAGES and v is not None
+        },
+        **{
+            **_common(question, serving),
+            "prompt_version": done.get("prompt_version", serving["prompt_version"]),
+        },
+    )
 
 
-def event_from_prediction(pred: Any, books: Mapping[int, str],
-                          serving: Mapping[str, str]) -> PredictionEvent:  # fmt: skip
-    """Reference events from an evaluation run (the traffic the system was judged on)."""
+def event_from_prediction(
+    pred: Any, books: Mapping[int, str], serving: Mapping[str, str]
+) -> PredictionEvent:
+    """Reference event from an evaluation prediction."""
     articles = list(pred.context_articles)
     return PredictionEvent(
-        request_id=pred.id, endpoint="eval", lang=pred.lang,
+        request_id=pred.id,
+        endpoint="eval",
+        lang=pred.lang,
         pii_redacted=any(g.startswith("pii:") for g in pred.guardrails),
-        top_articles=articles, top_book=books.get(articles[0], "") if articles else "",
-        answerable_score=pred.answerable_score, refused=pred.refused,
-        guardrails=list(pred.guardrails), timings_ms={"total": pred.latency_ms},
+        top_articles=articles,
+        top_book=books.get(articles[0], "") if articles else "",
+        answerable_score=pred.answerable_score,
+        refused=pred.refused,
+        guardrails=list(pred.guardrails),
+        timings_ms={"total": pred.latency_ms},
         **_common(pred.question, serving),
-    )  # fmt: skip
+    )
 
 
 class EventLog:
@@ -110,14 +127,15 @@ class EventLog:
             f.write(event.model_dump_json() + "\n")
 
 
-def read_events(directory: str | Path, since: datetime | None = None,
-                until: datetime | None = None) -> list[PredictionEvent]:  # fmt: skip
+def read_events(
+    directory: str | Path, since: datetime | None = None, until: datetime | None = None
+) -> list[PredictionEvent]:
     events, skipped = [], 0
     for path in sorted(Path(directory).glob("events-*.jsonl")):
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            try:  # the API may be appending this very line: a partial line is skipped, not fatal
+            try:  # the API may still be appending the last line
                 event = PredictionEvent.model_validate_json(line)
             except ValidationError:
                 skipped += 1

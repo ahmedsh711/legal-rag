@@ -1,4 +1,4 @@
-# Unit tests for the alert rules (promtool feeds made-up series and checks what fires, and when).
+# promtool unit tests for rules/alerts.yml:
 #   docker run --rm --entrypoint promtool -v ./monitoring/prometheus:/etc/prometheus \
 #     prom/prometheus:v3.15.0 test rules /etc/prometheus/tests/alerts_test.yml
 rule_files:
@@ -53,7 +53,7 @@ tests:
               first_action: "docker compose ps redis; docker logs legal-rag-redis-1"
               runbook: docs/runbook.md#ratelimiterdegraded
 
-  # 8 of every 10 answers are refusals for half an hour (what the 1.5B model did in Phase 4)
+  # 8 in 10 answers refused for over 30 min
   - interval: 1m
     input_series:
       - series: 'rag_answers_total{outcome="refused"}'
@@ -139,7 +139,7 @@ tests:
               first_action: "did the scheduled job run? (Airflow / cron logs); run it by hand and read its log"
               runbook: docs/runbook.md#batchjobstale
 
-  # load-test tokens on the free local model do not count against the money budget
+  # vLLM tokens are free and do not count toward the paid-token budget
   - interval: 1m
     input_series:
       - series: 'rag_llm_tokens_total{backend="vllm",type="prompt"}'

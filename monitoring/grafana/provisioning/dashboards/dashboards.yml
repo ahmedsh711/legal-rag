@@ -1,4 +1,4 @@
-# Load every dashboard JSON from the folder mounted at /var/lib/grafana/dashboards.
+# Provision every dashboard JSON mounted at /var/lib/grafana/dashboards (see build_dashboard.py).
 apiVersion: 1
 providers:
   - name: legal-rag

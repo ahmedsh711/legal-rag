@@ -13,8 +13,11 @@ from tests.unit.test_generation_pipeline import StubRetriever, chunk
 
 async def test_an_answer_leaves_one_observation_per_stage():
     tracer = RecordingTracer()
-    pipe = RagPipeline(StubRetriever([chunk(147)]), Generator(FakeLLM("Yes [Art. 147]."), "m", 100, 0.0),
-                       tracer=tracer)  # fmt: skip
+    pipe = RagPipeline(
+        StubRetriever([chunk(147)]),
+        Generator(FakeLLM("Yes [Art. 147]."), "m", 100, 0.0),
+        tracer=tracer,
+    )
     await pipe.ask("My phone is 01012345678, is a contract binding?")
     names = [(s["name"], s["as_type"]) for s in tracer.spans]
     assert names == [("guard", "guardrail"), ("retrieve", "retriever"), ("generate", "generation")]
@@ -79,8 +82,14 @@ def test_langfuse_tracer_uses_the_request_id_as_trace_seed(monkeypatch):
     monkeypatch.setattr(tracing, "propagate_attributes", fake_propagate)
     client = FakeLangfuse()
     tracer = LangfuseTracer(client)
-    with tracer.trace("req-123", "ask", tags=["vllm"], metadata={"prompt_version": "v3"},
-                      version="v3", input={"question": "q"}) as root:  # fmt: skip
+    with tracer.trace(
+        "req-123",
+        "ask",
+        tags=["vllm"],
+        metadata={"prompt_version": "v3"},
+        version="v3",
+        input={"question": "q"},
+    ) as root:
         root.update(output={"answer": "a"})
         tracer.score("refused", 0, data_type="BOOLEAN")
     kind, first = client.calls[0]

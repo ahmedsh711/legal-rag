@@ -1,8 +1,7 @@
-# Alerting rules. Two kinds, told apart by the `kind` label:
-#   symptom: users feel it (down, slow, errors, wrong answers): pages someone;
-#   cause:   a reason that will become a symptom (queue, cache, budget, dependency): a ticket.
-# Every rule waits `for:` a while before firing (one slow scrape is not an incident) and carries
-# the first thing to do, so the person woken up does not start from zero.
+# kind=symptom: users are affected (down, slow, errors, bad answers).
+# kind=cause:   leads to a symptom (queue, cache, budget, dependency); always a ticket.
+# severity picks the route in alertmanager.yml. Every rule has a `for:` so a single bad scrape
+# does not fire, and a first_action for whoever picks it up.
 groups:
   - name: rag-symptoms
     rules:
@@ -15,7 +14,7 @@ groups:
           first_action: "docker compose ps api; docker logs --tail 50 legal-rag-api-1 (index alias missing? model download?)"
           runbook: docs/runbook.md#apidown
 
-      # min traffic: a p95 of five requests is noise, not an incident
+      # traffic floor: a p95 over a handful of requests is noise
       - alert: AskLatencyHigh
         expr: rag:ask_latency_p95:5m > 5 and sum(rate(rag_request_seconds_count{endpoint="ask"}[5m])) > 0.05
         for: 10m
@@ -31,11 +30,11 @@ groups:
         labels: {severity: page, kind: symptom}
         annotations:
           summary: "{{ $value | humanizePercentage }} of /ask requests fail with 5xx"
-          first_action: "503 = LLM provider down or quota (check llm_error logs); 500 = our bug (unhandled_error logs, by request_id)"
+          first_action: "503 = LLM provider down or quota (check llm_error logs); 500 = app bug (unhandled_error logs, by request_id)"
           runbook: docs/runbook.md#askerrorshigh
 
-      # error budget: 1 % of requests per 30 days; burning it 14.4x faster than allowed empties
-      # it in 2 days. Two windows: the long one proves it is real, the short one that it is now.
+      # error budget: 1 % of requests over 30 days; a 14.4x burn empties it in ~2 days.
+      # Long window: the burn is sustained. Short window: it is still happening.
       - alert: ErrorBudgetBurnFast
         expr: >
           rag:ask_error_ratio:1h > (14.4 * 0.01) and rag:ask_error_ratio:5m > (14.4 * 0.01)
@@ -47,8 +46,7 @@ groups:
           first_action: "same as AskErrorsHigh; consider rolling back the last deploy (Grafana deploy annotations)"
           runbook: docs/runbook.md#errorbudgetburnfast
 
-      # the slow tier: 6x the allowed rate for 6 hours empties the budget in 5 days; a ticket,
-      # not a page (found in review: only the fast tier existed)
+      # slow burn: 6x over 6 h empties the budget in ~5 days; ticket, not page
       - alert: ErrorBudgetBurnSlow
         expr: >
           rag:ask_error_ratio:6h > (6 * 0.01) and rag:ask_error_ratio:30m > (6 * 0.01)
@@ -69,8 +67,8 @@ groups:
           first_action: "rag_guardrail_total by guard: citation:uncited = the LLM stopped citing (model/prompt change?); gate:unanswerable = off-topic traffic or retrieval drift"
           runbook: docs/runbook.md#refusalratehigh
 
-      # nightly online evaluation (24 h lag); only with enough judged answers to mean something.
-      # 0.80 is well under the golden-set baseline (0.97, self-judged, Phase 3).
+      # nightly online eval (24 h lag); needs >= 20 judged answers to mean anything.
+      # 0.80 is well below the golden-set baseline (0.97, self-judged).
       - alert: FaithfulnessLow
         expr: rag_eval_faithfulness < 0.80 and on() rag_eval_samples >= 20
         for: 1m
@@ -88,7 +86,7 @@ groups:
         labels: {severity: ticket, kind: cause}
         annotations:
           summary: "retrieve p95 is {{ $value | humanizeDuration }}: the CPU embedder is saturated"
-          first_action: "API container CPU (row Resources); QUERY_BATCH_MAX set? (Phase 4 load test: one-at-a-time embedding was the first bottleneck)"
+          first_action: "API container CPU (row Resources); QUERY_BATCH_MAX set? (one-at-a-time embedding is the first bottleneck under load)"
           runbook: docs/runbook.md#retrievestageslow
 
       - alert: LlmQueueBacklog
@@ -109,8 +107,7 @@ groups:
           first_action: "lower --max-num-seqs or --max-model-len, or move to a bigger GPU"
           runbook: docs/runbook.md#kvcachenearlyfull
 
-      # money, not tokens: the local vLLM costs nothing per token (found when the Phase 4 load
-      # tests on vLLM fired this alert)
+      # paid tokens only: local vLLM tokens cost nothing and are excluded
       - alert: DailyTokenBudget
         expr: sum(increase(rag_llm_tokens_total{backend!="vllm"}[24h])) > 2e6
         for: 10m
@@ -129,9 +126,9 @@ groups:
           first_action: "docker compose ps redis; docker logs legal-rag-redis-1"
           runbook: docs/runbook.md#ratelimiterdegraded
 
-      # the latest drift run found drift (any kind): stays firing while drift persists, run after
-      # run; the storm guard only limits *actions* such as retraining (found in review: alerting
-      # on the guard's trigger cleared the alert after an hour while drift went on)
+      # follows the latest drift run, so it keeps firing while drift persists. Deliberately not
+      # tied to the storm guard: that only rate-limits actions such as retraining, and alerting
+      # on its trigger would clear the alert after an hour while drift continues.
       - alert: DriftDetected
         expr: rag_drift_detected == 1
         for: 1m
@@ -143,7 +140,7 @@ groups:
 
   - name: batch-jobs
     rules:
-      # a nightly job that dies leaves its last numbers behind forever; alert on their age instead
+      # a dead nightly job leaves its last values behind; alert on the file age instead
       - alert: BatchJobStale
         expr: time() - node_textfile_mtime_seconds{file=~".*(drift|online_eval)\\.prom"} > 26 * 3600
         for: 10m

@@ -1,11 +1,11 @@
-"""Time how long a label move takes to reach the API (lab drill, not a release tool).
+"""Measure how long a Langfuse prompt-label move takes to reach the API (drill, not a release tool).
 
     uv run python monitoring/prompt_label_drill.py --to 2 --back 1
 
 Moves the ``production`` label to version ``--to``, polls GET /metadata once a second until the
-API reports it, then moves it back to ``--back`` and times that too. It uses the raw label move
-on purpose, to measure the mechanism; releases go through ``prompts promote`` / ``rollback``,
-which check the quality gate. The original label is restored even if the drill fails halfway.
+API serves it, then moves it back to ``--back`` and times that too. This uses the raw label move
+to time propagation only; releases go through ``prompts promote`` / ``rollback``, which apply the
+quality gate. The ``--back`` label is restored even if the drill fails.
 Writes reports/monitoring/prompt_label_drill.json.
 """
 
@@ -38,8 +38,12 @@ def step(client: Any, api: str, version: int, timeout_s: float = 180) -> dict[st
     while time.perf_counter() - t0 < timeout_s:
         now = served(api)
         if now != before:
-            return {"to_version": version, "from": before, "to": now,
-                    "seconds": round(time.perf_counter() - t0, 1)}  # fmt: skip
+            return {
+                "to_version": version,
+                "from": before,
+                "to": now,
+                "seconds": round(time.perf_counter() - t0, 1),
+            }
         time.sleep(1)
     return {"to_version": version, "from": before, "to": None, "seconds": None}
 
@@ -55,8 +59,11 @@ def main() -> None:
     p.add_argument("--back", type=int, required=True, help="version production had before")
     args = p.parse_args()
     s = get_settings()
-    client = Langfuse(public_key=s.langfuse_public_key.get_secret_value(),
-                      secret_key=s.langfuse_secret_key.get_secret_value(), base_url=s.langfuse_host)  # fmt: skip
+    client = Langfuse(
+        public_key=s.langfuse_public_key.get_secret_value(),
+        secret_key=s.langfuse_secret_key.get_secret_value(),
+        base_url=s.langfuse_host,
+    )
     results = []
     try:
         results.append(step(client, args.api, args.to))

@@ -1,4 +1,4 @@
-# Grafana reads this at start-up: data sources are configuration in git, not clicks in a UI.
+# Data sources, provisioned at Grafana start-up.
 apiVersion: 1
 datasources:
   - name: Prometheus
@@ -8,7 +8,7 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     jsonData:
-      timeInterval: 15s # = scrape interval, so rate() windows are never too short
+      timeInterval: 15s # matches scrape_interval so rate() windows never get too short
   - name: Drift history
     uid: drift-db
     type: grafana-postgresql-datasource
@@ -24,7 +24,7 @@ datasources:
     type: loki
     url: http://loki:3100
     jsonData:
-      # a trace_id inside a log line becomes a link to that request's trace in Langfuse
+      # turn trace_id in a log line into a link to the Langfuse trace
       derivedFields:
         - name: Langfuse trace
           matcherRegex: '"trace_id": "([0-9a-f]+)"'

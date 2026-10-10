@@ -1,16 +1,9 @@
-"""How much can we trust an LLM judge? Calibrate it against human labels, and probe its biases.
+"""Calibrate the LLM judge against human labels and probe its biases.
 
-1. ``sheet``: write ``data/golden/to_label.csv`` with 20 answered questions (10 AR, 10 EN). A
-   human marks each answer ``1`` (every legal claim is supported by the shown articles) or ``0``.
-2. ``calibrate``: compare the human labels with
-   - our judge (one JSON call: "is every legal claim supported?") -> agreement + Cohen's kappa,
-   - RAGAS faithfulness >= 0.8 (same question, different judge prompt),
-   - the same judge prompt run by the generator's model family -> self-preference bias,
-   - our judge after appending a harmless sentence to each answer -> verbosity bias
-     (a fair judge does not change its verdict because an answer got longer).
-
-Kappa corrects agreement for chance: 0 = no better than chance, 1 = perfect. Position bias
-(swapping A/B in pairwise judging) does not apply to a single-answer judge, so it is not probed.
+``sheet`` writes ``data/golden/to_label.csv`` (10 AR + 10 EN answers) for a human to mark 1/0.
+``calibrate`` reports agreement and Cohen's kappa for the judge, for RAGAS faithfulness >= 0.8
+and for the generator's model family (self-preference), plus verdict flips after padding each
+answer with a neutral sentence (verbosity bias).
 """
 
 from __future__ import annotations
@@ -32,8 +25,7 @@ PADDING = {
     "en": " This is an important question that many people ask about Egyptian civil law.",
     "ar": " وهذا سؤال مهم يسأله كثير من الناس عن القانون المدني المصري.",
 }
-# A legal claim no article supports (and that is false under Egyptian law): appended to a real
-# answer it makes a negative example whose correct label is 0 by construction.
+# An unsupported (and false) legal claim; appended to a real answer it makes a known negative.
 FABRICATED = {
     "en": " In addition, the parties may agree in writing to extend this period indefinitely.",
     "ar": " كما يجوز للطرفين الاتفاق كتابة على مد هذه المدة إلى أجل غير محدود.",
@@ -48,11 +40,11 @@ from, the given articles. Ignore generic remarks that make no claim about the la
 class Judge:
     def __init__(self, client: Any, model: str, pacer: Pacer | None = None, **extra: Any):
         self.client, self.model = client, model
-        self.pacer = pacer or Pacer(None)  # stay under the provider's requests-per-minute
+        self.pacer = pacer or Pacer(None)
         self.extra = extra  # e.g. reasoning_effort="none" for thinking models
 
     async def supported(self, p: Prediction, pad: bool = False) -> int | None:
-        """1 supported, 0 not, None = no usable verdict (left out of agreement, not a 0)."""
+        """1 supported, 0 not, None when the reply has no usable verdict."""
         await self.pacer.wait()
         answer = p.answer + (PADDING.get(p.lang, PADDING["en"]) if pad else "")
         articles = "\n\n".join(p.context_texts)
@@ -77,8 +69,9 @@ def _verdict(text: str) -> int | None:
     return int(value) if isinstance(value, bool) else None
 
 
-def write_label_sheet(preds: Sequence[Prediction], path: str | Path, n: int = 20,
-                      seed: int = 7) -> list[str]:  # fmt: skip
+def write_label_sheet(
+    preds: Sequence[Prediction], path: str | Path, n: int = 20, seed: int = 7
+) -> list[str]:
     """``n`` answered items, half Arabic half English, as a CSV that opens cleanly in Excel."""
     rng = random.Random(seed)
     chosen: list[Prediction] = []
@@ -90,9 +83,17 @@ def write_label_sheet(preds: Sequence[Prediction], path: str | Path, n: int = 20
         w = csv.DictWriter(f, ["id", "lang", "question", "articles", "answer", LABEL, "note"])
         w.writeheader()
         for p in chosen:
-            w.writerow({"id": p.id, "lang": p.lang, "question": p.question,
-                        "articles": "\n\n".join(p.context_texts), "answer": p.answer,
-                        LABEL: "", "note": ""})  # fmt: skip
+            w.writerow(
+                {
+                    "id": p.id,
+                    "lang": p.lang,
+                    "question": p.question,
+                    "articles": "\n\n".join(p.context_texts),
+                    "answer": p.answer,
+                    LABEL: "",
+                    "note": "",
+                }
+            )
     return [p.id for p in chosen]
 
 
@@ -130,26 +131,36 @@ def cohen_kappa(human: Mapping[str, int], other: Mapping[str, int]) -> float:
 
 
 async def _verdicts(judge: Judge, preds: Sequence[Prediction], pad: bool = False) -> dict:
-    """Usable verdicts only: an unparseable answer is left out, not counted as a 0."""
+    """Unparseable verdicts are dropped, not counted as 0."""
     votes = await asyncio.gather(*(judge.supported(p, pad=pad) for p in preds))
     return {p.id: v for p, v in zip(preds, votes, strict=True) if v is not None}
 
 
 def with_fabricated_claim(p: Prediction) -> Prediction:
     """Same question and articles, plus one unsupported legal claim: a known negative."""
-    return p.model_copy(update={"id": f"{p.id}-neg",
-                                "answer": p.answer + FABRICATED.get(p.lang, FABRICATED["en"])})  # fmt: skip
+    return p.model_copy(
+        update={"id": f"{p.id}-neg", "answer": p.answer + FABRICATED.get(p.lang, FABRICATED["en"])}
+    )
 
 
 def _scores(truth: Mapping[str, int], votes: Mapping[str, int]) -> dict[str, float]:
-    return {"agreement": agreement(truth, votes), "kappa": cohen_kappa(truth, votes),
-            "n": len(truth.keys() & votes.keys())}  # fmt: skip
+    return {
+        "agreement": agreement(truth, votes),
+        "kappa": cohen_kappa(truth, votes),
+        "n": len(truth.keys() & votes.keys()),
+    }
 
 
-async def calibrate(preds: Sequence[Prediction], human: Mapping[str, int], judge: Judge,
-                    same_family: Judge | None, ragas: Mapping[str, float]) -> dict[str, Any]:  # fmt: skip
-    """Human labels + one synthetic negative per labelled answer (balances the classes: if
-    humans found every real answer supported, kappa alone would be meaningless)."""
+async def calibrate(
+    preds: Sequence[Prediction],
+    human: Mapping[str, int],
+    judge: Judge,
+    same_family: Judge | None,
+    ragas: Mapping[str, float],
+) -> dict[str, Any]:
+    """Score against human labels plus one synthetic negative per labelled answer.
+
+    The negatives keep kappa meaningful when humans mark every real answer as supported."""
     labelled = [p for p in preds if p.id in human]
     negatives = [with_fabricated_claim(p) for p in labelled]
     truth = {**human, **{n.id: 0 for n in negatives}}
@@ -164,10 +175,12 @@ async def calibrate(preds: Sequence[Prediction], human: Mapping[str, int], judge
         "judge": {"model": judge.model, **_scores(truth, ours)},
         "judge_on_real_answers_only": _scores(human, ours),
         "ragas_faithfulness_ge_0_8": _scores(truth, ragas_vote),
-        "verbosity_probe": {"verdict_flips": sum(ours[i] != padded[i] for i in both),
-                            "of": len(both)},
+        "verbosity_probe": {
+            "verdict_flips": sum(ours[i] != padded[i] for i in both),
+            "of": len(both),
+        },
         "unparseable_verdicts": len(labelled) + len(negatives) - len(ours),
-    }  # fmt: skip
+    }
     if same_family is None or same_family.model == judge.model:
         report["self_preference_probe"] = "not measured: judge and generator share a model"
     else:
@@ -206,21 +219,37 @@ async def _calibrate_cli(preds: Sequence[Prediction], human: Mapping[str, int]) 
 
     s = get_settings()
     configure_logging(s.log_level)
-    pacer = Pacer(s.judge_rpm)  # judge, padding probe and RAGAS share one per-minute budget
+    pacer = Pacer(s.judge_rpm)  # one per-minute budget for both judges
     effort = {"reasoning_effort": s.judge_reasoning_effort} if s.judge_reasoning_effort else {}
-    client = AsyncOpenAI(base_url=s.judge_base_url, api_key=s.judge_api_key, timeout=120,
-                         max_retries=4)  # fmt: skip
-    gen = AsyncOpenAI(base_url=s.active_llm_base_url, api_key=s.active_llm_api_key, timeout=120,
-                      max_retries=4)  # fmt: skip
+    client = AsyncOpenAI(
+        base_url=s.judge_base_url, api_key=s.judge_api_key, timeout=120, max_retries=4
+    )
+    gen = AsyncOpenAI(
+        base_url=s.active_llm_base_url, api_key=s.active_llm_api_key, timeout=120, max_retries=4
+    )
     labelled = [p for p in preds if p.id in human]
-    faith = make_metrics(s.judge_base_url, s.judge_api_key, s.judge_model,
-                         s.judge_embedding_model, names=("faithfulness",),
-                         reasoning_effort=s.judge_reasoning_effort)  # fmt: skip
-    rows = await score_predictions(labelled + [with_fabricated_claim(p) for p in labelled],
-                                   faith, concurrency=2, requests_per_minute=s.judge_rpm)  # fmt: skip
+    faith = make_metrics(
+        s.judge_base_url,
+        s.judge_api_key,
+        s.judge_model,
+        s.judge_embedding_model,
+        names=("faithfulness",),
+        reasoning_effort=s.judge_reasoning_effort,
+    )
+    rows = await score_predictions(
+        labelled + [with_fabricated_claim(p) for p in labelled],
+        faith,
+        concurrency=2,
+        requests_per_minute=s.judge_rpm,
+    )
     ragas = {r["id"]: r["faithfulness"] for r in rows if r.get("faithfulness") is not None}
-    return await calibrate(preds, human, Judge(client, s.judge_model, pacer, **effort),
-                           Judge(gen, s.active_llm_model, pacer), ragas)  # fmt: skip
+    return await calibrate(
+        preds,
+        human,
+        Judge(client, s.judge_model, pacer, **effort),
+        Judge(gen, s.active_llm_model, pacer),
+        ragas,
+    )
 
 
 def _log_calibration(report: Mapping[str, Any], path: str) -> None:
@@ -232,9 +261,13 @@ def _log_calibration(report: Mapping[str, Any], path: str) -> None:
     mlflow.set_tracking_uri(s.mlflow_tracking_uri)
     mlflow.set_experiment(s.mlflow_experiment)
     with mlflow.start_run(run_name="judge-calibration", tags={"eval_mode": "judge_calibration"}):
-        mlflow.log_params({"judge_model": report["judge"]["model"],
-                           "n_labelled": report["n_labelled"],
-                           "n_synthetic_negatives": report["n_synthetic_negatives"]})  # fmt: skip
+        mlflow.log_params(
+            {
+                "judge_model": report["judge"]["model"],
+                "n_labelled": report["n_labelled"],
+                "n_synthetic_negatives": report["n_synthetic_negatives"],
+            }
+        )
         for group in ("judge", "judge_on_real_answers_only", "ragas_faithfulness_ge_0_8"):
             for k in ("agreement", "kappa"):
                 value = report[group][k]

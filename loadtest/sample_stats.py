@@ -2,10 +2,9 @@
 
     uv run python loadtest/sample_stats.py --out reports/load/<name>-stats.csv --seconds 600
 
-One CSV row per container per sample: CPU %, memory, plus vLLM's running / waiting requests and
-KV-cache use, and GPU utilisation / memory. With Locust's per-stage timings this is what a
-bottleneck claim rests on: the stage whose time grows with load AND the resource that is full.
-(Phase 5 replaces this script with Prometheus + cAdvisor; the questions it answers stay the same.)
+Writes one CSV row per container per sample: CPU %, memory, vLLM running/waiting requests,
+KV-cache usage, GPU utilisation and memory. Read together with Locust's per-stage timings to
+find both the stage that slows down and the resource that saturates.
 """
 
 from __future__ import annotations
@@ -31,8 +30,11 @@ GAUGES = {  # vLLM Prometheus gauges (names as exported by v0.30)
 def docker_stats() -> list[dict[str, str]]:
     out = subprocess.run(
         ["docker", "stats", "--no-stream", "--format", "{{json .}}", *CONTAINERS],
-        capture_output=True, text=True, timeout=30, check=False,
-    ).stdout  # fmt: skip
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    ).stdout
     return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
@@ -51,8 +53,11 @@ def vllm_gauges() -> dict[str, float | None]:
 def gpu() -> dict[str, str]:
     out = subprocess.run(
         ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
-        capture_output=True, text=True, timeout=10, check=False,
-    ).stdout.strip()  # fmt: skip
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    ).stdout.strip()
     util, mem = (out.split(",") + ["", ""])[:2]
     return {"gpu_util_pct": util.strip(), "gpu_mem_mib": mem.strip()}
 
@@ -73,8 +78,15 @@ def main() -> None:
             t = round(time.time() - t0, 1)
             shared = {**vllm_gauges(), **gpu()}
             for row in docker_stats():
-                writer.writerow({"t": t, "container": row["Name"], "cpu_pct": row["CPUPerc"],
-                                 "mem": row["MemUsage"], **shared})  # fmt: skip
+                writer.writerow(
+                    {
+                        "t": t,
+                        "container": row["Name"],
+                        "cpu_pct": row["CPUPerc"],
+                        "mem": row["MemUsage"],
+                        **shared,
+                    }
+                )
             f.flush()
             time.sleep(args.every)
 

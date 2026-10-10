@@ -20,8 +20,12 @@ class FakePrompts:
         self.calls.append((name, kw))
         if self.fail:
             raise ConnectionError("langfuse down")
-        return SimpleNamespace(prompt=self.text, version=self.version, is_fallback=False,
-                               config=self.config or {"prompt_version": "v4"})  # fmt: skip
+        return SimpleNamespace(
+            prompt=self.text,
+            version=self.version,
+            is_fallback=False,
+            config=self.config or {"prompt_version": "v4"},
+        )
 
     def update_prompt(self, **kw):
         self.updates.append(kw)
@@ -42,8 +46,11 @@ def test_an_unreachable_langfuse_serves_the_prompt_in_the_code():
 
 def test_the_pipeline_sends_the_served_prompt_and_reports_its_version():
     llm = FakeLLM("Yes [Art. 147].")
-    pipe = RagPipeline(StubRetriever([chunk(147)]), Generator(llm, "m", 100, 0.0),
-                       prompts=LangfusePrompt(FakePrompts(), label="production"))  # fmt: skip
+    pipe = RagPipeline(
+        StubRetriever([chunk(147)]),
+        Generator(llm, "m", 100, 0.0),
+        prompts=LangfusePrompt(FakePrompts(), label="production"),
+    )
     answer = asyncio_run(pipe.ask("Is a contract binding?"))
     assert llm.calls[0]["messages"][0]["content"] == "Rules v4"
     assert answer.prompt_version == "v4"
@@ -76,8 +83,12 @@ class VersionedPrompts(FakePrompts):
 
     def get_prompt(self, name, **kw):
         n = kw["version"]
-        return SimpleNamespace(prompt=self.texts[n], version=n, is_fallback=False,
-                               config={"prompt_version": f"v{n + 2}"})  # fmt: skip
+        return SimpleNamespace(
+            prompt=self.texts[n],
+            version=n,
+            is_fallback=False,
+            config={"prompt_version": f"v{n + 2}"},
+        )
 
 
 def verdict_for(text, passed=True):

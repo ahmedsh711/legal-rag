@@ -1,16 +1,10 @@
-"""Online evaluation: judge a sample of real answers every night, not only the golden set.
+"""Nightly online evaluation: RAGAS faithfulness on a sample of real generations from Langfuse.
 
     uv run --group eval python -m legalrag.monitoring.online_eval --hours 24 --rate 0.05
 
-The golden set says how good the system was on questions we wrote. Real traffic drifts away from
-them, so each night this job takes a random 5 % of yesterday's generations from Langfuse (the
-prompt with its articles, and the raw model output), has the RAGAS judge score their
-faithfulness, and writes the result two places:
-- on each trace in Langfuse, as a ``faithfulness`` score (find the bad answers by clicking);
-- the mean as ``rag_eval_faithfulness`` in the node-exporter textfile, where Prometheus picks it
-  up and the ``FaithfulnessLow`` alert (below 0.80) watches it.
-Refusals are skipped (there is no claim to check). The raw model output is scored, even when the
-citation check later replaced it: the question is "does the model stay grounded?".
+Each score is written back to its Langfuse trace, and the mean goes to the node-exporter textfile
+as ``rag_eval_faithfulness`` for the ``FaithfulnessLow`` alert. Refusals are skipped; the raw model
+output is scored even when the citation check later replaced it.
 """
 
 from __future__ import annotations
@@ -71,19 +65,35 @@ def sample(generations: Sequence[Mapping[str, Any]], rate: float, seed: int) -> 
     )
 
 
-async def run_online_eval(generations: Sequence[Mapping[str, Any]], metrics: Mapping[str, Any],
-                          client: Any, rate: float = 0.05, seed: int = 0,
-                          rpm: float | None = None) -> tuple[dict[str, Any], list[str]]:  # fmt: skip
+async def run_online_eval(
+    generations: Sequence[Mapping[str, Any]],
+    metrics: Mapping[str, Any],
+    client: Any,
+    rate: float = 0.05,
+    seed: int = 0,
+    rpm: float | None = None,
+) -> tuple[dict[str, Any], list[str]]:
     from legalrag.eval.metrics import Prediction
     from legalrag.eval.ragas_run import score_predictions
 
-    # parse first, then sample: the rate is a share of answers that can be judged (review)
+    # sample after parsing so the rate applies to judgeable answers
     judgeable = [j for g in generations if (j := parse_generation(g))]
     picked = sample(judgeable, rate, seed)
-    preds = [Prediction(id=j.observation_id, lang=detect_language(j.question),
-                        category="in_scope", question=j.question,
-                        gold_articles=[], answer=j.answer, refused=False, cited=[],
-                        context_articles=[], context_texts=j.contexts) for j in picked]  # fmt: skip
+    preds = [
+        Prediction(
+            id=j.observation_id,
+            lang=detect_language(j.question),
+            category="in_scope",
+            question=j.question,
+            gold_articles=[],
+            answer=j.answer,
+            refused=False,
+            cited=[],
+            context_articles=[],
+            context_texts=j.contexts,
+        )
+        for j in picked
+    ]
     rows = await score_predictions(preds, {"faithfulness": metrics["faithfulness"]}, 2, rpm)
     by_id = {j.observation_id: j for j in picked}
     values = []
@@ -91,33 +101,54 @@ async def run_online_eval(generations: Sequence[Mapping[str, Any]], metrics: Map
         if (value := row.get("faithfulness")) is None:
             continue
         j = by_id[row["id"]]
-        client.create_score(name="faithfulness", value=value, trace_id=j.trace_id,
-                            observation_id=j.observation_id, data_type="NUMERIC",
-                            comment="online sample, RAGAS")  # fmt: skip
+        client.create_score(
+            name="faithfulness",
+            value=value,
+            trace_id=j.trace_id,
+            observation_id=j.observation_id,
+            data_type="NUMERIC",
+            comment="online sample, RAGAS",
+        )
         values.append(value)
     client.flush()
     mean = round(sum(values) / len(values), 3) if values else None
-    unscored = len(picked) - len(values)  # the judge failed: reported, not silently dropped
-    summary = {"sampled": len(picked), "scored": len(values), "unscored": unscored,
-               "faithfulness": mean}  # fmt: skip
-    lines = ["# HELP rag_eval_samples Answers judged in the last online evaluation",
-             "# TYPE rag_eval_samples gauge", f"rag_eval_samples {len(values)}",
-             "# HELP rag_eval_unscored Sampled answers the judge could not score",
-             "# TYPE rag_eval_unscored gauge", f"rag_eval_unscored {unscored}"]  # fmt: skip
+    unscored = len(picked) - len(values)  # judge failures
+    summary = {
+        "sampled": len(picked),
+        "scored": len(values),
+        "unscored": unscored,
+        "faithfulness": mean,
+    }
+    lines = [
+        "# HELP rag_eval_samples Answers judged in the last online evaluation",
+        "# TYPE rag_eval_samples gauge",
+        f"rag_eval_samples {len(values)}",
+        "# HELP rag_eval_unscored Sampled answers the judge could not score",
+        "# TYPE rag_eval_unscored gauge",
+        f"rag_eval_unscored {unscored}",
+    ]
     if mean is not None:
-        lines += ["# HELP rag_eval_faithfulness Mean RAGAS faithfulness of sampled real answers",
-                  "# TYPE rag_eval_faithfulness gauge", f"rag_eval_faithfulness {mean}"]  # fmt: skip
+        lines += [
+            "# HELP rag_eval_faithfulness Mean RAGAS faithfulness of sampled real answers",
+            "# TYPE rag_eval_faithfulness gauge",
+            f"rag_eval_faithfulness {mean}",
+        ]
     return summary, lines
 
 
-def fetch_generations(base_url: str, auth: tuple[str, str], since: datetime,
-                      limit: int = 5000) -> list[dict[str, Any]]:  # fmt: skip
+def fetch_generations(
+    base_url: str, auth: tuple[str, str], since: datetime, limit: int = 5000
+) -> list[dict[str, Any]]:
     """Generations since ``since`` from the Langfuse v2 observations API (cursor pages)."""
     import httpx
 
     out: list[dict[str, Any]] = []
-    params: dict[str, Any] = {"type": "GENERATION", "fields": "core,io", "limit": 100,
-                              "fromStartTime": since.isoformat()}  # fmt: skip
+    params: dict[str, Any] = {
+        "type": "GENERATION",
+        "fields": "core,io",
+        "limit": 100,
+        "fromStartTime": since.isoformat(),
+    }
     with httpx.Client(base_url=base_url, auth=auth, timeout=30) as http:
         while len(out) < limit:
             page = http.get("/api/public/v2/observations", params=params).raise_for_status().json()
@@ -144,12 +175,19 @@ def main(argv: list[str] | None = None) -> None:
     s = get_settings()
     auth = (s.langfuse_public_key.get_secret_value(), s.langfuse_secret_key.get_secret_value())
     gens = fetch_generations(s.langfuse_host, auth, datetime.now(UTC) - timedelta(hours=args.hours))
-    metrics = make_metrics(s.judge_base_url, s.judge_api_key, s.judge_model, s.judge_embedding_model,
-                           names=["faithfulness"], reasoning_effort=s.judge_reasoning_effort)  # fmt: skip
+    metrics = make_metrics(
+        s.judge_base_url,
+        s.judge_api_key,
+        s.judge_model,
+        s.judge_embedding_model,
+        names=["faithfulness"],
+        reasoning_effort=s.judge_reasoning_effort,
+    )
     client = Langfuse(public_key=auth[0], secret_key=auth[1], base_url=s.langfuse_host)
     seed = int(datetime.now(UTC).strftime("%Y%m%d"))  # a new sample every day, reproducible
-    summary, lines = asyncio.run(run_online_eval(gens, metrics, client, args.rate, seed,
-                                                 rpm=s.judge_rpm))  # fmt: skip
+    summary, lines = asyncio.run(
+        run_online_eval(gens, metrics, client, args.rate, seed, rpm=s.judge_rpm)
+    )
     write_atomic(Path(args.textfile), "\n".join(lines) + "\n")
     log.info("online_eval_done", generations=len(gens), **summary)
 

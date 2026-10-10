@@ -1,8 +1,7 @@
 #!/bin/sh
-# A read-only login for Grafana's "Drift history" data source: SELECT on the monitoring database
-# and nothing else (the security review: anonymous Grafana viewers + the superuser = any SQL).
-# Runs once on a fresh volume (docker-entrypoint-initdb.d, after init.sql created the database);
-# on an existing volume run it by hand:
+# Read-only role for Grafana's "Drift history" data source: SELECT on the monitoring database
+# only. Grafana allows anonymous viewers, so it must never connect as the superuser.
+# Runs once on a fresh volume (the zz- prefix sorts it after init.sql). On an existing volume:
 #   docker exec -e GRAFANA_DB_PASSWORD legal-rag-postgres-1 sh /docker-entrypoint-initdb.d/zz-grafana-ro.sh
 set -eu
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname monitoring \

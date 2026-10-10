@@ -1,15 +1,4 @@
-"""Dynamic micro-batching for query embeddings (the tuning change from the Phase 4 load test).
-
-The embedder runs one call at a time (a global lock: the fast tokenizer is not thread-safe).
-Under load, questions waited in line for it and retrieval became the first bottleneck: at 40
-users the median retrieve time went from ~0.4 s to 3.5 s while the GPU had room to spare.
-
-A ``QueryBatcher`` puts one worker thread in front of the embedder. Each caller drops its question
-in a queue and waits; the worker takes the first question plus everything else that queued up
-while the model was busy, and embeds them in one forward pass. At low load a question is alone
-and goes straight through (no added wait); under load the batch grows by itself. This is the same
-idea as vLLM's continuous batching, applied to the embedding model.
-"""
+"""Dynamic micro-batching: questions that queue up while the embedder is busy share one pass."""
 
 from __future__ import annotations
 
@@ -32,11 +21,11 @@ class QueryBatcher:
         self._worker = threading.Thread(target=self._run, name="query-batcher", daemon=True)
         self._worker.start()
 
-    def __getattr__(self, name: str) -> Any:  # dim, model_name, revision: the embedder's own
+    def __getattr__(self, name: str) -> Any:  # dim, model_name, revision come from the embedder
         return getattr(self.embedder, name)
 
     def encode(self, texts: list[str], batch_size: int = 16) -> list[Any]:
-        if len(texts) != 1:  # already a batch (index build): no need to wait for company
+        if len(texts) != 1:  # already a batch (index build), embed directly
             return self.embedder.encode(texts, batch_size)
         future: Future[Any] = Future()
         self._queue.put((texts[0], future))
@@ -47,7 +36,7 @@ class QueryBatcher:
         if first is _STOP:
             return None
         batch = [first]
-        while len(batch) < self.max_batch:  # everything that queued up meanwhile, no waiting
+        while len(batch) < self.max_batch:  # drain what queued meanwhile, without waiting
             try:
                 item = self._queue.get_nowait()
             except queue.Empty:
@@ -62,7 +51,7 @@ class QueryBatcher:
         while (batch := self._next_batch()) is not None:
             try:
                 vectors = self.embedder.encode([text for text, _ in batch], self.max_batch)
-            except Exception as exc:  # noqa: BLE001 - hand the error to every waiting caller
+            except Exception as exc:  # noqa: BLE001 - every waiting caller gets the error
                 for _, future in batch:
                     future.set_exception(exc)
                 continue

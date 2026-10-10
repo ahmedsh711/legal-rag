@@ -1,9 +1,6 @@
 """FastAPI service: /ask (JSON or SSE stream), /health, /live, /metadata, /feedback.
 
-Everything heavy (Qdrant client, bge-m3, LLM client) is built once in the lifespan and kept on
-``app.state``; requests only use it. ``create_app(build=...)`` lets tests swap in fakes.
-
-    uv run uvicorn legalrag.api.main:app --port 8000
+uv run uvicorn legalrag.api.main:app --port 8000
 """
 
 from __future__ import annotations
@@ -72,10 +69,7 @@ class Components:
 
 
 def check_index_compatible(meta: dict[str, Any] | None, settings: Settings) -> None:
-    """Refuse to serve if questions would be embedded differently from the documents.
-
-    The instructor's incident: a nightly rebuild changed the embedding model, the app kept the old
-    one, and 18% of Arabic answers silently became "not enough information"."""
+    """Refuse to serve if questions would be embedded differently from the indexed documents."""
     if not meta:
         raise IndexMismatchError("index has no metadata; rebuild it with `dvc repro`")
     if meta.get("embedding_model") != settings.embedding_model:
@@ -129,8 +123,12 @@ def build_components(settings: Settings) -> Components:
         settings.llm_max_tokens,
         settings.llm_temperature,
     )
-    tracer = build_tracer(settings.langfuse_host, settings.langfuse_public_key.get_secret_value(),
-                          settings.langfuse_secret_key.get_secret_value(), settings.deploy_environment)  # fmt: skip
+    tracer = build_tracer(
+        settings.langfuse_host,
+        settings.langfuse_public_key.get_secret_value(),
+        settings.langfuse_secret_key.get_secret_value(),
+        settings.deploy_environment,
+    )
     pipeline = RagPipeline(
         retriever,
         generator,
@@ -168,8 +166,8 @@ def build_decider(settings: Settings) -> Decider | None:
 
 
 def _llm_failure(exc: Exception) -> tuple[int, str, dict[str, str]]:
-    """Provider outage / overload -> 503 + Retry-After (try again later).
-    Provider rejecting our request (bad key, unknown model) -> 502: our config, retrying won't help."""
+    """Map an LLM error to (status, detail, headers): outage or 429 -> 503 with Retry-After,
+    a rejected request (bad key, unknown model) -> 502."""
     code = getattr(exc, "status_code", None)
     log.error("llm_error", error=type(exc).__name__, provider_status=code)
     if isinstance(exc, APIStatusError) and code != 429 and code < 500:
@@ -182,8 +180,7 @@ def _sse(event: dict[str, Any]) -> str:
 
 
 async def _close(comp: Components) -> None:
-    """Release connections on shutdown (test fakes have nothing to close). One failing close
-    must not leave the others open."""
+    """Release connections on shutdown; one failing close must not leave the others open."""
     llm = getattr(getattr(comp.pipeline, "generator", None), "client", None)
     decider = getattr(comp.pipeline, "decider", None)  # Jev holds an HTTP client
     tracer = getattr(comp.pipeline, "tracer", None)  # Langfuse sends traces in the background
@@ -214,8 +211,8 @@ class RateLimitedError(Exception):
 
 
 async def rate_limit(request: Request, response: Response) -> None:
-    """Dependency for the costly endpoints: take one token for this client or answer 429.
-    A dependency runs before the body is validated, so a flood of bad requests is limited too."""
+    """Take one token for this client or raise 429. Runs before body validation, so invalid
+    requests are limited too."""
     comp: Components = request.app.state.components
     if comp.limiter is None:
         return
@@ -227,7 +224,7 @@ async def rate_limit(request: Request, response: Response) -> None:
     if not verdict.allowed:
         log.warning("rate_limited", retry_after_s=verdict.retry_after_s)
         raise RateLimitedError(verdict.retry_after_s)
-    if not verdict.degraded:  # an honest client can slow down before it ever sees a 429
+    if not verdict.degraded:  # lets a client slow down before it hits a 429
         response.headers["X-RateLimit-Remaining"] = str(verdict.remaining)
 
 
@@ -240,7 +237,7 @@ RATE_LIMITED = {
                 "description": "seconds until a request is allowed again",
                 "schema": {"type": "integer"},
             }
-        },  # fmt: skip
+        },
     }
 }
 
@@ -256,42 +253,62 @@ def _source(c: Any) -> Source:
 
 
 def _safely(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
-    """Telemetry (metrics, traces) must never fail or change an answer: log and carry on."""
+    """Run a telemetry call; errors are logged and never fail the request."""
     try:
         fn(*args, **kwargs)
-    except Exception:  # noqa: BLE001 - observability is best effort by design
+    except Exception:  # noqa: BLE001 - best-effort telemetry
         log.exception("telemetry_failed", what=getattr(fn, "__name__", "?"))
 
 
-async def _after_stream(request: Request, tracer: Any, root: Any, event: dict[str, Any],
-                        question: str) -> None:  # fmt: skip
-    """A finished stream: metrics, prediction event, trace. Internal fields leave the event."""
+async def _after_stream(
+    request: Request, tracer: Any, root: Any, event: dict[str, Any], question: str
+) -> None:
+    """Metrics, prediction event and trace for a finished stream; pops ``_monitoring``."""
     seen = event.pop("_monitoring", {})
     full = {**event, **seen}
     backend = request.app.state.settings.llm_backend
     _safely(request.app.state.metrics.observe_stream_done, full, backend)
-    await request.app.state.record(lambda: event_from_stream_done(
-        full, question, event["request_id"], request.app.state.serving))  # fmt: skip
-    _safely(_close_trace, tracer, root, event.get("replace_with") or "(streamed: see generate)",
-            event["refused"], event.get("guardrails", []), seen.get("answerable_score"),
-            [s["article_number"] for s in event["sources"]])  # fmt: skip
+    await request.app.state.record(
+        lambda: event_from_stream_done(
+            full, question, event["request_id"], request.app.state.serving
+        )
+    )
+    _safely(
+        _close_trace,
+        tracer,
+        root,
+        event.get("replace_with") or "(streamed: see generate)",
+        event["refused"],
+        event.get("guardrails", []),
+        seen.get("answerable_score"),
+        [s["article_number"] for s in event["sources"]],
+    )
 
 
 def _trace_fields(request: Request, question: str, backend: str) -> dict[str, Any]:
-    """What every trace carries: the redacted question (never the raw one), what served it."""
+    """Fields shared by every trace; the question is PII-redacted."""
     serving = getattr(request.app.state, "serving", {})
     return {
         "input": {"question": redact_pii(question)[0]},
         "tags": [backend, f"decider:{serving.get('decider', '?')}"],
-        "metadata": {"index_collection": serving.get("index_collection", ""),
-                     "llm_model": serving.get("llm_model", "")},
+        "metadata": {
+            "index_collection": serving.get("index_collection", ""),
+            "llm_model": serving.get("llm_model", ""),
+        },
         "version": PROMPT_VERSION,
-    }  # fmt: skip
+    }
 
 
-def _close_trace(tracer: Any, root: Any, answer: str | None, refused: bool,
-                 guardrails: list[str], answerable: float | None, sources: list[int]) -> None:  # fmt: skip
-    """The answer as the trace's output, plus scores that can be filtered and charted later."""
+def _close_trace(
+    tracer: Any,
+    root: Any,
+    answer: str | None,
+    refused: bool,
+    guardrails: list[str],
+    answerable: float | None,
+    sources: list[int],
+) -> None:
+    """Set the trace output and attach filterable scores."""
     root.update(output={"answer": answer, "refused": refused, "sources": sources})
     tracer.score("refused", int(refused), data_type="BOOLEAN")
     for guard in guardrails:
@@ -309,6 +326,7 @@ def _append_line(path: Path, record: dict[str, Any]) -> None:
 def create_app(
     build: Callable[[Settings], Components] = build_components, settings: Settings | None = None
 ) -> FastAPI:
+    """``build`` creates the heavy components once at startup; tests pass fakes."""
     settings = settings or get_settings()
 
     @asynccontextmanager
@@ -318,16 +336,21 @@ def create_app(
         served, app.state.config_source = apply_registry_config(settings)
         app.state.settings = served
         app.state.components = build(served)  # load once, never per request
-        log.info("startup", collection=app.state.components.collection,
-                 llm=served.active_llm_model, config=app.state.config_source)  # fmt: skip
+        log.info(
+            "startup",
+            collection=app.state.components.collection,
+            llm=served.active_llm_model,
+            config=app.state.config_source,
+        )
         app.state.serving = {
-            "prompt_version": PROMPT_VERSION, "llm_model": served.active_llm_model,
+            "prompt_version": PROMPT_VERSION,
+            "llm_model": served.active_llm_model,
             "decider": served.decider_backend,
             "index_collection": app.state.components.collection,
-        }  # fmt: skip
-        app.state.metrics.set_info(app_version=__version__,
-                                   config_source=app.state.config_source,
-                                   **app.state.serving)  # fmt: skip
+        }
+        app.state.metrics.set_info(
+            app_version=__version__, config_source=app.state.config_source, **app.state.serving
+        )
         try:
             yield
         finally:
@@ -341,7 +364,7 @@ def create_app(
     )
     app.add_middleware(RequestIdMiddleware)
     app.state.known_keys = known_key_hashes(settings.api_keys.get_secret_value())
-    # one registry per app: tests build many apps in one process; production builds one
+    # one registry per app, since tests build many apps in one process
     app.state.metrics_registry = CollectorRegistry()
     app.state.metrics = RagMetrics(app.state.metrics_registry)
     app.state.events = EventLog(settings.events_dir) if settings.events_dir else None
@@ -391,9 +414,9 @@ def create_app(
 
     @app.get("/health", response_model=HealthResponse, tags=["ops"])
     async def health(request: Request) -> Any:
-        """Readiness: the index is reachable and not empty. Load balancers send traffic only then."""
+        """Readiness: the index is reachable and not empty."""
         comp: Components = request.app.state.components
-        try:  # sync client call in a thread: a slow Qdrant must not freeze every other request
+        try:  # sync client, run in a thread so a slow Qdrant does not block the event loop
             points = (await asyncio.to_thread(comp.qdrant.count, comp.alias)).count
         except Exception as exc:  # noqa: BLE001 - any backend failure means "not ready"
             log.error("health_check_failed", error=type(exc).__name__)
@@ -411,8 +434,7 @@ def create_app(
 
     @app.get("/metrics", include_in_schema=False)
     async def metrics(request: Request) -> Response:
-        """Prometheus scrape endpoint (text format). Only reachable inside the compose network
-        and on 127.0.0.1; a public deployment would put it behind the proxy's allow-list."""
+        """Prometheus scrape endpoint, exposed only inside the compose network and on 127.0.0.1."""
         body, content_type = render(request.app.state.metrics_registry)
         return Response(body, media_type=content_type)
 
@@ -438,8 +460,13 @@ def create_app(
             "index": {"alias": comp.alias, "collection": comp.collection, **comp.index_meta},
         }
 
-    @app.post("/ask", response_model=AskResponse, tags=["qa"],
-              dependencies=[Depends(rate_limit)], responses=RATE_LIMITED)  # fmt: skip
+    @app.post(
+        "/ask",
+        response_model=AskResponse,
+        tags=["qa"],
+        dependencies=[Depends(rate_limit)],
+        responses=RATE_LIMITED,
+    )
     async def ask(request: Request, body: AskRequest, stream: bool = Query(False)) -> Any:
         """Answer a question about the Egyptian Civil Code with article citations.
         `?stream=true` sends the answer token by token as Server-Sent Events."""
@@ -467,14 +494,24 @@ def create_app(
                         _safely(metrics.observe_stream_error)
                         _safely(root.update, level="ERROR", status_message=type(exc).__name__)
                         # the 200 status line is already sent; tell the client in the stream
-                        yield _sse({"type": "error", "detail": _llm_failure(exc)[1],
-                                    "request_id": request_id})  # fmt: skip
+                        yield _sse(
+                            {
+                                "type": "error",
+                                "detail": _llm_failure(exc)[1],
+                                "request_id": request_id,
+                            }
+                        )
                     except Exception as exc:
                         log.exception("stream_failed")
                         _safely(metrics.observe_stream_error)
                         _safely(root.update, level="ERROR", status_message=type(exc).__name__)
-                        yield _sse({"type": "error", "detail": "Internal server error",
-                                    "request_id": request_id})  # fmt: skip
+                        yield _sse(
+                            {
+                                "type": "error",
+                                "detail": "Internal server error",
+                                "request_id": request_id,
+                            }
+                        )
 
             return StreamingResponse(
                 events(),
@@ -484,12 +521,22 @@ def create_app(
             )
         with tracer.trace(request_id, "ask", **trace) as root:
             result = await pipeline.ask(body.question, book=body.book)
-            _safely(_close_trace, tracer, root, result.answer, result.refused, result.guardrails,
-                    result.decision.answerable if result.decision else None,
-                    [c.article_number for c in result.sources])  # fmt: skip
+            _safely(
+                _close_trace,
+                tracer,
+                root,
+                result.answer,
+                result.refused,
+                result.guardrails,
+                result.decision.answerable if result.decision else None,
+                [c.article_number for c in result.sources],
+            )
         _safely(metrics.observe_answer, result, backend)
-        await record(lambda: event_from_answer(result, body.question, request_id, "ask",
-                                               request.app.state.serving))  # fmt: skip
+        await record(
+            lambda: event_from_answer(
+                result, body.question, request_id, "ask", request.app.state.serving
+            )
+        )
         return AskResponse(
             answer=result.answer,
             language=result.language,
@@ -504,12 +551,16 @@ def create_app(
             timings_ms=result.timings_ms,
         )
 
-    @app.post("/feedback", status_code=202, tags=["qa"],
-              dependencies=[Depends(rate_limit)], responses=RATE_LIMITED)  # fmt: skip
+    # rate limited like /ask: an unlimited write endpoint can fill the disk
+    @app.post(
+        "/feedback",
+        status_code=202,
+        tags=["qa"],
+        dependencies=[Depends(rate_limit)],
+        responses=RATE_LIMITED,
+    )
     async def feedback(body: FeedbackRequest) -> dict[str, str]:
-        """Thumbs up/down on an answer, keyed by its request id (becomes a Langfuse score later).
-        Same rate limit as /ask (an unlimited write endpoint fills the disk), and the comment is
-        stored with PII redacted, like questions."""
+        """Thumbs up/down on an answer by request id; the comment is stored with PII redacted."""
         record = {
             "at": datetime.now(UTC).isoformat(),
             "request_id": body.request_id,

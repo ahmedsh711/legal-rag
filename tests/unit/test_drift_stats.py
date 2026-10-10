@@ -39,11 +39,11 @@ def test_chi2_compares_two_samples_and_tolerates_new_categories():
     assert not chi2_test(ref, {"ar": 48, "en": 52}).drift
     shifted = chi2_test(ref, {"ar": 90, "en": 10})
     assert shifted.drift and shifted.p_value < 0.001
-    assert chi2_test(ref, {"ar": 40, "en": 40, "fr": 20}).drift  # a language we never saw
+    assert chi2_test(ref, {"ar": 40, "en": 40, "fr": 20}).drift  # unseen language
 
 
 def test_chi2_merges_rare_categories_instead_of_trusting_tiny_counts():
-    # found in review: a book seen once in a small reference made one-off counts look decisive
+    # a category seen once in a small reference must not make one-off counts look decisive
     ref = {"a": 30, "b": 30, "rare": 1}
     cur = {"a": 30, "b": 29, "rare": 0, "new": 1}
     assert not chi2_test(ref, cur).drift
@@ -62,7 +62,7 @@ def test_js_divergence_is_zero_for_the_same_mix_and_one_for_disjoint_mixes():
 
 
 def test_mmd_can_reach_a_bonferroni_corrected_alpha():
-    # found in review: 200 permutations cannot give p below 1/201 = 0.005 > 0.01/6
+    # 200 permutations cannot give p below 1/201 = 0.005 > 0.01/6
     rng = np.random.default_rng(0)
     ref, same = rng.normal(size=(150, 4)), rng.normal(size=(150, 4))
     moved = rng.normal(size=(150, 4)) + np.array([0.8, 0, 0, 0])

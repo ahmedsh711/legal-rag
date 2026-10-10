@@ -17,11 +17,11 @@ def redis():
     return fakeredis.FakeAsyncRedis()
 
 
-async def test_a_burst_passes_then_a_429_with_an_honest_retry_after(redis):
+async def test_a_burst_passes_then_a_429_with_retry_after(redis):
     bucket = TokenBucket(redis, capacity=2, per_minute=1)  # one new token every 60 s
     first, second, third = [await bucket.take("u1") for _ in range(3)]
     assert first.allowed and second.allowed and second.remaining == 0
-    assert not third.allowed and 55 <= third.retry_after_s <= 60  # when a token really exists
+    assert not third.allowed and 55 <= third.retry_after_s <= 60  # time until the next token
 
 
 async def test_each_client_has_its_own_bucket(redis):
@@ -55,7 +55,7 @@ def test_only_known_api_keys_get_their_own_bucket():
     a = client_key("key-a", "10.0.0.7", known)
     assert a.startswith("key:") and "key-a" not in a  # never stored in clear
     assert a != client_key("key-b", "10.0.0.7", known)
-    # found by review: a made-up key used to buy a fresh bucket; now it is just the IP
+    # an unknown key falls back to the IP bucket instead of getting a fresh one
     assert client_key("made-up-key", "10.0.0.7", known) == "ip:10.0.0.7"
     assert client_key(None, None, known) == "ip:unknown"
 
