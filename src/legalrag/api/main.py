@@ -45,6 +45,7 @@ from legalrag.index.batcher import QueryBatcher
 from legalrag.index.store import alias_target, read_metadata
 from legalrag.ingest.normalize import NORMALIZATION_VERSION
 from legalrag.logging_conf import configure_logging, get_logger, request_id_var
+from legalrag.monitoring.events import EventLog, event_from_answer, event_from_stream_done
 from legalrag.observability.metrics import RagMetrics, render
 from legalrag.pipeline import RagPipeline
 from legalrag.ratelimit import TokenBucket, build_limiter, client_key, known_key_hashes
@@ -263,12 +264,14 @@ def create_app(
         app.state.components = build(served)  # load once, never per request
         log.info("startup", collection=app.state.components.collection,
                  llm=served.active_llm_model, config=app.state.config_source)  # fmt: skip
-        app.state.metrics.set_info(
-            app_version=__version__, prompt_version=PROMPT_VERSION,
-            llm_model=served.active_llm_model, decider=served.decider_backend,
-            index_collection=app.state.components.collection,
-            config_source=app.state.config_source,
-        )  # fmt: skip
+        app.state.serving = {
+            "prompt_version": PROMPT_VERSION, "llm_model": served.active_llm_model,
+            "decider": served.decider_backend,
+            "index_collection": app.state.components.collection,
+        }  # fmt: skip
+        app.state.metrics.set_info(app_version=__version__,
+                                   config_source=app.state.config_source,
+                                   **app.state.serving)  # fmt: skip
         try:
             yield
         finally:
@@ -285,6 +288,16 @@ def create_app(
     # one registry per app: tests build many apps in one process; production builds one
     app.state.metrics_registry = CollectorRegistry()
     app.state.metrics = RagMetrics(app.state.metrics_registry)
+    app.state.events = EventLog(settings.events_dir) if settings.events_dir else None
+
+    async def record(event_factory: Callable[[], Any]) -> None:
+        """Write one prediction event in a worker thread; a failed write never fails an answer."""
+        if app.state.events is None:
+            return
+        try:
+            await asyncio.to_thread(app.state.events.write, event_factory())
+        except Exception:  # noqa: BLE001 - monitoring must not take answers down
+            log.exception("event_write_failed")
 
     @app.exception_handler(RateLimitedError)
     async def _too_many(request: Request, exc: RateLimitedError) -> JSONResponse:
@@ -381,6 +394,11 @@ def create_app(
                         if event["type"] == "done":
                             event["request_id"] = request_id
                             metrics.observe_stream_done(event, backend)
+                            await record(
+                                lambda e=event: event_from_stream_done(
+                                    e, body.question, request_id, request.app.state.serving
+                                )
+                            )
                         yield _sse(event)
                 except (APIConnectionError, APIStatusError) as exc:
                     # the 200 status line is already sent; tell the client in the stream itself
@@ -399,6 +417,8 @@ def create_app(
             )
         result = await pipeline.ask(body.question, book=body.book)
         metrics.observe_answer(result, backend)
+        await record(lambda: event_from_answer(result, body.question, request_id, "ask",
+                                               request.app.state.serving))  # fmt: skip
         return AskResponse(
             answer=result.answer,
             language=result.language,

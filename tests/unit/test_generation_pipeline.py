@@ -248,3 +248,14 @@ async def test_stream_refuses_an_injection_and_names_the_guard():
     assert events[0] == {"type": "token", "text": REFUSAL_EN}
     assert events[-1]["refused"] and events[-1]["guardrails"] == ["injection:prompt_leak"]
     assert llm.calls == []
+
+
+async def test_stream_done_event_carries_what_monitoring_needs():
+    pipe = RagPipeline(
+        StubRetriever([chunk(147, book="Book 1"), chunk(374)]),
+        Generator(FakeLLM("Yes [Art. 147]."), "m", 100, 0.0),
+    )
+    done = [e async for e in pipe.ask_stream("Is a contract binding?")][-1]
+    assert done["language"] == "en" and done["context_articles"] == [147, 374]
+    assert done["top_book"] == "Book 1" and done["answerable_score"] is None
+    assert {"guard", "retrieve", "ttft", "total"} <= set(done["timings_ms"])

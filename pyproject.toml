@@ -43,6 +43,10 @@ eval = [
 load = [
     "locust>=2.37",
 ]
+monitoring = [
+    "scikit-learn>=1.5",
+    "scipy>=1.14",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.0,<0.13.0"]

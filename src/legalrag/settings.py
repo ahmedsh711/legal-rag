@@ -85,6 +85,8 @@ class Settings(BaseSettings):
     articles_path: str = "data/processed/articles.json"
     golden_set_path: str = "data/golden/golden_set.jsonl"
     feedback_path: str = "data/feedback/feedback.jsonl"
+    # one JSON line per answer for drift / drill-down (no question text); "" = off
+    events_dir: str = "data/events"
 
     # --- infra ---
     redis_url: str = "redis://127.0.0.1:6379/0"

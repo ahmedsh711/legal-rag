@@ -55,8 +55,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - name: Install (with the eval group, so the MLflow/RAGAS code is tested too)
-        run: uv sync --locked --group eval
+      - name: Install (eval + monitoring groups, so MLflow/RAGAS and drift code are tested too)
+        run: uv sync --locked --group eval --group monitoring
       - name: Tests with coverage gate
         run: uv run pytest
 

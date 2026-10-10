@@ -213,11 +213,17 @@ class RagPipeline:
         """Server-sent events: {"type": "token", "text": ...} ... then one {"type": "done", ...}."""
         t0 = time.perf_counter()
         language = detect_language(question)
-        safe_question, ctx, fired, _ = await self._guarded_context(question, book)
+        safe_question, ctx, fired, timings = await self._guarded_context(question, book)
+        chunks = ctx.chunks if ctx else []
+        # what monitoring records about this answer (prediction event; never the text)
+        seen = {"language": language, "context_articles": [c.article_number for c in chunks],
+                "top_book": chunks[0].book if chunks else "",
+                "answerable_score": ctx.decision.answerable if ctx and ctx.decision else None}  # fmt: skip
         if ctx is None or not ctx.chunks or ctx.gated:
             yield {"type": "token", "text": refusal_for(language)}
             yield {"type": "done", "refused": True, "sources": [], "invalid_citations": [],
-                   "guardrails": fired}  # fmt: skip
+                   "guardrails": fired, **seen,
+                   "timings_ms": {**timings, "total": _ms(t0)}}  # fmt: skip
             return
         context = ctx.chunks
         stream = self.generator.stream(build_messages(safe_question, context))
@@ -249,6 +255,7 @@ class RagPipeline:
                 "prompt_tokens": stream.prompt_tokens,
                 "completion_tokens": stream.completion_tokens,
             },
-            "timings_ms": {"ttft": first_token_ms, "total": _ms(t0)},
+            "timings_ms": {**timings, "ttft": first_token_ms, "total": _ms(t0)},
             "prompt_version": PROMPT_VERSION,
+            **seen,
         }
