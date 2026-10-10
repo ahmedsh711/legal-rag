@@ -41,6 +41,7 @@ class Prediction(BaseModel):
     context_texts: list[str] = []  # for RAGAS
     reference: str = ""
     answerable_score: float | None = None  # the decider's gate score, when one ran
+    gated: bool = False  # refused by the gate (the LLM never saw it), not by the LLM
     decider_cost_usd: float = 0.0
 
     @property
@@ -115,8 +116,9 @@ def gate_sweep(preds: Sequence[Prediction], thresholds: Sequence[float]) -> list
     for t in thresholds:
 
         def refused(p: Prediction, t: float = t) -> bool:
-            gated = p.answerable_score is not None and p.answerable_score < t
-            return p.refused or (gated and not article_numbers_in(p.question))
+            below = p.answerable_score is not None and p.answerable_score < t
+            llm_refused = p.refused and not p.gated  # the run's own gate is replayed, not kept
+            return llm_refused or (below and not article_numbers_in(p.question))
 
         rows.append({"threshold": t,
                      "false_refusal_rate": _rate(answerable, refused),

@@ -33,12 +33,19 @@ class Settings(BaseSettings):
     # Google's Gemini API has a free tier and an OpenAI-compatible endpoint
     gemini_api_key: SecretStr = SecretStr("")
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.1-flash-lite"  # 2.5-flash is closed to new users (Oct 2026)
     # RAGAS judge: a different family from the generator if possible (self-preference bias);
     # needs JSON mode. judge_backend picks the endpoint + key (openrouter | gemini).
     judge_backend: Literal["openrouter", "gemini"] = "openrouter"
     judge_model: str = "anthropic/claude-haiku-5.5"
     judge_embedding_model: str = "baai/bge-m3"  # for answer relevancy (same endpoint)
+    # "none" switches off hidden reasoning on thinking models (it otherwise eats max_tokens)
+    judge_reasoning_effort: str | None = None
+    # requests-per-minute limits of the provider (free tiers): evaluations pace themselves under them
+    llm_rpm: float | None = None
+    judge_rpm: float | None = None
+    # RAGAS metrics to compute; each costs judge calls (fewer on a free daily quota)
+    ragas_metrics: str = "faithfulness,answer_relevancy,context_precision,context_recall"
     vllm_base_url: str = "http://127.0.0.1:8001/v1"
     vllm_model: str = "Qwen/Qwen2.5-1.5B-Instruct-AWQ"
     llm_timeout_s: float = 60.0

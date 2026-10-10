@@ -85,6 +85,13 @@ def test_gate_sweep_replays_refusals_at_each_threshold():
     assert rows[0.8]["correct_refusal_rate"] == 1.0
 
 
+def test_gate_sweep_ignores_the_runs_own_gate_refusals():
+    # gated during the run at 0.75: below that threshold the sweep must not count it as refused
+    p = pred(id="g", answerable_score=0.5, refused=True, gated=True)
+    rows = {r["threshold"]: r for r in gate_sweep([p], [0.3, 0.6])}
+    assert rows[0.3]["false_refusal_rate"] == 0.0 and rows[0.6]["false_refusal_rate"] == 1.0
+
+
 def test_repealed_items_count_as_answerable():
     p = pred(category="repealed", gold_articles=[60], cited=[60], context_articles=[60])
     m = summarize([p])["all"]
