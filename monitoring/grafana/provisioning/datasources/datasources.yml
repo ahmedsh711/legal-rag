@@ -19,3 +19,14 @@ datasources:
       sslmode: disable
     secureJsonData:
       password: $POSTGRES_PASSWORD
+  - name: Logs
+    uid: loki
+    type: loki
+    url: http://loki:3100
+    jsonData:
+      # a trace_id inside a log line becomes a link to that request's trace in Langfuse
+      derivedFields:
+        - name: Langfuse trace
+          matcherRegex: '"trace_id": "([0-9a-f]+)"'
+          url: "http://127.0.0.1:3000/project/legal-rag/traces/$${__value.raw}"
+          urlDisplayLabel: Open trace in Langfuse

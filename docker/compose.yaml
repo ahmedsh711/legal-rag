@@ -283,6 +283,26 @@ services:
     profiles: [monitoring]
     restart: unless-stopped
 
+  # logs: Loki stores them, Alloy ships every legal-rag container's stdout to it. Lighter than an
+  # ELK stack (no full-text index: labels + grep-like filters), and Grafana already reads it.
+  loki:
+    image: grafana/loki:3.7.8
+    profiles: [monitoring]
+    command: [-config.file=/etc/loki/local-config.yaml]  # the image's single-node config
+    volumes: [loki_data:/loki]
+    ports: ["127.0.0.1:3100:3100"]
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.20.0
+    profiles: [monitoring]
+    command: [run, /etc/alloy/config.alloy, --storage.path=/var/lib/alloy/data]
+    volumes:
+      - ../monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # reads container logs (local only)
+    depends_on: [loki]
+    restart: unless-stopped
+
   # ---------- llm-observability: Langfuse v4 (Phase 5) ----------
   # Traces of every answer (one span per stage, the LLM call with tokens and cost), scores,
   # and prompt management with labels. Reuses our Postgres (database "langfuse"), Redis and MinIO
@@ -380,3 +400,4 @@ volumes:
   grafana_data:
   clickhouse_data:
   clickhouse_logs:
+  loki_data:

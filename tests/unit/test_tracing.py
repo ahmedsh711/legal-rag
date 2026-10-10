@@ -90,3 +90,19 @@ def test_langfuse_tracer_uses_the_request_id_as_trace_seed(monkeypatch):
         "score",
         {"name": "refused", "value": 0, "data_type": "BOOLEAN", "comment": None},
     ) in client.calls
+
+
+def test_log_lines_inside_a_trace_carry_its_id(monkeypatch):
+    import structlog
+
+    import legalrag.observability.tracing as tracing
+
+    @contextmanager
+    def fake_propagate(**kw):
+        yield
+
+    monkeypatch.setattr(tracing, "propagate_attributes", fake_propagate)
+    tracer = LangfuseTracer(FakeLangfuse())
+    with tracer.trace("req-9", "ask"):
+        assert structlog.contextvars.get_contextvars()["trace_id"] == "trace-req-9"
+    assert "trace_id" not in structlog.contextvars.get_contextvars()  # gone after the request

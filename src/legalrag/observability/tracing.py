@@ -18,6 +18,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
+import structlog
 from langfuse import propagate_attributes
 
 
@@ -85,7 +86,8 @@ class LangfuseTracer(NoopTracer):
               metadata: dict[str, Any] | None = None, version: str | None = None,
               input: Any = None) -> Iterator[Any]:  # noqa: A002 - Langfuse's own field name  # fmt: skip
         trace_id = self.client.create_trace_id(seed=request_id)  # request id -> trace id
-        with propagate_attributes(trace_name=name, tags=list(tags), metadata=metadata or {},
+        # every log line of this request carries trace_id: a log line links to its trace
+        with structlog.contextvars.bound_contextvars(trace_id=trace_id), propagate_attributes(trace_name=name, tags=list(tags), metadata=metadata or {},
                                   version=version):  # fmt: skip
             with self.client.start_as_current_observation(
                 trace_context={"trace_id": trace_id}, name=name, as_type="span", input=input
