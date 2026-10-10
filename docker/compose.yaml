@@ -40,6 +40,7 @@ services:
         required: false
     environment:
       QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0  # rate-limit buckets
       VLLM_BASE_URL: http://vllm:8000/v1
       FEEDBACK_PATH: /app/feedback/feedback.jsonl
       # CONFIG_SOURCE=mlflow (in .env): runtime knobs from models:/legal-rag-config@production
@@ -56,6 +57,8 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   # ---------- tracking: MLflow + DVC remote (Phase 1/3) ----------

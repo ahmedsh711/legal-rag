@@ -35,6 +35,7 @@ from legalrag.index.store import alias_target, read_metadata
 from legalrag.ingest.normalize import NORMALIZATION_VERSION
 from legalrag.logging_conf import configure_logging, get_logger, request_id_var
 from legalrag.pipeline import RagPipeline
+from legalrag.ratelimit import build_limiter, client_key
 from legalrag.retrieval import Retriever
 from legalrag.settings import Settings, get_settings
 
@@ -52,6 +53,7 @@ class Components:
     alias: str
     collection: str
     index_meta: dict[str, Any]
+    limiter: Any = None  # TokenBucket, or None = no rate limit
 
 
 def check_index_compatible(meta: dict[str, Any] | None, settings: Settings) -> None:
@@ -118,7 +120,12 @@ def build_components(settings: Settings) -> Components:
         decider=build_decider(settings),
         gate_threshold=settings.gate_threshold,
     )
-    return Components(pipeline, client, settings.qdrant_collection_alias, collection, meta or {})
+    limiter = build_limiter(
+        settings.redis_url, settings.rate_limit_per_minute, settings.rate_limit_burst
+    )
+    return Components(
+        pipeline, client, settings.qdrant_collection_alias, collection, meta or {}, limiter
+    )
 
 
 def build_decider(settings: Settings) -> Decider | None:
@@ -160,6 +167,24 @@ async def _close(comp: Components) -> None:
     decider = getattr(comp.pipeline, "decider", None)  # Jev holds an HTTP client
     if hasattr(decider, "aclose"):
         await decider.aclose()
+    if hasattr(comp.limiter, "aclose"):
+        await comp.limiter.aclose()
+
+
+async def _rate_limited(request: Request, comp: Components) -> JSONResponse | None:
+    """429 + Retry-After when this client's bucket is empty, else None (go ahead)."""
+    if comp.limiter is None:
+        return None
+    ip = request.client.host if request.client else None
+    verdict = await comp.limiter.take(client_key(request.headers.get("X-API-Key"), ip))
+    if verdict.allowed:
+        return None
+    log.warning("rate_limited", retry_after_s=verdict.retry_after_s)
+    return JSONResponse(
+        {"detail": "Too many requests, please retry later.", "request_id": request_id_var.get()},
+        status_code=429,
+        headers={"Retry-After": str(verdict.retry_after_s)},
+    )
 
 
 def _source(c: Any) -> Source:
@@ -263,7 +288,10 @@ def create_app(
     async def ask(request: Request, body: AskRequest, stream: bool = Query(False)) -> Any:
         """Answer a question about the Egyptian Civil Code with article citations.
         `?stream=true` sends the answer token by token as Server-Sent Events."""
-        pipeline = request.app.state.components.pipeline
+        comp: Components = request.app.state.components
+        if limited := await _rate_limited(request, comp):
+            return limited
+        pipeline = comp.pipeline
         request_id = request_id_var.get()
         if stream:
 

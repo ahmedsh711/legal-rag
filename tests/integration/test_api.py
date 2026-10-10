@@ -31,10 +31,10 @@ class FakeQdrant:
         return SimpleNamespace(count=self.points)
 
 
-def make_client(tmp_path, pipeline, qdrant=None) -> TestClient:
+def make_client(tmp_path, pipeline, qdrant=None, limiter=None) -> TestClient:
     settings = Settings(_env_file=None, feedback_path=str(tmp_path / "feedback.jsonl"))
     comp = Components(
-        pipeline, qdrant or FakeQdrant(), "articles", "articles_test", {"articles": 5}
+        pipeline, qdrant or FakeQdrant(), "articles", "articles_test", {"articles": 5}, limiter
     )
     return TestClient(create_app(build=lambda _s: comp, settings=settings))
 
@@ -215,3 +215,21 @@ def test_shutdown_closes_the_deciders_http_client(tmp_path):
     with make_client(tmp_path, pipeline):
         pass  # leaving the block runs the lifespan shutdown
     assert ClosableDecider.closed
+
+
+def test_rate_limit_is_a_429_with_retry_after_and_ops_stay_open(tmp_path, qdrant, embedder):
+    fakeredis = pytest.importorskip("fakeredis")
+    from legalrag.ratelimit import TokenBucket
+
+    retriever = Retriever(qdrant, alias="articles", embedder=embedder, top_n=3)
+    pipeline = RagPipeline(retriever, Generator(FakeLLM("Yes [Art. 147]."), "m", 100, 0.0))
+    limiter = TokenBucket(fakeredis.FakeAsyncRedis(), capacity=1, per_minute=1)
+    ask = {"json": {"question": "Is a contract binding?"}, "headers": {"X-API-Key": "user-a"}}
+    with make_client(tmp_path, pipeline, limiter=limiter) as c:
+        assert c.post("/ask", **ask).status_code == 200
+        r = c.post("/ask", **ask)
+        assert r.status_code == 429 and 55 <= int(r.headers["Retry-After"]) <= 60
+        assert r.json()["request_id"] == r.headers["X-Request-ID"]
+        other = c.post("/ask", json=ask["json"], headers={"X-API-Key": "user-b"})
+        assert other.status_code == 200  # one client's burst does not block another
+        assert c.get("/health").status_code == 200 and c.get("/metadata").status_code == 200

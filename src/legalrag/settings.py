@@ -94,7 +94,10 @@ class Settings(BaseSettings):
     langfuse_host: str = "http://127.0.0.1:3000"
     langfuse_public_key: SecretStr = SecretStr("")
     langfuse_secret_key: SecretStr = SecretStr("")
-    rate_limit_per_minute: int = 60
+    # per client (API key, else IP): a burst of rate_limit_burst, then this many per minute.
+    # 0 switches the limit off. Redis down -> served without a limit (fail open), logged.
+    rate_limit_per_minute: float = 30.0
+    rate_limit_burst: int = 10
 
     def _endpoint(self, backend: str) -> tuple[str, str]:
         """(base_url, api_key) of a backend. vLLM ignores the key, but the client needs one."""
