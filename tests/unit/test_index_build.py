@@ -87,3 +87,19 @@ def test_load_index_params(tmp_path):
     p.write_text("index:\n  max_length: 512\n", encoding="utf-8")
     assert load_index_params(p).max_length == 512
     assert load_index_params(p).embedding_model == "BAAI/bge-m3"
+
+
+def test_a_candidate_build_leaves_the_serving_alias_alone(articles, embedder):
+    client = QdrantClient(":memory:")
+    serving = build_index(articles, embedder, client, IndexParams(), articles_md5="v1")
+    candidate = build_index(
+        articles[:2], embedder, client, IndexParams(), "v2", target_alias="articles_candidate"
+    )
+    assert alias_target(client, "articles") == serving["collection"]
+    assert alias_target(client, "articles_candidate") == candidate["collection"]
+    assert candidate["alias"] == "articles_candidate"
+    # collections are named by content, not by alias: same corpus, same collection
+    same = build_index(
+        articles, None, client, IndexParams(), "v1", target_alias="articles_candidate"
+    )
+    assert same["reused"] and same["collection"] == serving["collection"]
