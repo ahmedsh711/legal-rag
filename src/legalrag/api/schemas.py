@@ -58,6 +58,14 @@ class AskResponse(BaseModel):
     model: str
     usage: dict[str, int]
     timings_ms: dict[str, float]
+    guardrails: list[str] = Field(
+        default_factory=list, description="guards that fired, e.g. pii:phone, injection:override"
+    )
+
+
+class ErrorBody(BaseModel):
+    detail: str
+    request_id: str
 
 
 class FeedbackRequest(BaseModel):

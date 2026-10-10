@@ -1,6 +1,7 @@
 # Continuous integration: runs on every pull request and on pushes to main.
-# lint -> test (coverage gate lives in pyproject.toml). Later phases add the
-# RAGAS quality gate and the Docker build/push jobs (see task_plan.md, Phase 4).
+#   lint -> test (coverage gate in pyproject.toml) -> ragas-smoke (quality gate) + image (build,
+#   import check, push to Docker Hub on main only).
+# A PR can merge only when all four are green (branch protection on main).
 name: CI
 
 on:
@@ -15,6 +16,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  IMAGE: ahmedshobaki/legal-rag-api
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -26,9 +30,9 @@ jobs:
       - name: Install (exactly what uv.lock says)
         run: uv sync --locked
       - name: Ruff lint
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests loadtest
       - name: Ruff format check
-        run: uv run ruff format --check src tests
+        run: uv run ruff format --check src tests loadtest
 
   test:
     needs: lint
@@ -42,3 +46,106 @@ jobs:
         run: uv sync --locked --group eval
       - name: Tests with coverage gate
         run: uv run pytest
+
+  # Quality gate: the current prompt + generation model on 10 frozen golden questions, judged by
+  # RAGAS (faithfulness >= 0.75, gold citation >= 0.8). It spends free-tier quota, so on a PR it
+  # runs only when something that changes answers changed; on main it always runs.
+  ragas-smoke:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the PR base commit is needed for the diff below
+      - name: Did anything that changes answers change?
+        id: changed
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # anything that can change an answer or its scoring: prompt/pipeline code, settings
+          # (model knobs), the eval package, the frozen set, dependencies, this workflow
+          pattern='^(src/legalrag/(generation|pipeline|guardrails|retrieval|settings)\.py|src/legalrag/eval/.*\.py|data/golden/smoke\.jsonl|pyproject\.toml|uv\.lock|\.github/workflows/ci\.yml)$'
+          if git diff --name-only "$BASE" HEAD | grep -qE "$pattern"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No prompt/generation change: smoke gate not needed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: astral-sh/setup-uv@v6
+        if: steps.changed.outputs.run == 'true'
+        with:
+          enable-cache: true
+      - name: Install
+        if: steps.changed.outputs.run == 'true'
+        run: uv sync --locked --group eval
+      - name: RAGAS smoke gate
+        if: steps.changed.outputs.run == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LLM_BACKEND: gemini
+          GEMINI_MODEL: gemini-3.1-flash-lite
+          JUDGE_BACKEND: gemini
+          JUDGE_MODEL: gemini-3.1-flash-lite
+          LLM_RPM: "12" # free tier allows 15/min
+          JUDGE_RPM: "12"
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::GEMINI_API_KEY secret is not available: cannot measure, failing closed"
+            exit 1
+          fi
+          uv run python -m legalrag.eval.smoke
+      - name: Keep the answers and scores
+        if: always() && steps.changed.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ragas-smoke
+          path: reports/eval/smoke/
+          if-no-files-found: ignore
+
+  # Build the image every time (a broken Dockerfile fails the PR), check it starts Python and
+  # imports the app, and push exactly that image on main: sha-<commit> (immutable) + latest.
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Short commit id
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          load: true
+          push: false
+          tags: |
+            ${{ env.IMAGE }}:sha-${{ steps.sha.outputs.short }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: The image imports the app (no model, no index needed)
+        run: |
+          docker run --rm --entrypoint python "$IMAGE:sha-${{ steps.sha.outputs.short }}" \
+            -c "import legalrag.api.main as m; print('app ok:', m.app.title)"
+          docker image ls "$IMAGE" --format '{{.Repository}}:{{.Tag}} {{.Size}}' >> "$GITHUB_STEP_SUMMARY"
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          username: ahmedshobaki
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Push sha-<commit> and latest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push "$IMAGE:sha-${{ steps.sha.outputs.short }}"
+          docker push "$IMAGE:latest"

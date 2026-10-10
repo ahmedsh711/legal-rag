@@ -53,6 +53,7 @@ async def predict(pipeline: Any, item: GoldenItem) -> Prediction:
         gated=ans.gated,
         decider_cost_usd=ans.decision.cost_usd if ans.decision else 0.0,
         decider_model=ans.decision.model if ans.decision else "",
+        guardrails=ans.guardrails,
     )
 
 

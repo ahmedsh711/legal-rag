@@ -16,6 +16,7 @@ dependencies = [
     "pypdf>=6.19.0",
     "pyyaml>=6.0.3",
     "qdrant-client>=1.19",
+    "redis>=5",
     "structlog>=25.5.0",
     "torch>=2.14.1",
     "transformers>=4.44,<6",
@@ -26,6 +27,7 @@ dependencies = [
 dev = [
     "detect-secrets>=1.5.0",
     "dvc[s3]>=3.67.1",
+    "fakeredis[lua]>=2.39.0",
     "pre-commit>=4.6.0",
     "pytest>=9.1.0",
     "pytest-asyncio>=1.4.0",
@@ -36,6 +38,9 @@ eval = [
     "langchain-community==0.4.1",
     "mlflow==3.17.0",
     "ragas==0.4.3",
+]
+load = [
+    "locust>=2.37",
 ]
 
 [build-system]

@@ -1,7 +1,7 @@
 # One compose file, many profiles, so the laptop only runs what the current phase needs.
 #   docker compose -f docker/compose.yaml --profile core up -d
 # Profiles: core | tracking | llm | monitoring | llm-observability | airflow | serving
-# Services are added phase by phase (see task_plan.md); this is the Phase 0 skeleton.
+# Services are added phase by phase (see task_plan.md). Phase 4 added llm (vLLM on the GPU).
 name: legal-rag
 
 services:
@@ -40,6 +40,7 @@ services:
         required: false
     environment:
       QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0  # rate-limit buckets
       VLLM_BASE_URL: http://vllm:8000/v1
       FEEDBACK_PATH: /app/feedback/feedback.jsonl
       # CONFIG_SOURCE=mlflow (in .env): runtime knobs from models:/legal-rag-config@production
@@ -56,6 +57,8 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   # ---------- tracking: MLflow + DVC remote (Phase 1/3) ----------
@@ -129,6 +132,50 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ---------- llm: our own model server on the GPU (Phase 4) ----------
+  # vLLM speaks the OpenAI API, so the app switches to it with LLM_BACKEND=vllm and nothing else.
+  # Sized for a 4 GB laptop GPU (RTX 3050): Qwen2.5-1.5B-Instruct with 4-bit AWQ weights,
+  # 78 % of VRAM (Windows keeps part of it for the desktop), a 4,096-token window (our longest
+  # prompt is 1,896 Qwen tokens + up to 800 answer tokens) and at most 8 sequences decoded together.
+  vllm:
+    image: vllm/vllm-openai:v0.30.0
+    profiles: [llm]
+    # same start-up script as the API: trusts a local HTTPS-inspection CA if one is mounted,
+    # then runs the image's own command (`vllm serve ...`)
+    entrypoint: ["sh", "/usr/local/bin/ca-entrypoint.sh", "vllm", "serve"]
+    environment:
+      HF_HUB_DISABLE_XET: "1"  # plain HTTPS download, so the trusted bundle above applies
+    command:
+      - --model=Qwen/Qwen2.5-1.5B-Instruct-AWQ
+      - --revision=3ecffa0ceb27851800f45519bab9c457a04405e1  # pinned, like bge-m3
+      - --tokenizer-revision=3ecffa0ceb27851800f45519bab9c457a04405e1
+      - --quantization=awq_marlin  # Marlin kernels: fast 4-bit matmul on Ampere (sm_86)
+      - --gpu-memory-utilization=0.78
+      - --max-model-len=4096
+      - --max-num-seqs=8
+      - --host=0.0.0.0
+      - --port=8000
+    volumes:
+      - vllm_cache:/root/.cache/huggingface  # ~1.1 GB of weights, downloaded once
+      - ./entrypoint.sh:/usr/local/bin/ca-entrypoint.sh:ro
+      - ${LOCAL_CA_CERT:-./no-local-ca.pem}:/run/local-ca.pem:ro
+    ports: ["127.0.0.1:8001:8000"]
+    shm_size: 1gb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:  # /health is 200 once the weights are loaded and CUDA graphs are captured
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 300s
+    restart: unless-stopped
+
 secrets:
   local_ca:
     file: ${LOCAL_CA_CERT:-./no-local-ca.pem}
@@ -140,3 +187,4 @@ volumes:
   redis_data:
   postgres_data:
   minio_data:
+  vllm_cache:

@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     embedding_revision: str = "9a0624b896d81da7492a910ffa53731274b6cf3d"  # pragma: allowlist secret
     embedding_device: Literal["cpu", "cuda"] = "cpu"
     query_max_length: int = 512  # questions are short; shorter max length = faster query embedding
+    # questions that queue up while the embedder is busy are embedded together (1 = off).
+    # Phase 4 load test: one-at-a-time embedding was the first bottleneck at 40 users.
+    query_batch_max: int = 16
     # 127.0.0.1, not "localhost": compose publishes ports on IPv4 loopback only, and on Windows
     # "localhost" tries IPv6 (::1) first -> every Qdrant call waited ~2 s (measured 2,069 vs 17 ms)
     qdrant_url: str = "http://127.0.0.1:6333"
@@ -94,7 +97,13 @@ class Settings(BaseSettings):
     langfuse_host: str = "http://127.0.0.1:3000"
     langfuse_public_key: SecretStr = SecretStr("")
     langfuse_secret_key: SecretStr = SecretStr("")
-    rate_limit_per_minute: int = 60
+    # per client (API key, else IP): a burst of rate_limit_burst, then this many per minute.
+    # 0 switches the limit off. Redis down -> served without a limit (fail open), logged.
+    rate_limit_per_minute: float = 30.0
+    rate_limit_burst: int = 10
+    # issued API keys (comma-separated); only these get a bucket of their own, anyone else is
+    # limited per IP. Not authentication: /ask stays open, the key only names the client.
+    api_keys: SecretStr = SecretStr("")
 
     def _endpoint(self, backend: str) -> tuple[str, str]:
         """(base_url, api_key) of a backend. vLLM ignores the key, but the client needs one."""

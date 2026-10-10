@@ -1,0 +1,11 @@
+# Answer with the local vLLM server instead of a hosted API (no quota, no per-token cost):
+#   docker compose --env-file .env -f docker/compose.yaml -f docker/compose.vllm.yaml \
+#     --profile core --profile llm up -d
+# Only the generation backend changes; retrieval, decider and guards are the same.
+services:
+  api:
+    environment:
+      LLM_BACKEND: vllm
+    depends_on:
+      vllm:
+        condition: service_healthy

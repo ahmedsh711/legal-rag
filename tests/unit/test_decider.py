@@ -107,6 +107,7 @@ async def test_gate_refuses_without_calling_the_llm():
     pipe, llm = make_pipe(FixedDecider(d))
     ans = await pipe.ask("What is the tax rate?")
     assert ans.refused and ans.answer == REFUSAL_EN and llm.calls == []
+    assert ans.guardrails == ["gate:unanswerable"]
 
 
 async def test_explicit_article_questions_skip_the_gate_and_stay_first():

@@ -9,6 +9,7 @@ Everything heavy (Qdrant client, bge-m3, LLM client) is built once in the lifesp
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -18,23 +19,33 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import APIConnectionError, APIStatusError
 
 from legalrag import __version__
 from legalrag.api.middleware import RequestIdMiddleware
-from legalrag.api.schemas import AskRequest, AskResponse, FeedbackRequest, HealthResponse, Source
+from legalrag.api.schemas import (
+    AskRequest,
+    AskResponse,
+    ErrorBody,
+    FeedbackRequest,
+    HealthResponse,
+    Source,
+)
 from legalrag.config_registry import apply_registry_config
 from legalrag.decider.base import Decider
 from legalrag.decider.jev import JevDecider
 from legalrag.decider.local import LocalDecider
 from legalrag.generation import PROMPT_VERSION, Generator, make_client
+from legalrag.guardrails import redact_pii
+from legalrag.index.batcher import QueryBatcher
 from legalrag.index.store import alias_target, read_metadata
 from legalrag.ingest.normalize import NORMALIZATION_VERSION
 from legalrag.logging_conf import configure_logging, get_logger, request_id_var
 from legalrag.pipeline import RagPipeline
+from legalrag.ratelimit import TokenBucket, build_limiter, client_key, known_key_hashes
 from legalrag.retrieval import Retriever
 from legalrag.settings import Settings, get_settings
 
@@ -52,6 +63,7 @@ class Components:
     alias: str
     collection: str
     index_meta: dict[str, Any]
+    limiter: TokenBucket | None = None  # None = no rate limit
 
 
 def check_index_compatible(meta: dict[str, Any] | None, settings: Settings) -> None:
@@ -95,6 +107,8 @@ def build_components(settings: Settings) -> Components:
         settings.query_max_length,
         revision=settings.embedding_revision,
     )
+    if settings.query_batch_max > 1:
+        embedder = QueryBatcher(embedder, max_batch=settings.query_batch_max)
     retriever = Retriever(
         client,
         settings.qdrant_collection_alias,
@@ -118,7 +132,12 @@ def build_components(settings: Settings) -> Components:
         decider=build_decider(settings),
         gate_threshold=settings.gate_threshold,
     )
-    return Components(pipeline, client, settings.qdrant_collection_alias, collection, meta or {})
+    limiter = build_limiter(
+        settings.redis_url, settings.rate_limit_per_minute, settings.rate_limit_burst
+    )
+    return Components(
+        pipeline, client, settings.qdrant_collection_alias, collection, meta or {}, limiter
+    )
 
 
 def build_decider(settings: Settings) -> Decider | None:
@@ -151,15 +170,63 @@ def _sse(event: dict[str, Any]) -> str:
 
 
 async def _close(comp: Components) -> None:
-    """Release connections on shutdown (test fakes have nothing to close)."""
-    if hasattr(comp.qdrant, "close"):
-        comp.qdrant.close()
+    """Release connections on shutdown (test fakes have nothing to close). One failing close
+    must not leave the others open."""
     llm = getattr(getattr(comp.pipeline, "generator", None), "client", None)
-    if hasattr(llm, "close"):
-        await llm.close()
     decider = getattr(comp.pipeline, "decider", None)  # Jev holds an HTTP client
-    if hasattr(decider, "aclose"):
-        await decider.aclose()
+    retriever = getattr(comp.pipeline, "retriever", None)  # its QueryBatcher owns a thread
+    closers = [
+        ("qdrant", getattr(comp.qdrant, "close", None)),
+        ("llm", getattr(llm, "close", None)),
+        ("decider", getattr(decider, "aclose", None)),
+        ("limiter", comp.limiter.aclose if comp.limiter is not None else None),
+        ("embedder", getattr(getattr(retriever, "embedder", None), "close", None)),
+    ]
+    for name, close in closers:
+        if close is None:
+            continue
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001 - shutdown: log and keep closing the rest
+            log.exception("close_failed", resource=name)
+
+
+class RateLimitedError(Exception):
+    def __init__(self, retry_after_s: int):
+        super().__init__(f"rate limited, retry after {retry_after_s} s")
+        self.retry_after_s = retry_after_s
+
+
+async def rate_limit(request: Request, response: Response) -> None:
+    """Dependency for the costly endpoints: take one token for this client or answer 429.
+    A dependency runs before the body is validated, so a flood of bad requests is limited too."""
+    comp: Components = request.app.state.components
+    if comp.limiter is None:
+        return
+    ip = request.client.host if request.client else None
+    key = client_key(request.headers.get("X-API-Key"), ip, request.app.state.known_keys)
+    verdict = await comp.limiter.take(key)
+    if not verdict.allowed:
+        log.warning("rate_limited", retry_after_s=verdict.retry_after_s)
+        raise RateLimitedError(verdict.retry_after_s)
+    if not verdict.degraded:  # an honest client can slow down before it ever sees a 429
+        response.headers["X-RateLimit-Remaining"] = str(verdict.remaining)
+
+
+RATE_LIMITED = {
+    429: {
+        "model": ErrorBody,
+        "description": "Too many requests from this client; retry after Retry-After seconds",
+        "headers": {
+            "Retry-After": {
+                "description": "seconds until a request is allowed again",
+                "schema": {"type": "integer"},
+            }
+        },  # fmt: skip
+    }
+}
 
 
 def _source(c: Any) -> Source:
@@ -170,6 +237,12 @@ def _source(c: Any) -> Source:
         is_repealed=c.is_repealed,
         quality_flags=list(c.quality_flags),
     )
+
+
+def _append_line(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def create_app(
@@ -198,6 +271,18 @@ def create_app(
         lifespan=lifespan,
     )
     app.add_middleware(RequestIdMiddleware)
+    app.state.known_keys = known_key_hashes(settings.api_keys.get_secret_value())
+
+    @app.exception_handler(RateLimitedError)
+    async def _too_many(request: Request, exc: RateLimitedError) -> JSONResponse:
+        return JSONResponse(
+            {
+                "detail": "Too many requests, please retry later.",
+                "request_id": request_id_var.get(),
+            },
+            status_code=429,
+            headers={"Retry-After": str(exc.retry_after_s)},
+        )
 
     @app.exception_handler(RequestValidationError)
     async def _invalid(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -259,7 +344,8 @@ def create_app(
             "index": {"alias": comp.alias, "collection": comp.collection, **comp.index_meta},
         }
 
-    @app.post("/ask", response_model=AskResponse, tags=["qa"])
+    @app.post("/ask", response_model=AskResponse, tags=["qa"],
+              dependencies=[Depends(rate_limit)], responses=RATE_LIMITED)  # fmt: skip
     async def ask(request: Request, body: AskRequest, stream: bool = Query(False)) -> Any:
         """Answer a question about the Egyptian Civil Code with article citations.
         `?stream=true` sends the answer token by token as Server-Sent Events."""
@@ -297,20 +383,25 @@ def create_app(
             invalid_citations=result.invalid_citations,
             request_id=request_id,
             prompt_version=result.prompt_version,
+            guardrails=result.guardrails,
             model=result.model,
             usage=result.usage,
             timings_ms=result.timings_ms,
         )
 
-    @app.post("/feedback", status_code=202, tags=["qa"])
-    def feedback(body: FeedbackRequest) -> dict[str, str]:
+    @app.post("/feedback", status_code=202, tags=["qa"],
+              dependencies=[Depends(rate_limit)], responses=RATE_LIMITED)  # fmt: skip
+    async def feedback(body: FeedbackRequest) -> dict[str, str]:
         """Thumbs up/down on an answer, keyed by its request id (becomes a Langfuse score later).
-        Plain ``def``: FastAPI runs it in a worker thread, so the file write never blocks the loop."""
-        path = Path(settings.feedback_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        record = {"at": datetime.now(UTC).isoformat(), **body.model_dump()}
-        with path.open("a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        Same rate limit as /ask (an unlimited write endpoint fills the disk), and the comment is
+        stored with PII redacted, like questions."""
+        record = {
+            "at": datetime.now(UTC).isoformat(),
+            "request_id": body.request_id,
+            "rating": body.rating,
+            "comment": redact_pii(body.comment)[0] if body.comment else None,
+        }
+        await asyncio.to_thread(_append_line, Path(settings.feedback_path), record)
         return {"status": "recorded"}
 
     return app

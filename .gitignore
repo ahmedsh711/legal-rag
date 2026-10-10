@@ -31,3 +31,4 @@ reports/eval/*.log
 .dvc/tmp/
 node_modules/
 .prometheus-multiproc/
+reports/load/*.html
