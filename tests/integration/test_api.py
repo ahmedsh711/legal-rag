@@ -105,6 +105,7 @@ def test_health_and_metadata(client):
     }
     m = client.get("/metadata").json()
     assert m["index"]["collection"] == "articles_test" and m["embedding_model"] == "BAAI/bge-m3"
+    assert m["config_source"] == "env" and m["decider_backend"] == "none"
 
 
 @pytest.mark.parametrize("qdrant", [FakeQdrant(fail=True), FakeQdrant(points=0)])

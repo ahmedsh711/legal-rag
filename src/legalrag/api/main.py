@@ -26,6 +26,7 @@ from openai import APIConnectionError, APIStatusError
 from legalrag import __version__
 from legalrag.api.middleware import RequestIdMiddleware
 from legalrag.api.schemas import AskRequest, AskResponse, FeedbackRequest, HealthResponse, Source
+from legalrag.config_registry import apply_registry_config
 from legalrag.decider.base import Decider
 from legalrag.decider.jev import JevDecider
 from legalrag.decider.local import LocalDecider
@@ -176,11 +177,12 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(settings.log_level)
-        app.state.settings = settings
-        app.state.components = build(settings)  # load once, never per request
-        log.info(
-            "startup", collection=app.state.components.collection, llm=settings.active_llm_model
-        )
+        # runtime knobs from models:/legal-rag-config@production when CONFIG_SOURCE=mlflow
+        served, app.state.config_source = apply_registry_config(settings)
+        app.state.settings = served
+        app.state.components = build(served)  # load once, never per request
+        log.info("startup", collection=app.state.components.collection,
+                 llm=served.active_llm_model, config=app.state.config_source)  # fmt: skip
         try:
             yield
         finally:
@@ -239,14 +241,18 @@ def create_app(
     async def metadata(request: Request) -> dict[str, Any]:
         """What is serving right now: versions of the app, prompt, models and index."""
         comp: Components = request.app.state.components
+        served: Settings = request.app.state.settings
         return {
             "app_version": __version__,
             "prompt_version": PROMPT_VERSION,
-            "llm_backend": settings.llm_backend,
-            "llm_model": settings.active_llm_model,
-            "embedding_model": settings.embedding_model,
-            "embedding_revision": settings.embedding_revision,
-            "decider_backend": settings.decider_backend,
+            "config_source": request.app.state.config_source,
+            "llm_backend": served.llm_backend,
+            "llm_model": served.active_llm_model,
+            "embedding_model": served.embedding_model,
+            "embedding_revision": served.embedding_revision,
+            "decider_backend": served.decider_backend,
+            "retrieval_mode": served.retrieval_mode,
+            "gate_threshold": served.gate_threshold,
             "index": {"alias": comp.alias, "collection": comp.collection, **comp.index_meta},
         }
 

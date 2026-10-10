@@ -87,6 +87,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
     mlflow_tracking_uri: str = "http://127.0.0.1:5000"
     mlflow_experiment: str = "legal-rag-eval"
+    # env: knobs from the environment; mlflow: runtime knobs from models:/<name>@<alias>
+    config_source: Literal["env", "mlflow"] = "env"
     mlflow_config_model_name: str = "legal-rag-config"
     mlflow_config_alias: str = "production"
     langfuse_host: str = "http://127.0.0.1:3000"

@@ -173,7 +173,40 @@ uv run python -m legalrag.eval.run --name baseline --ragas --from-predictions re
 </div>
 
 <h2 id="results"><span class="en">9. Results</span><span class="ar">9. النتايج</span></h2>
-<!-- RESULTS -->
+<div class="pair">
+  <div class="en"><p><strong>Retrieval and reranking</strong> (retrieval only, no LLM; 48 answerable golden questions). MRR = mean of 1/rank of the first gold article.</p></div>
+  <div class="ar" lang="ar" dir="rtl"><p><strong>الـ retrieval والـ rerank</strong> (من غير LLM؛ 48 سؤال ليهم إجابة). الـ MRR = متوسط 1/ترتيب أول مادة صح.</p></div>
+</div>
+<div class="tablewrap"><table>
+  <thead><tr><th>Run</th><th>hit@1</th><th>MRR</th><th>MRR AR</th><th>MRR EN</th><th>p50</th><th>cost / 56 Q</th></tr></thead>
+  <tbody>
+    <tr><td>hybrid (RRF)</td><td>0.812</td><td>0.892</td><td>0.958</td><td>0.826</td><td>0.5 s</td><td>$0</td></tr>
+    <tr><td>dense only</td><td>0.938</td><td>0.955</td><td>0.951</td><td>0.958</td><td>0.7 s</td><td>$0</td></tr>
+    <tr><td>sparse only</td><td>0.604</td><td>0.692</td><td>0.810</td><td>0.573</td><td>0.7 s</td><td>$0</td></tr>
+    <tr><td>hybrid + local cross-encoder</td><td>0.896</td><td>0.924</td><td>0.972</td><td>0.876</td><td>35.9 s</td><td>$0</td></tr>
+    <tr><td>hybrid + Jev</td><td>0.979</td><td>0.979</td><td>1.000</td><td>0.958</td><td>0.6 s</td><td>$0.0055</td></tr>
+    <tr><td><strong>dense + Jev</strong></td><td><strong>1.000</strong></td><td><strong>1.000</strong></td><td><strong>1.000</strong></td><td><strong>1.000</strong></td><td>0.6 s</td><td>$0.0055</td></tr>
+  </tbody>
+</table></div>
+<div class="pair">
+  <div class="en">
+    <ul>
+      <li><strong>Hybrid was not better than dense here.</strong> The keyword (sparse) signal is weak on its own (worst in English), and RRF gives it the same weight, so on "What is X?" it lifts a neighbouring article above the defining one (936 above 935, 803 above 802). A textbook default lost to measurement.</li>
+      <li><strong>Jev reranks perfectly</strong> on this set, in both languages, for ~$0.0001 and ~0.5 s per question. The local cross-encoder is free per call but ~60× slower on this CPU and ranks worse.</li>
+      <li><strong>The gate</strong>: off-topic/injection questions score ≤ 0.04 with Jev and every answerable one ≥ 0.79, so any threshold from 0.1 to 0.755 is perfect; we chose 0.5, the middle of the gap. With the local model the safe window is only 0.05–0.20, and the article's 0.755 would wrongly refuse 10%: <em>a threshold belongs to one model</em>.</li>
+      <li><strong>Arabic questions vs English articles</strong>: on the 25 answerable mirrored pairs Jev picks the same top article in both languages, and the gate agrees on 28/28 pairs, so no query translation is needed.</li>
+    </ul>
+  </div>
+  <div class="ar" lang="ar" dir="rtl">
+    <ul>
+      <li><strong>البحث الهجين مكانش أحسن من الـ dense هنا.</strong> إشارة الكلمات (sparse) ضعيفة لوحدها (وأضعف في الإنجليزي)، والـ RRF بيديها نفس الوزن، فمع أسئلة "إيه هو كذا؟" بيطلّع مادة جارة فوق المادة اللي بتعرّف (936 فوق 935، و803 فوق 802). اختيار "الكتاب بيقول كده" خسر قدام القياس.</li>
+      <li><strong>Jev رتّب صح 100%</strong> على المجموعة دي باللغتين، بحوالي $0.0001 ونص ثانية للسؤال. والـ cross-encoder المحلي ببلاش في النداء بس أبطأ حوالي 60 مرة على الـ CPU ده وترتيبه أضعف.</li>
+      <li><strong>الـ gate</strong>: الأسئلة اللي بره الموضوع والـ injection درجتها ≤ 0.04 مع Jev، وكل سؤال ليه إجابة ≥ 0.79، فأي threshold من 0.1 لـ 0.755 بيشتغل صح؛ واخترنا 0.5، نص المسافة. ومع الموديل المحلي المسافة الآمنة 0.05–0.20 بس، والـ 0.755 بتاعة المقال كانت هترفض 10% غلط: <em>الـ threshold بتاع موديل واحد بس</em>.</li>
+      <li><strong>سؤال عربي قصاد مواد إنجليزي</strong>: في الـ 25 زوج اللي ليهم إجابة Jev اختار نفس المادة في الأول باللغتين، والـ gate اتفق في 28 من 28، فمش محتاجين نترجم السؤال.</li>
+    </ul>
+  </div>
+</div>
+<!-- E2E -->
 
 <h2 id="lessons"><span class="en">10. Problems we hit</span><span class="ar">10. مشاكل قابلناها</span></h2>
 <div class="pair">
@@ -183,6 +216,9 @@ uv run python -m legalrag.eval.run --name baseline --ragas --from-predictions re
       <li><strong>Dependency chain</strong>: RAGAS 0.4.3 fails to import with the newest langchain-community (pinned to 0.4.1), and RAGAS → instructor → <code>jiter&lt;0.15</code> holds <code>openai</code> at 3.3.0 for the whole lock, the API included. Our code only uses long-stable OpenAI features; the chain is recorded so it can be lifted when instructor updates.</li>
       <li><strong>MLflow keeps global state</strong>: the active experiment id leaked between tests ("No experiment with id=1") and artifacts landed in <code>./mlruns</code> of the repo. Each test now gets its own directory and experiment.</li>
       <li><strong>Out of credits mid-run</strong>: OpenRouter answered <code>402</code> during RAGAS judging; the account had no purchased credits, and free models are capped at 50 requests/day (one golden run is 56, with RAGAS ~600). The pipeline predictions were already saved, so nothing was lost; RAGAS errors are now recorded per row, and generation/judging can move to the Gemini API free tier (<code>LLM_BACKEND=gemini</code>, <code>JUDGE_BACKEND=gemini</code>).</li>
+      <li><strong>Free tiers count requests per minute <em>and</em> per day</strong>: the first Gemini run crashed at question 16 ("limit: 15" per minute on Flash-Lite, and the client's two quick retries gave up long before the "retry in 32 s"). Fix: <code>eval/pacing.py</code> spaces request starts under the limit (zero 429s afterwards). The bigger judge model allowed only 5/min and <strong>20/day</strong>; its daily cap ran out mid-run, so the judge moved to Flash-Lite. That makes generator and judge the same model, which is exactly the self-preference risk; the calibration against human labels is the safeguard, and the report says so.</li>
+      <li><strong>Thinking models eat their own budget</strong>: Gemini 3.x Flash spends hidden reasoning tokens from <code>max_tokens</code>, so answers came back cut off until <code>reasoning_effort: none</code>; and the gate sweep first counted the run's own gate refusals at every threshold (fixed by recording who refused).</li>
+      <li><strong>An emoji crashed a Windows console</strong>: MLflow prints "🏃 View run…", which the default cp1252 console cannot encode. Every CLI now switches stdout to UTF-8 in <code>configure_logging()</code>.</li>
     </ul>
   </div>
   <div class="ar" lang="ar" dir="rtl">
@@ -191,6 +227,9 @@ uv run python -m legalrag.eval.run --name baseline --ragas --from-predictions re
       <li><strong>سلسلة الاعتمادات</strong>: RAGAS 0.4.3 مش بيشتغل مع أحدث langchain-community (ثبّتناها على 0.4.1)، وRAGAS ← instructor ← <code>jiter&lt;0.15</code> مثبّتة <code>openai</code> على 3.3.0 في الـ lock كله، والـ API معاه. الكود بتاعنا بيستخدم مزايا قديمة وثابتة بس في OpenAI؛ والسلسلة متسجلة عشان نشيلها لما instructor يتحدث.</li>
       <li><strong>MLflow شايل حالة عامة</strong>: الـ experiment id النشط عدّى من test لـ test ("No experiment with id=1") والملفات اتكتبت في <code>./mlruns</code> جوه الـ repo. دلوقتي كل test ليه فولدر وexperiment لوحده.</li>
       <li><strong>الرصيد خلص في نص التشغيلة</strong>: OpenRouter رد بـ <code>402</code> وقت حَكَم RAGAS؛ الحساب ملوش رصيد مشترى، والموديلات المجانية ليها 50 طلب في اليوم بس (تشغيلة golden واحدة 56، ومع RAGAS حوالي 600). الـ predictions كانت اتحفظت فمخسرناش حاجة؛ وأخطاء RAGAS بقت بتتسجل لكل سطر، والكتابة والحَكَم ممكن ينقلوا على الـ free tier بتاع Gemini API (<code>LLM_BACKEND=gemini</code> و<code>JUDGE_BACKEND=gemini</code>).</li>
+      <li><strong>الـ free tier بيعد الطلبات في الدقيقة <em>وفي اليوم</em></strong>: أول تشغيلة على Gemini وقفت عند السؤال 16 ("limit: 15" في الدقيقة على Flash-Lite، والـ client جرّب مرتين بسرعة واستسلم قبل "استنى 32 ثانية" بكتير). الحل: <code>eval/pacing.py</code> بيوزّع بداية الطلبات تحت الحد (ومفيش ولا 429 بعدها). والموديل الأكبر للحَكَم كان مسموح له 5 في الدقيقة و<strong>20 في اليوم</strong> بس؛ والحد اليومي خلص في نص التشغيلة، فالحَكَم نقل على Flash-Lite. يعني الموديل اللي بيكتب هو نفسه اللي بيحكم، وده بالظبط خطر التحيز للنفس؛ والمعايرة مع تقييم الإنسان هي الضمانة، والتقرير بيقول كده صراحة.</li>
+      <li><strong>موديلات الـ thinking بتاكل ميزانيتها</strong>: Gemini 3.x Flash بيصرف tokens تفكير مخفية من <code>max_tokens</code>، فالإجابات رجعت مقطوعة لحد ما حطينا <code>reasoning_effort: none</code>؛ وكمان الـ gate sweep في الأول كان بيحسب رفض الـ gate بتاع التشغيلة نفسها في كل threshold (اتصلّح لما سجّلنا مين اللي رفض).</li>
+      <li><strong>emoji وقّع الـ console بتاع ويندوز</strong>: MLflow بيطبع "🏃 View run…"، والـ console العادي (cp1252) مش بيعرف يكتبه. دلوقتي كل CLI بيحوّل الـ stdout لـ UTF-8 في <code>configure_logging()</code>.</li>
     </ul>
   </div>
 </div>
