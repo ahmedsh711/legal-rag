@@ -35,7 +35,7 @@
 
 ### Phase 2: Vanilla RAG + FastAPI + Docker
 
-- **Status:** in_progress (branch module-2-rag-api)
+- **Status:** complete (PR #3 merged, tag v0.1.0, image ahmedshobaki/legal-rag-api:0.1.0 digest d46a8d58)
 - Actions taken:
   - TDD index (embedder, store, build), retrieval (hybrid RRF + explicit refs), generation, pipeline, API (schemas, middleware, main); Dockerfile + entrypoint + compose core
   - Verified qdrant-client by experiment (in-memory hybrid RRF + aliases) because docs-lookup had no Context7
@@ -51,6 +51,20 @@
   - Ruling: /ask and /feedback throttling + auth deferred to Phase 4 (Redis token bucket) — ports are loopback-only now — cost if wrong: low
   - Ruling: pinned revision kept in IndexParams default + Settings + params.yaml — the startup check refuses any drift — cost if wrong: none
   - Ruling: Docker base images pinned by tag, not digest — course scale; Phase 4 CI builds are reproducible from uv.lock — cost if wrong: low
+
+### Phase 3: Evaluation, MLflow, decider + JEV ablation
+
+- **Status:** in_progress (branch module-3-eval-mlflow-jev)
+- Actions taken:
+  - Research agents: Jev via OpenRouter `/api/v1/systemone` (jev-router is a chat router); RAGAS 0.4.3 + langchain-community 0.4.1 pin; MLflow 3.17 `-full` image + `--allowed-hosts`; one-call Jev probe before coding
+  - Golden set (56 Q, read from article text), exact metrics, RAGAS wrapper, judge calibration, experiment runner (retrieval-only, from-predictions), MLflow server + tracking + registry, decider ABC + Jev + local cross-encoder, gate sweep, config by alias in the API
+  - OpenRouter 402 (no purchased credits; free models 50 req/day) → user chose free route → Gemini API free tier for generation + judge; Jev still works via OpenRouter (~$0.00002/call)
+  - Gemini limits learned from 429 bodies: flash-lite 15/min; "3.5-flash" = gemini-3.6-flash 5/min and 20/day → judge moved to flash-lite (same model as generator: self-preference not measurable, calibration is the safeguard); pacer added
+  - User labelled 20 answers: all supported → synthetic negatives added so kappa means something
+  - Ruling: RAGAS limited to faithfulness + context recall on the free tier — context precision duplicates exact hit@k/MRR (gold labels) and costs one judge call per article — cost if wrong: low
+  - Ruling: gate threshold chosen per decider from the offline sweep (Jev 0.5 = middle of the 0.04–0.79 gap), not copied from the article — cost if wrong: low
+  - Ruling: API tolerates an unreachable MLflow registry at startup (keeps env settings, logs) — tracking-server outage must not stop answering — cost if wrong: low
+  - Ruling: openai held at 3.3.0 by ragas→instructor→jiter<0.15 — only stable OpenAI features used — cost if wrong: low
 
 ## Test Results
 

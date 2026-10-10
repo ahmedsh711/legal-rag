@@ -116,9 +116,15 @@ def main(argv: list[str] | None = None) -> None:
 
     settings = get_settings()
     configure_logging(settings.log_level)
-    mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
-    path = mlflow.artifacts.download_artifacts(run_id=args.run_id, artifact_path=CONFIG_FILE)
-    config = json.loads(Path(path).read_text(encoding="utf-8"))
+    uri = settings.mlflow_tracking_uri
+    mlflow.set_tracking_uri(uri)
+    if uri.startswith("http"):  # a tracking server: stream through it (see fetch_run_config)
+        from legalrag.config_registry import fetch_run_config
+
+        config = fetch_run_config(uri, args.run_id)
+    else:  # a local store (tests)
+        path = mlflow.artifacts.download_artifacts(run_id=args.run_id, artifact_path=CONFIG_FILE)
+        config = json.loads(Path(path).read_text(encoding="utf-8"))
     with mlflow.start_run(run_id=args.run_id):  # the version links back to the evaluated run
         version = register_config(config, settings.mlflow_config_model_name, args.alias)
     get_logger(__name__).info("config_registered", model=settings.mlflow_config_model_name,

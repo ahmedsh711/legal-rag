@@ -49,7 +49,39 @@ Reading it:
 - Repealed-article questions name their article, so the gate never applies to them (they score lowest with both deciders).
 - **A threshold belongs to one model**: the article's 0.755 is right for Jev and would wrongly refuse one answerable question in ten with the local model.
 
-{{E2E}}
+## End to end (generation + RAGAS judge), Gemini free tier
+
+Generator `gemini-3.1-flash-lite`, judge `gemini-3.1-flash-lite` (RAGAS faithfulness + context recall), 56 questions, paced under 12 requests/minute (zero 429s). Both runs logged to MLflow with lineage tags.
+
+| Metric | baseline (hybrid, no decider) | **dense + Jev, gate 0.5** |
+|---|---|---|
+| hit@1 / MRR | 0.792 / 0.878 | **1.000 / 1.000** |
+| citation recall / precision | 0.979 / 0.804 | **1.000** / 0.783 |
+| RAGAS context recall | 0.979 | **1.000** |
+| RAGAS faithfulness (AR / EN) | 0.976 (0.986 / 0.965) | 0.969 (0.975 / 0.964) |
+| false refusals / correct refusals | 0 % / 100 % | 0 % / 100 % |
+| invalid citations, answer language | 0 %, 100 % | 0 %, 100 % |
+| decider latency p50 | — | 0.43 s (retrieval 0.24 s) |
+| decider cost (56 questions) | $0 | $0.006 |
+| LLM tokens per question (prompt / completion) | 1,265 / 64 | 1,087 / 66 |
+
+Reading it:
+- **Jev fixes retrieval, not writing.** Every question now gets its defining article first (MRR 1.0, recall 1.0); the answers cite the gold article every time. The prompt is also ~14 % shorter because the five articles shown are the relevant ones.
+- **Faithfulness is a tie within judge noise.** Of the four answers the judge scored below 0.9 in the Jev run, two are near-verbatim copies of the gold article (Art. 418 scored 0.75, Art. 935 scored 0.5). A cheap judge marks down correct answers; this is exactly why it is calibrated against human labels (below).
+- **Latency is confounded by the free tier.** The whole baseline request had p50 2.0 s; a few hours later, generation *alone* had p50 5.3 s (p95 25 s) in the Jev run, for the same model and similar prompt sizes, while Jev itself added 0.43 s. Comparing latency across runs on a shared free tier says more about the provider's load than about our pipeline; Phase 4's load test measures it properly.
+- **Citation precision dipped slightly** (0.804 → 0.783): with the defining article first, the model more often also cites the next article in the same section. Not a correctness problem (all cited articles were shown; invalid citations stayed 0).
+
+## Model registry: the config is served by alias
+
+| Version | Alias | Config | From MLflow run |
+|---|---|---|---|
+| 1 | `baseline` | no decider, hybrid, gate 0.75 | `e2e-hybrid` |
+| 2 | **`production`** | **Jev, dense, gate 0.5** | `e2e-dense-jev` |
+
+- Registered with `python -m legalrag.eval.track register --run-id … --alias …`: the version is exactly the evaluated run's `rag_config.json`.
+- The API (`CONFIG_SOURCE=mlflow`) reads `models:/legal-rag-config@production` at startup via two REST calls; `/metadata` shows `"config_source": "legal-rag-config@production (v2)"`, `decider_backend: jev`, `retrieval_mode: dense`, `gate_threshold: 0.5`.
+- **Rollback demo:** moving `production` to v1 and restarting the API took 18 s (it then served v1: no decider, hybrid); rolling forward to v2 took 22 s. No rebuild, no new image; most of the time is reloading bge-m3.
+- MLflow 3.17 gotcha: `mlflow.artifacts.download_artifacts` hands the client a presigned URL for `http://minio:9000`, which does not resolve outside Docker; the client retried with back-off for 15 minutes. Config reads now stream through the tracking server (`/get-artifact`), the same call the API uses.
 
 {{JUDGE}}
 

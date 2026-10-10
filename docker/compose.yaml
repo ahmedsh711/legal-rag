@@ -42,6 +42,8 @@ services:
       QDRANT_URL: http://qdrant:6333
       VLLM_BASE_URL: http://vllm:8000/v1
       FEEDBACK_PATH: /app/feedback/feedback.jsonl
+      # CONFIG_SOURCE=mlflow (in .env): runtime knobs from models:/legal-rag-config@production
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     volumes:
       # bge-m3 (~2.3 GB) is downloaded once into this volume, not baked into the image.
       # (A Windows bind mount was tried: it appears as root:root 755 inside the container,

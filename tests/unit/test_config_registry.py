@@ -3,7 +3,12 @@
 import httpx
 import pytest
 
-from legalrag.config_registry import ConfigMismatchError, apply_registry_config, fetch_config
+from legalrag.config_registry import (
+    ConfigMismatchError,
+    apply_registry_config,
+    fetch_config,
+    fetch_run_config,
+)
 from legalrag.generation import PROMPT_VERSION
 from legalrag.settings import Settings
 
@@ -34,6 +39,11 @@ def test_fetch_config_follows_alias_to_the_run_artifact():
     config, version = fetch_config("http://mlflow:5000", "legal-rag-config", "production",
                                    transport=mlflow_server())  # fmt: skip
     assert config == CONFIG and version == "3"
+
+
+def test_fetch_run_config_reads_the_run_artifact_through_the_server():
+    config = fetch_run_config("http://mlflow:5000", "r1", transport=mlflow_server())
+    assert config == CONFIG
 
 
 def test_only_runtime_knobs_are_applied():
