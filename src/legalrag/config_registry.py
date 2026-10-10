@@ -29,6 +29,19 @@ class ConfigMismatchError(RuntimeError):
     """The registered config was evaluated with something this code does not serve."""
 
 
+def fetch_run_config(
+    tracking_uri: str, run_id: str, transport: httpx.BaseTransport | None = None
+) -> dict[str, Any]:
+    """A run's rag_config.json, streamed through the tracking server.
+
+    Not ``mlflow.artifacts.download_artifacts``: MLflow 3.17 hands the client a presigned URL
+    for MinIO's in-network name (http://minio:9000), which does not resolve outside Docker."""
+    with httpx.Client(base_url=tracking_uri, timeout=10, transport=transport) as client:
+        art = client.get("/get-artifact", params={"path": "rag_config.json", "run_uuid": run_id})
+        art.raise_for_status()
+        return art.json()
+
+
 def fetch_config(
     tracking_uri: str, name: str, alias: str, transport: httpx.BaseTransport | None = None
 ) -> tuple[dict[str, Any], str]:
@@ -38,10 +51,7 @@ def fetch_config(
                                                                           "alias": alias})  # fmt: skip
         r.raise_for_status()
         version = r.json()["model_version"]
-        art = client.get("/get-artifact", params={"path": "rag_config.json",
-                                                  "run_uuid": version["run_id"]})  # fmt: skip
-        art.raise_for_status()
-        return art.json(), str(version["version"])
+    return fetch_run_config(tracking_uri, version["run_id"], transport), str(version["version"])
 
 
 def apply_registry_config(
