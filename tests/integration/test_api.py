@@ -340,3 +340,22 @@ def test_every_answer_leaves_a_prediction_event_without_the_text(client, tmp_pat
     assert events[0]["top_articles"][0] == 374 and events[0]["question_chars"] == len(question)
     assert events[1]["guardrails"] == ["injection:override"] and events[1]["top_articles"] == []
     assert "prescription" not in "".join(lines)  # counted, never stored
+
+
+def test_each_request_is_one_trace_with_scores_and_no_raw_pii(tmp_path, qdrant, embedder):
+    from legalrag.observability.tracing import RecordingTracer
+
+    tracer = RecordingTracer()
+    retriever = Retriever(qdrant, alias="articles", embedder=embedder, top_n=3)
+    pipeline = RagPipeline(retriever, Generator(FakeLLM("Yes [Art. 147]."), "m", 100, 0.0),
+                           tracer=tracer)  # fmt: skip
+    with make_client(tmp_path, pipeline) as c:
+        r = c.post("/ask", json={"question": "My phone is 01012345678, is a contract binding?"})
+        c.post("/ask?stream=true", json={"question": "Is a contract binding on the parties?"})
+    first, second = tracer.traces
+    assert first["request_id"] == r.json()["request_id"] and first["name"] == "ask"
+    assert second["name"] == "ask_stream"
+    assert "[PHONE]" in str(first["input"]) and "01012345678" not in str(tracer.traces)
+    assert first["output"]["refused"] is False and "sources" in first["output"]
+    names = [s["name"] for s in tracer.scores]
+    assert names.count("refused") == 2 and "guardrail" in names

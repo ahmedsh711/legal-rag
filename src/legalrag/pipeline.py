@@ -10,6 +10,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from legalrag.decider.base import Decider, DeciderUnavailableError, Decision
@@ -23,6 +24,7 @@ from legalrag.generation import (
 )
 from legalrag.guardrails import check_question
 from legalrag.logging_conf import get_logger
+from legalrag.observability.tracing import NoopTracer
 from legalrag.retrieval import Chunk, article_numbers_in
 
 log = get_logger(__name__)
@@ -75,21 +77,37 @@ class RagPipeline:
         top_n: int = 12,
         decider: Decider | None = None,
         gate_threshold: float = 0.75,
+        tracer: Any = None,
+        prices: tuple[float, float] = (0.0, 0.0),  # USD per 1M prompt / completion tokens
     ):
         self.retriever, self.generator = retriever, generator
         self.context_size, self.top_n = context_size, top_n
         self.decider, self.gate_threshold = decider, gate_threshold
+        self.tracer = tracer or NoopTracer()  # one observation per stage (Langfuse in the API)
+        self.prices = prices
+
+    def _cost(self, prompt_tokens: int, completion_tokens: int) -> dict[str, float]:
+        return {"input": prompt_tokens * self.prices[0] / 1e6,
+                "output": completion_tokens * self.prices[1] / 1e6}  # fmt: skip
 
     async def select_context(self, question: str, book: str | None = None) -> Context:
         """Everything before the LLM: retrieve, rerank + gate (decider). Also used on its own
         to evaluate retrieval without spending LLM tokens."""
         t0 = time.perf_counter()
-        chunks = await asyncio.to_thread(self.retriever.retrieve, question, self.top_n, book)
+        with self.tracer.span("retrieve", as_type="retriever",
+                              input={"question": question, "top_n": self.top_n}) as span:  # fmt: skip
+            chunks = await asyncio.to_thread(self.retriever.retrieve, question, self.top_n, book)
+            span.update(output={"articles": [c.article_number for c in chunks]})
         timings = {"retrieve": _ms(t0)}
         named = article_numbers_in(question)
         t1 = time.perf_counter()
-        decision = await self._decide(question, chunks)
-        if self.decider is not None:
+        if self.decider is None:
+            decision = None
+        else:
+            with self.tracer.span("decide", as_type="evaluator",
+                                  metadata={"decider": self.decider.name}) as span:  # fmt: skip
+                decision = await self._decide(question, chunks)
+                span.update(output={"answerable": decision.answerable if decision else None})
             timings["decide"] = _ms(t1)
         if decision:  # rerank; articles the user names stay first, in retrieval order
             rest = [c for c in chunks if c.article_number not in named]
@@ -143,7 +161,9 @@ class RagPipeline:
         self, question: str, book: str | None
     ) -> tuple[str, Context | None, list[str], dict[str, float]]:
         """Input guards, then retrieval + decider. Context is None when a guard blocked."""
-        check = check_question(question)  # PII redacted from here on: search, LLM, logs
+        with self.tracer.span("guard", as_type="guardrail") as span:
+            check = check_question(question)  # PII redacted from here on: search, LLM, logs
+            span.update(output={"fired": check.fired, "blocked": check.blocked})
         timings = {"guard": check.latency_ms}
         if check.blocked:
             log.warning("guardrail_blocked", fired=check.fired)
@@ -177,7 +197,13 @@ class RagPipeline:
         context = ctx.chunks
 
         t1 = time.perf_counter()
-        completion = await self.generator.complete(build_messages(safe_question, context))
+        messages = build_messages(safe_question, context)
+        with self.tracer.span("generate", as_type="generation", input=messages,
+                              model=self.generator.model) as span:  # fmt: skip
+            completion = await self.generator.complete(messages)
+            pt, ct = completion.prompt_tokens, completion.completion_tokens
+            span.update(output=completion.text, model=completion.model,
+                        usage_details={"input": pt, "output": ct}, cost_details=self._cost(pt, ct))  # fmt: skip
         timings["generate"] = _ms(t1)
         timings["total"] = _ms(t0)
         checked = self._finish(language, completion.text, context)
@@ -226,14 +252,21 @@ class RagPipeline:
                    "timings_ms": {**timings, "total": _ms(t0)}}  # fmt: skip
             return
         context = ctx.chunks
-        stream = self.generator.stream(build_messages(safe_question, context))
+        messages = build_messages(safe_question, context)
+        stream = self.generator.stream(messages)
         parts: list[str] = []
         first_token_ms = None
-        async for token in stream.tokens():
-            if first_token_ms is None:
-                first_token_ms = _ms(t0)  # time to first token, what the user feels as speed
-            parts.append(token)
-            yield {"type": "token", "text": token}
+        with self.tracer.span("generate", as_type="generation", input=messages,
+                              model=self.generator.model) as span:  # fmt: skip
+            async for token in stream.tokens():
+                if first_token_ms is None:
+                    first_token_ms = _ms(t0)  # time to first token, what the user feels as speed
+                    span.update(completion_start_time=datetime.now(UTC))
+                parts.append(token)
+                yield {"type": "token", "text": token}
+            pt, ct = stream.prompt_tokens, stream.completion_tokens
+            span.update(output="".join(parts), model=stream.model or self.generator.model,
+                        usage_details={"input": pt, "output": ct}, cost_details=self._cost(pt, ct))  # fmt: skip
         checked = self._finish(language, "".join(parts), context)
         # tokens are already on the client's screen: tell it to swap them for the refusal
         replace = {"replace_with": refusal_for(language)} if checked["blocked"] else {}

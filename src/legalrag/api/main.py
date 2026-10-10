@@ -47,6 +47,7 @@ from legalrag.ingest.normalize import NORMALIZATION_VERSION
 from legalrag.logging_conf import configure_logging, get_logger, request_id_var
 from legalrag.monitoring.events import EventLog, event_from_answer, event_from_stream_done
 from legalrag.observability.metrics import RagMetrics, render
+from legalrag.observability.tracing import NoopTracer, build_tracer
 from legalrag.pipeline import RagPipeline
 from legalrag.ratelimit import TokenBucket, build_limiter, client_key, known_key_hashes
 from legalrag.retrieval import Retriever
@@ -134,6 +135,13 @@ def build_components(settings: Settings) -> Components:
         top_n=settings.retrieve_top_n,
         decider=build_decider(settings),
         gate_threshold=settings.gate_threshold,
+        tracer=build_tracer(
+            settings.langfuse_host,
+            settings.langfuse_public_key.get_secret_value(),
+            settings.langfuse_secret_key.get_secret_value(),
+            settings.llm_backend,
+        ),
+        prices=(settings.llm_price_in_per_m, settings.llm_price_out_per_m),
     )
     limiter = build_limiter(
         settings.redis_url, settings.rate_limit_per_minute, settings.rate_limit_burst
@@ -177,11 +185,13 @@ async def _close(comp: Components) -> None:
     must not leave the others open."""
     llm = getattr(getattr(comp.pipeline, "generator", None), "client", None)
     decider = getattr(comp.pipeline, "decider", None)  # Jev holds an HTTP client
+    tracer = getattr(comp.pipeline, "tracer", None)  # Langfuse sends traces in the background
     retriever = getattr(comp.pipeline, "retriever", None)  # its QueryBatcher owns a thread
     closers = [
         ("qdrant", getattr(comp.qdrant, "close", None)),
         ("llm", getattr(llm, "close", None)),
         ("decider", getattr(decider, "aclose", None)),
+        ("traces", getattr(tracer, "flush", None)),
         ("limiter", comp.limiter.aclose if comp.limiter is not None else None),
         ("embedder", getattr(getattr(retriever, "embedder", None), "close", None)),
     ]
@@ -242,6 +252,29 @@ def _source(c: Any) -> Source:
         is_repealed=c.is_repealed,
         quality_flags=list(c.quality_flags),
     )
+
+
+def _trace_fields(request: Request, question: str, backend: str) -> dict[str, Any]:
+    """What every trace carries: the redacted question (never the raw one), what served it."""
+    serving = getattr(request.app.state, "serving", {})
+    return {
+        "input": {"question": redact_pii(question)[0]},
+        "tags": [backend, f"decider:{serving.get('decider', '?')}"],
+        "metadata": {"index_collection": serving.get("index_collection", ""),
+                     "llm_model": serving.get("llm_model", "")},
+        "version": PROMPT_VERSION,
+    }  # fmt: skip
+
+
+def _close_trace(tracer: Any, root: Any, answer: str | None, refused: bool,
+                 guardrails: list[str], answerable: float | None, sources: list[int]) -> None:  # fmt: skip
+    """The answer as the trace's output, plus scores that can be filtered and charted later."""
+    root.update(output={"answer": answer, "refused": refused, "sources": sources})
+    tracer.score("refused", int(refused), data_type="BOOLEAN")
+    for guard in guardrails:
+        tracer.score("guardrail", guard, data_type="CATEGORICAL")
+    if answerable is not None:
+        tracer.score("answerable", answerable, data_type="NUMERIC")
 
 
 def _append_line(path: Path, record: dict[str, Any]) -> None:
@@ -386,28 +419,32 @@ def create_app(
         metrics: RagMetrics = request.app.state.metrics
         backend = request.app.state.settings.llm_backend
         request_id = request_id_var.get()
+        tracer = pipeline.tracer if hasattr(pipeline, "tracer") else NoopTracer()
+        trace = _trace_fields(request, body.question, backend)
         if stream:
 
             async def events() -> AsyncIterator[str]:
-                try:
-                    async for event in pipeline.ask_stream(body.question, book=body.book):
-                        if event["type"] == "done":
-                            event["request_id"] = request_id
-                            metrics.observe_stream_done(event, backend)
-                            await record(
-                                lambda e=event: event_from_stream_done(
-                                    e, body.question, request_id, request.app.state.serving
-                                )
-                            )
-                        yield _sse(event)
-                except (APIConnectionError, APIStatusError) as exc:
-                    # the 200 status line is already sent; tell the client in the stream itself
-                    yield _sse({"type": "error", "detail": _llm_failure(exc)[1],
-                                "request_id": request_id})  # fmt: skip
-                except Exception:
-                    log.exception("stream_failed")
-                    yield _sse({"type": "error", "detail": "Internal server error",
-                                "request_id": request_id})  # fmt: skip
+                with tracer.trace(request_id, "ask_stream", **trace) as root:
+                    try:
+                        async for event in pipeline.ask_stream(body.question, book=body.book):
+                            if event["type"] == "done":
+                                event["request_id"] = request_id
+                                metrics.observe_stream_done(event, backend)
+                                await record(lambda e=event: event_from_stream_done(
+                                    e, body.question, request_id, request.app.state.serving))  # fmt: skip
+                                _close_trace(tracer, root, event.get("replace_with") or "(streamed: see generate)",
+                                             event["refused"], event.get("guardrails", []),
+                                             event.get("answerable_score"),
+                                             [s["article_number"] for s in event["sources"]])  # fmt: skip
+                            yield _sse(event)
+                    except (APIConnectionError, APIStatusError) as exc:
+                        # the 200 status line is already sent; tell the client in the stream
+                        yield _sse({"type": "error", "detail": _llm_failure(exc)[1],
+                                    "request_id": request_id})  # fmt: skip
+                    except Exception:
+                        log.exception("stream_failed")
+                        yield _sse({"type": "error", "detail": "Internal server error",
+                                    "request_id": request_id})  # fmt: skip
 
             return StreamingResponse(
                 events(),
@@ -415,7 +452,11 @@ def create_app(
                 # no-cache + no proxy buffering, or tokens arrive all at once at the end
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
-        result = await pipeline.ask(body.question, book=body.book)
+        with tracer.trace(request_id, "ask", **trace) as root:
+            result = await pipeline.ask(body.question, book=body.book)
+            _close_trace(tracer, root, result.answer, result.refused, result.guardrails,
+                         result.decision.answerable if result.decision else None,
+                         [c.article_number for c in result.sources])  # fmt: skip
         metrics.observe_answer(result, backend)
         await record(lambda: event_from_answer(result, body.question, request_id, "ask",
                                                request.app.state.serving))  # fmt: skip

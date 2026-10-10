@@ -47,6 +47,7 @@ services:
       EVENTS_DIR: /app/events  # one prediction event per answer (no text): drift job input
       # CONFIG_SOURCE=mlflow (in .env): runtime knobs from models:/legal-rag-config@production
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      LANGFUSE_HOST: http://langfuse-web:3000  # traces, when LANGFUSE_*_KEY are set in .env
     volumes:
       # bge-m3 (~2.3 GB) is downloaded once into this volume, not baked into the image.
       # (A Windows bind mount was tried: it appears as root:root 755 inside the container,
