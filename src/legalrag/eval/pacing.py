@@ -1,8 +1,4 @@
-"""Stay under a provider's requests-per-minute limit instead of hammering it and retrying.
-
-Free tiers count requests per minute (Gemini Flash-Lite: 15). Spacing request *starts* evenly is
-the simplest way to never hit the limit; retries stay for the rare surprise.
-"""
+"""Space request starts evenly to stay under a provider's requests-per-minute limit."""
 
 from __future__ import annotations
 

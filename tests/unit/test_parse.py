@@ -1,15 +1,4 @@
-"""Parser behaviour on a synthetic page that reproduces every quirk found in the real PDF.
-
-Quirks covered (see docs/research/03_corpus_inspection.md):
-- a preamble with its own "مادة ١ / مادة ٢" before the code starts
-- Arabic article numbers printed digit-reversed ("مادة٢١" is Article 12)
-- Arabic and English headers on one line ("مادة٣١  Article 13")
-- an article with Arabic text only (no English header)
-- an English header with text on the same line ("Article 17 The ...")
-- a cross-reference that starts a line ("Article 2 .") inside English text
-- a repeal note in a heading block ("Articles 15-16 repealed")
-- heading blocks in both languages that set book / chapter / section / topic
-"""
+"""Parser behaviour on synthetic pages that reproduce the quirks of the real PDF."""
 
 import textwrap
 
@@ -17,6 +6,7 @@ import pytest
 
 from legalrag.ingest.parse import Article, longest_increasing, parse_lines
 
+# Arabic article numbers are printed digit-reversed: "مادة٢١" is Article 12
 SAMPLE = [
     (1, "القانون المدني المصري"),
     (1, "قانون الإصدار"),
@@ -152,7 +142,7 @@ def test_longest_increasing_drops_cross_references():
     assert [seq[i] for i in keep] == [449, 450, 451, 884, 885, 886]
 
 
-# ---- patterns found when running on the real PDF (see reports/module-1.md) ----
+# cases from the real PDF
 
 SAMPLE2 = [
     (1, "نصوص القانون المدنى"),

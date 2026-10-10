@@ -1,12 +1,10 @@
-"""One experiment = the real pipeline over the golden set, scored and (optionally) logged.
+"""Run the pipeline over the golden set, score it and optionally log it to MLflow.
 
-    uv run python -m legalrag.eval.run --name baseline                       # deterministic metrics
+    uv run python -m legalrag.eval.run --name baseline
     uv run python -m legalrag.eval.run --name jev --decider jev --ragas --mlflow
 
-Needs Qdrant + the index + an LLM key (and the MLflow server for ``--mlflow``). Writes, under
-``reports/eval/<name>/``: ``predictions.jsonl`` (answer, citations, context, tokens, latency per
-question), ``metrics.json`` (overall + per language) and, with ``--ragas``, ``ragas.jsonl``.
-RAGAS reads the saved predictions, so an expensive pipeline run is never repeated to add a metric.
+Writes ``predictions.jsonl``, ``metrics.json`` and, with ``--ragas``, ``ragas.jsonl`` under
+``reports/eval/<name>/``. RAGAS scores the saved predictions, so the pipeline is not rerun.
 """
 
 from __future__ import annotations
@@ -53,24 +51,32 @@ async def predict(pipeline: Any, item: GoldenItem) -> Prediction:
         gated=ans.gated,
         decider_cost_usd=ans.decision.cost_usd if ans.decision else 0.0,
         decider_model=ans.decision.model if ans.decision else "",
+        guardrails=ans.guardrails,
     )
 
 
 async def predict_context(pipeline: Any, item: GoldenItem) -> Prediction:
-    """Retrieval + decider only: no LLM call, no tokens (refused = the gate said no)."""
+    """Retrieval and decider only, no LLM call; ``refused`` means gated."""
     t0 = time.perf_counter()
     ctx = await pipeline.select_context(item.question)
     return Prediction(
-        id=item.id, lang=item.lang, category=item.category, question=item.question,
-        gold_articles=item.gold_articles, reference=item.reference, answer="",
-        refused=ctx.gated, gated=ctx.gated, cited=[],
+        id=item.id,
+        lang=item.lang,
+        category=item.category,
+        question=item.question,
+        gold_articles=item.gold_articles,
+        reference=item.reference,
+        answer="",
+        refused=ctx.gated,
+        gated=ctx.gated,
+        cited=[],
         context_articles=[c.article_number for c in ctx.chunks],
         context_texts=[format_article(c) for c in ctx.chunks],
         latency_ms=round((time.perf_counter() - t0) * 1000, 1),
         answerable_score=ctx.decision.answerable if ctx.decision else None,
         decider_cost_usd=ctx.decision.cost_usd if ctx.decision else 0.0,
         decider_model=ctx.decision.model if ctx.decision else "",
-    )  # fmt: skip
+    )
 
 
 async def run_golden(
@@ -80,7 +86,7 @@ async def run_golden(
     generate: bool = True,
     requests_per_minute: float | None = None,
 ) -> list[Prediction]:
-    """All items, a few at a time and paced under the LLM's per-minute limit, in input order."""
+    """Predict every item with bounded concurrency and pacing; results keep input order."""
     gate, pacer = asyncio.Semaphore(concurrency), Pacer(requests_per_minute if generate else None)
     step = predict if generate else predict_context
 
@@ -89,27 +95,44 @@ async def run_golden(
             await pacer.wait()
             try:
                 return await step(pipeline, item)
-            except Exception as exc:  # noqa: BLE001 - one quota/timeout must not lose the run
+            except Exception as exc:  # noqa: BLE001 - one failed item must not lose the run
                 log.warning("eval_item_failed", id=item.id, error=str(exc)[:200])
                 return Prediction(
-                    id=item.id, lang=item.lang, category=item.category, question=item.question,
-                    gold_articles=item.gold_articles, reference=item.reference, answer="",
-                    refused=False, cited=[], context_articles=[],
+                    id=item.id,
+                    lang=item.lang,
+                    category=item.category,
+                    question=item.question,
+                    gold_articles=item.gold_articles,
+                    reference=item.reference,
+                    answer="",
+                    refused=False,
+                    cited=[],
+                    context_articles=[],
                     error=f"{type(exc).__name__}: {exc}"[:300],
-                )  # fmt: skip
+                )
 
     return list(await asyncio.gather(*(one(i) for i in items)))
 
 
-# thresholds replayed offline; reported as correct_refusal - false_refusal (higher = better gate)
+# gate thresholds replayed by --retrieval-only runs
 GATE_GRID = [round(0.05 * i, 2) for i in range(20)]
 
-RETRIEVAL_KEYS = ("n", "errors", "hit_at_1", "hit_at_5", "mrr", "false_refusal_rate",
-                  "correct_refusal_rate", "latency_p50_ms", "latency_p95_ms", "decider_cost_usd")  # fmt: skip
+RETRIEVAL_KEYS = (
+    "n",
+    "errors",
+    "hit_at_1",
+    "hit_at_5",
+    "mrr",
+    "false_refusal_rate",
+    "correct_refusal_rate",
+    "latency_p50_ms",
+    "latency_p95_ms",
+    "decider_cost_usd",
+)
 
 
 def summarize_retrieval(preds: Sequence[Prediction]) -> dict[str, dict[str, Any]]:
-    """Only the metrics that mean something without an answer (refusals = the gate alone)."""
+    """The metrics that need no generated answer."""
     return {g: {k: m[k] for k in RETRIEVAL_KEYS} for g, m in summarize(preds).items()}
 
 
@@ -125,7 +148,7 @@ def read_predictions(path: str | Path) -> list[Prediction]:
 
 
 def rag_config(settings: Settings) -> dict[str, Any]:
-    """Everything that changes an answer: logged as MLflow params, registered as the config."""
+    """Settings that affect an answer; logged as MLflow params and registered as the config."""
     return {
         "llm_model": settings.active_llm_model,
         "prompt_version": PROMPT_VERSION,
@@ -154,10 +177,16 @@ def _parse(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--gate", type=float, default=None, help="answerability threshold")
     p.add_argument("--ragas", action="store_true", help="also score with the RAGAS judge")
     p.add_argument("--mlflow", action="store_true", help="log the run to MLflow")
-    p.add_argument("--retrieval-only", action="store_true",
-                   help="retrieval + decider only, no LLM (free): ranking and gate metrics")  # fmt: skip
-    p.add_argument("--from-predictions", default=None,
-                   help="score a saved predictions.jsonl instead of running the pipeline")  # fmt: skip
+    p.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        help="retrieval + decider only, no LLM (free): ranking and gate metrics",
+    )
+    p.add_argument(
+        "--from-predictions",
+        default=None,
+        help="score a saved predictions.jsonl instead of running the pipeline",
+    )
     p.add_argument("--concurrency", type=int, default=4)
     return p.parse_args(argv)
 
@@ -174,12 +203,13 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _write_json(data: Any, path: Path) -> None:
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
-                    newline="\n")  # fmt: skip
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n"
+    )
 
 
 def _index_tags(settings: Settings) -> dict[str, str]:
-    """Which index the run used (alias target + its metadata), without loading any model."""
+    """The collection behind the alias and its articles md5, without loading any model."""
     from qdrant_client import QdrantClient
 
     from legalrag.index.store import alias_target, read_metadata
@@ -198,16 +228,22 @@ def _git_dirty() -> str:
     import subprocess
 
     try:
-        out = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
-                             capture_output=True, text=True, check=True, timeout=10)  # fmt: skip
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
         return str(bool(out.stdout.strip())).lower()
     except (OSError, subprocess.SubprocessError):
         return "unknown"
 
 
-def _lineage_tags(settings: Settings, args: argparse.Namespace, golden: Path,
-                  preds: Sequence[Prediction]) -> dict[str, str]:  # fmt: skip
-    """Everything needed to reproduce the run besides the params (git SHA is added by track)."""
+def _lineage_tags(
+    settings: Settings, args: argparse.Namespace, golden: Path, preds: Sequence[Prediction]
+) -> dict[str, str]:
+    """Reproducibility tags beyond the params; ``track`` adds the git SHA."""
     resolved = next((p.decider_model for p in preds if p.decider_model), "")
     return {
         "eval_mode": "retrieval_only" if args.retrieval_only else "end_to_end",
@@ -225,10 +261,14 @@ def _lineage_tags(settings: Settings, args: argparse.Namespace, golden: Path,
 def _ragas(preds: list[Prediction], settings: Settings, out: Path, concurrency: int) -> dict:
     from legalrag.eval.ragas_run import make_metrics, score_predictions, summarize_ragas
 
-    judge = make_metrics(settings.judge_base_url, settings.judge_api_key,
-                         settings.judge_model, settings.judge_embedding_model,
-                         names=[m.strip() for m in settings.ragas_metrics.split(",") if m.strip()],
-                         reasoning_effort=settings.judge_reasoning_effort)  # fmt: skip
+    judge = make_metrics(
+        settings.judge_base_url,
+        settings.judge_api_key,
+        settings.judge_model,
+        settings.judge_embedding_model,
+        names=[m.strip() for m in settings.ragas_metrics.split(",") if m.strip()],
+        reasoning_effort=settings.judge_reasoning_effort,
+    )
     rows = asyncio.run(score_predictions(preds, judge, concurrency, settings.judge_rpm))
     lines = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
     (out / "ragas.jsonl").write_text(lines, encoding="utf-8", newline="\n")
@@ -250,17 +290,25 @@ def main(argv: list[str] | None = None) -> None:
         from legalrag.api.main import build_components
 
         pipeline = build_components(settings).pipeline
-        preds = asyncio.run(run_golden(pipeline, load_golden(golden_path), args.concurrency,
-                                       generate=not args.retrieval_only,
-                                       requests_per_minute=settings.llm_rpm))  # fmt: skip
-    if args.retrieval_only:  # no LLM ran: every refusal is the gate's (also true for old files)
+        preds = asyncio.run(
+            run_golden(
+                pipeline,
+                load_golden(golden_path),
+                args.concurrency,
+                generate=not args.retrieval_only,
+                requests_per_minute=settings.llm_rpm,
+            )
+        )
+    if args.retrieval_only:  # no LLM ran, so every refusal came from the gate
         preds = [p.model_copy(update={"gated": p.refused}) for p in preds]
     write_predictions(preds, out / "predictions.jsonl")
     if args.retrieval_only:
         summary = summarize_retrieval(preds)
-        summary["gate_sweep"] = {f"t{r['threshold']:.2f}.{k}": r[k]
-                                 for r in gate_sweep(preds, GATE_GRID)
-                                 for k in ("false_refusal_rate", "correct_refusal_rate")}  # fmt: skip
+        summary["gate_sweep"] = {
+            f"t{r['threshold']:.2f}.{k}": r[k]
+            for r in gate_sweep(preds, GATE_GRID)
+            for k in ("false_refusal_rate", "correct_refusal_rate")
+        }
     else:
         summary = summarize(preds, settings.llm_price_in_per_m, settings.llm_price_out_per_m)
     artifacts = [out / "predictions.jsonl", out / "metrics.json"]
@@ -276,11 +324,16 @@ def main(argv: list[str] | None = None) -> None:
 
         mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
         tags = {**_index_tags(settings), **_lineage_tags(settings, args, golden_path, preds)}
-        run_id = log_eval_run(settings.mlflow_experiment, args.name, rag_config(settings),
-                              summary, tags, artifacts)  # fmt: skip
+        run_id = log_eval_run(
+            settings.mlflow_experiment, args.name, rag_config(settings), summary, tags, artifacts
+        )
         log.info("mlflow_run", run_id=run_id)
-    log.info("eval_done", name=args.name, items=len(preds),
-             **{k: summary["all"].get(k) for k in ("hit_at_5", "mrr", "faithfulness")})  # fmt: skip
+    log.info(
+        "eval_done",
+        name=args.name,
+        items=len(preds),
+        **{k: summary["all"].get(k) for k in ("hit_at_5", "mrr", "faithfulness")},
+    )
 
 
 if __name__ == "__main__":

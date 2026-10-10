@@ -1,40 +1,53 @@
 """FastAPI service: /ask (JSON or SSE stream), /health, /live, /metadata, /feedback.
 
-Everything heavy (Qdrant client, bge-m3, LLM client) is built once in the lifespan and kept on
-``app.state``; requests only use it. ``create_app(build=...)`` lets tests swap in fakes.
-
-    uv run uvicorn legalrag.api.main:app --port 8000
+uv run uvicorn legalrag.api.main:app --port 8000
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import APIConnectionError, APIStatusError
+from prometheus_client import CollectorRegistry
 
 from legalrag import __version__
 from legalrag.api.middleware import RequestIdMiddleware
-from legalrag.api.schemas import AskRequest, AskResponse, FeedbackRequest, HealthResponse, Source
+from legalrag.api.schemas import (
+    AskRequest,
+    AskResponse,
+    ErrorBody,
+    FeedbackRequest,
+    HealthResponse,
+    Source,
+)
 from legalrag.config_registry import apply_registry_config
 from legalrag.decider.base import Decider
 from legalrag.decider.jev import JevDecider
 from legalrag.decider.local import LocalDecider
 from legalrag.generation import PROMPT_VERSION, Generator, make_client
+from legalrag.guardrails import redact_pii
+from legalrag.index.batcher import QueryBatcher
 from legalrag.index.store import alias_target, read_metadata
 from legalrag.ingest.normalize import NORMALIZATION_VERSION
 from legalrag.logging_conf import configure_logging, get_logger, request_id_var
+from legalrag.monitoring.events import EventLog, event_from_answer, event_from_stream_done
+from legalrag.observability.metrics import RagMetrics, render
+from legalrag.observability.prompts import CodePrompt, LangfusePrompt
+from legalrag.observability.tracing import LangfuseTracer, NoopTracer, build_tracer
 from legalrag.pipeline import RagPipeline
+from legalrag.ratelimit import TokenBucket, build_limiter, client_key, known_key_hashes
 from legalrag.retrieval import Retriever
 from legalrag.settings import Settings, get_settings
 
@@ -52,13 +65,11 @@ class Components:
     alias: str
     collection: str
     index_meta: dict[str, Any]
+    limiter: TokenBucket | None = None  # None = no rate limit
 
 
 def check_index_compatible(meta: dict[str, Any] | None, settings: Settings) -> None:
-    """Refuse to serve if questions would be embedded differently from the documents.
-
-    The instructor's incident: a nightly rebuild changed the embedding model, the app kept the old
-    one, and 18% of Arabic answers silently became "not enough information"."""
+    """Refuse to serve if questions would be embedded differently from the indexed documents."""
     if not meta:
         raise IndexMismatchError("index has no metadata; rebuild it with `dvc repro`")
     if meta.get("embedding_model") != settings.embedding_model:
@@ -95,6 +106,8 @@ def build_components(settings: Settings) -> Components:
         settings.query_max_length,
         revision=settings.embedding_revision,
     )
+    if settings.query_batch_max > 1:
+        embedder = QueryBatcher(embedder, max_batch=settings.query_batch_max)
     retriever = Retriever(
         client,
         settings.qdrant_collection_alias,
@@ -110,6 +123,12 @@ def build_components(settings: Settings) -> Components:
         settings.llm_max_tokens,
         settings.llm_temperature,
     )
+    tracer = build_tracer(
+        settings.langfuse_host,
+        settings.langfuse_public_key.get_secret_value(),
+        settings.langfuse_secret_key.get_secret_value(),
+        settings.deploy_environment,
+    )
     pipeline = RagPipeline(
         retriever,
         generator,
@@ -117,8 +136,18 @@ def build_components(settings: Settings) -> Components:
         top_n=settings.retrieve_top_n,
         decider=build_decider(settings),
         gate_threshold=settings.gate_threshold,
+        tracer=tracer,
+        prices=(settings.llm_price_in_per_m, settings.llm_price_out_per_m),
+        prompts=LangfusePrompt(tracer.client, settings.prompt_label)
+        if isinstance(tracer, LangfuseTracer)
+        else CodePrompt(),
     )
-    return Components(pipeline, client, settings.qdrant_collection_alias, collection, meta or {})
+    limiter = build_limiter(
+        settings.redis_url, settings.rate_limit_per_minute, settings.rate_limit_burst
+    )
+    return Components(
+        pipeline, client, settings.qdrant_collection_alias, collection, meta or {}, limiter
+    )
 
 
 def build_decider(settings: Settings) -> Decider | None:
@@ -137,8 +166,8 @@ def build_decider(settings: Settings) -> Decider | None:
 
 
 def _llm_failure(exc: Exception) -> tuple[int, str, dict[str, str]]:
-    """Provider outage / overload -> 503 + Retry-After (try again later).
-    Provider rejecting our request (bad key, unknown model) -> 502: our config, retrying won't help."""
+    """Map an LLM error to (status, detail, headers): outage or 429 -> 503 with Retry-After,
+    a rejected request (bad key, unknown model) -> 502."""
     code = getattr(exc, "status_code", None)
     log.error("llm_error", error=type(exc).__name__, provider_status=code)
     if isinstance(exc, APIStatusError) and code != 429 and code < 500:
@@ -151,15 +180,66 @@ def _sse(event: dict[str, Any]) -> str:
 
 
 async def _close(comp: Components) -> None:
-    """Release connections on shutdown (test fakes have nothing to close)."""
-    if hasattr(comp.qdrant, "close"):
-        comp.qdrant.close()
+    """Release connections on shutdown; one failing close must not leave the others open."""
     llm = getattr(getattr(comp.pipeline, "generator", None), "client", None)
-    if hasattr(llm, "close"):
-        await llm.close()
     decider = getattr(comp.pipeline, "decider", None)  # Jev holds an HTTP client
-    if hasattr(decider, "aclose"):
-        await decider.aclose()
+    tracer = getattr(comp.pipeline, "tracer", None)  # Langfuse sends traces in the background
+    retriever = getattr(comp.pipeline, "retriever", None)  # its QueryBatcher owns a thread
+    closers = [
+        ("qdrant", getattr(comp.qdrant, "close", None)),
+        ("llm", getattr(llm, "close", None)),
+        ("decider", getattr(decider, "aclose", None)),
+        ("traces", getattr(tracer, "flush", None)),
+        ("limiter", comp.limiter.aclose if comp.limiter is not None else None),
+        ("embedder", getattr(getattr(retriever, "embedder", None), "close", None)),
+    ]
+    for name, close in closers:
+        if close is None:
+            continue
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001 - shutdown: log and keep closing the rest
+            log.exception("close_failed", resource=name)
+
+
+class RateLimitedError(Exception):
+    def __init__(self, retry_after_s: int):
+        super().__init__(f"rate limited, retry after {retry_after_s} s")
+        self.retry_after_s = retry_after_s
+
+
+async def rate_limit(request: Request, response: Response) -> None:
+    """Take one token for this client or raise 429. Runs before body validation, so invalid
+    requests are limited too."""
+    comp: Components = request.app.state.components
+    if comp.limiter is None:
+        return
+    ip = request.client.host if request.client else None
+    key = client_key(request.headers.get("X-API-Key"), ip, request.app.state.known_keys)
+    verdict = await comp.limiter.take(key)
+    outcome = "limited" if not verdict.allowed else "degraded" if verdict.degraded else "allowed"
+    request.app.state.metrics.ratelimit.labels(outcome).inc()
+    if not verdict.allowed:
+        log.warning("rate_limited", retry_after_s=verdict.retry_after_s)
+        raise RateLimitedError(verdict.retry_after_s)
+    if not verdict.degraded:  # lets a client slow down before it hits a 429
+        response.headers["X-RateLimit-Remaining"] = str(verdict.remaining)
+
+
+RATE_LIMITED = {
+    429: {
+        "model": ErrorBody,
+        "description": "Too many requests from this client; retry after Retry-After seconds",
+        "headers": {
+            "Retry-After": {
+                "description": "seconds until a request is allowed again",
+                "schema": {"type": "integer"},
+            }
+        },
+    }
+}
 
 
 def _source(c: Any) -> Source:
@@ -172,9 +252,81 @@ def _source(c: Any) -> Source:
     )
 
 
+def _safely(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+    """Run a telemetry call; errors are logged and never fail the request."""
+    try:
+        fn(*args, **kwargs)
+    except Exception:  # noqa: BLE001 - best-effort telemetry
+        log.exception("telemetry_failed", what=getattr(fn, "__name__", "?"))
+
+
+async def _after_stream(
+    request: Request, tracer: Any, root: Any, event: dict[str, Any], question: str
+) -> None:
+    """Metrics, prediction event and trace for a finished stream; pops ``_monitoring``."""
+    seen = event.pop("_monitoring", {})
+    full = {**event, **seen}
+    backend = request.app.state.settings.llm_backend
+    _safely(request.app.state.metrics.observe_stream_done, full, backend)
+    await request.app.state.record(
+        lambda: event_from_stream_done(
+            full, question, event["request_id"], request.app.state.serving
+        )
+    )
+    _safely(
+        _close_trace,
+        tracer,
+        root,
+        event.get("replace_with") or "(streamed: see generate)",
+        event["refused"],
+        event.get("guardrails", []),
+        seen.get("answerable_score"),
+        [s["article_number"] for s in event["sources"]],
+    )
+
+
+def _trace_fields(request: Request, question: str, backend: str) -> dict[str, Any]:
+    """Fields shared by every trace; the question is PII-redacted."""
+    serving = getattr(request.app.state, "serving", {})
+    return {
+        "input": {"question": redact_pii(question)[0]},
+        "tags": [backend, f"decider:{serving.get('decider', '?')}"],
+        "metadata": {
+            "index_collection": serving.get("index_collection", ""),
+            "llm_model": serving.get("llm_model", ""),
+        },
+        "version": PROMPT_VERSION,
+    }
+
+
+def _close_trace(
+    tracer: Any,
+    root: Any,
+    answer: str | None,
+    refused: bool,
+    guardrails: list[str],
+    answerable: float | None,
+    sources: list[int],
+) -> None:
+    """Set the trace output and attach filterable scores."""
+    root.update(output={"answer": answer, "refused": refused, "sources": sources})
+    tracer.score("refused", int(refused), data_type="BOOLEAN")
+    for guard in guardrails:
+        tracer.score("guardrail", guard, data_type="CATEGORICAL")
+    if answerable is not None:
+        tracer.score("answerable", answerable, data_type="NUMERIC")
+
+
+def _append_line(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def create_app(
     build: Callable[[Settings], Components] = build_components, settings: Settings | None = None
 ) -> FastAPI:
+    """``build`` creates the heavy components once at startup; tests pass fakes."""
     settings = settings or get_settings()
 
     @asynccontextmanager
@@ -184,8 +336,21 @@ def create_app(
         served, app.state.config_source = apply_registry_config(settings)
         app.state.settings = served
         app.state.components = build(served)  # load once, never per request
-        log.info("startup", collection=app.state.components.collection,
-                 llm=served.active_llm_model, config=app.state.config_source)  # fmt: skip
+        log.info(
+            "startup",
+            collection=app.state.components.collection,
+            llm=served.active_llm_model,
+            config=app.state.config_source,
+        )
+        app.state.serving = {
+            "prompt_version": PROMPT_VERSION,
+            "llm_model": served.active_llm_model,
+            "decider": served.decider_backend,
+            "index_collection": app.state.components.collection,
+        }
+        app.state.metrics.set_info(
+            app_version=__version__, config_source=app.state.config_source, **app.state.serving
+        )
         try:
             yield
         finally:
@@ -198,6 +363,33 @@ def create_app(
         lifespan=lifespan,
     )
     app.add_middleware(RequestIdMiddleware)
+    app.state.known_keys = known_key_hashes(settings.api_keys.get_secret_value())
+    # one registry per app, since tests build many apps in one process
+    app.state.metrics_registry = CollectorRegistry()
+    app.state.metrics = RagMetrics(app.state.metrics_registry)
+    app.state.events = EventLog(settings.events_dir) if settings.events_dir else None
+
+    async def record(event_factory: Callable[[], Any]) -> None:
+        """Write one prediction event in a worker thread; a failed write never fails an answer."""
+        if app.state.events is None:
+            return
+        try:
+            await asyncio.to_thread(app.state.events.write, event_factory())
+        except Exception:  # noqa: BLE001 - monitoring must not take answers down
+            log.exception("event_write_failed")
+
+    app.state.record = record
+
+    @app.exception_handler(RateLimitedError)
+    async def _too_many(request: Request, exc: RateLimitedError) -> JSONResponse:
+        return JSONResponse(
+            {
+                "detail": "Too many requests, please retry later.",
+                "request_id": request_id_var.get(),
+            },
+            status_code=429,
+            headers={"Retry-After": str(exc.retry_after_s)},
+        )
 
     @app.exception_handler(RequestValidationError)
     async def _invalid(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -222,9 +414,9 @@ def create_app(
 
     @app.get("/health", response_model=HealthResponse, tags=["ops"])
     async def health(request: Request) -> Any:
-        """Readiness: the index is reachable and not empty. Load balancers send traffic only then."""
+        """Readiness: the index is reachable and not empty."""
         comp: Components = request.app.state.components
-        try:  # sync client call in a thread: a slow Qdrant must not freeze every other request
+        try:  # sync client, run in a thread so a slow Qdrant does not block the event loop
             points = (await asyncio.to_thread(comp.qdrant.count, comp.alias)).count
         except Exception as exc:  # noqa: BLE001 - any backend failure means "not ready"
             log.error("health_check_failed", error=type(exc).__name__)
@@ -240,14 +432,23 @@ def create_app(
             index_collection=comp.collection,
         )
 
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics(request: Request) -> Response:
+        """Prometheus scrape endpoint, exposed only inside the compose network and on 127.0.0.1."""
+        body, content_type = render(request.app.state.metrics_registry)
+        return Response(body, media_type=content_type)
+
     @app.get("/metadata", tags=["ops"])
     async def metadata(request: Request) -> dict[str, Any]:
         """What is serving right now: versions of the app, prompt, models and index."""
         comp: Components = request.app.state.components
         served: Settings = request.app.state.settings
+        prompts = getattr(comp.pipeline, "prompts", None) or CodePrompt()
+        served_prompt = await asyncio.to_thread(prompts.get)  # what the next answer will use
         return {
             "app_version": __version__,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": served_prompt.version,
+            "prompt_source": served_prompt.source,
             "config_source": request.app.state.config_source,
             "llm_backend": served.llm_backend,
             "llm_model": served.active_llm_model,
@@ -259,28 +460,58 @@ def create_app(
             "index": {"alias": comp.alias, "collection": comp.collection, **comp.index_meta},
         }
 
-    @app.post("/ask", response_model=AskResponse, tags=["qa"])
+    @app.post(
+        "/ask",
+        response_model=AskResponse,
+        tags=["qa"],
+        dependencies=[Depends(rate_limit)],
+        responses=RATE_LIMITED,
+    )
     async def ask(request: Request, body: AskRequest, stream: bool = Query(False)) -> Any:
         """Answer a question about the Egyptian Civil Code with article citations.
         `?stream=true` sends the answer token by token as Server-Sent Events."""
         pipeline = request.app.state.components.pipeline
+        metrics: RagMetrics = request.app.state.metrics
+        backend = request.app.state.settings.llm_backend
         request_id = request_id_var.get()
+        tracer = pipeline.tracer if hasattr(pipeline, "tracer") else NoopTracer()
+        trace = _trace_fields(request, body.question, backend)
         if stream:
 
             async def events() -> AsyncIterator[str]:
-                try:
-                    async for event in pipeline.ask_stream(body.question, book=body.book):
-                        if event["type"] == "done":
-                            event["request_id"] = request_id
-                        yield _sse(event)
-                except (APIConnectionError, APIStatusError) as exc:
-                    # the 200 status line is already sent; tell the client in the stream itself
-                    yield _sse({"type": "error", "detail": _llm_failure(exc)[1],
-                                "request_id": request_id})  # fmt: skip
-                except Exception:
-                    log.exception("stream_failed")
-                    yield _sse({"type": "error", "detail": "Internal server error",
-                                "request_id": request_id})  # fmt: skip
+                with tracer.trace(request_id, "ask_stream", **trace) as root:
+                    try:
+                        # aclosing: the stream is closed in this task even if the client leaves
+                        async with aclosing(
+                            pipeline.ask_stream(body.question, book=body.book)
+                        ) as answer:
+                            async for event in answer:
+                                if event["type"] == "done":
+                                    event["request_id"] = request_id
+                                    await _after_stream(request, tracer, root, event, body.question)
+                                yield _sse(event)
+                    except (APIConnectionError, APIStatusError) as exc:
+                        _safely(metrics.observe_stream_error)
+                        _safely(root.update, level="ERROR", status_message=type(exc).__name__)
+                        # the 200 status line is already sent; tell the client in the stream
+                        yield _sse(
+                            {
+                                "type": "error",
+                                "detail": _llm_failure(exc)[1],
+                                "request_id": request_id,
+                            }
+                        )
+                    except Exception as exc:
+                        log.exception("stream_failed")
+                        _safely(metrics.observe_stream_error)
+                        _safely(root.update, level="ERROR", status_message=type(exc).__name__)
+                        yield _sse(
+                            {
+                                "type": "error",
+                                "detail": "Internal server error",
+                                "request_id": request_id,
+                            }
+                        )
 
             return StreamingResponse(
                 events(),
@@ -288,7 +519,24 @@ def create_app(
                 # no-cache + no proxy buffering, or tokens arrive all at once at the end
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
-        result = await pipeline.ask(body.question, book=body.book)
+        with tracer.trace(request_id, "ask", **trace) as root:
+            result = await pipeline.ask(body.question, book=body.book)
+            _safely(
+                _close_trace,
+                tracer,
+                root,
+                result.answer,
+                result.refused,
+                result.guardrails,
+                result.decision.answerable if result.decision else None,
+                [c.article_number for c in result.sources],
+            )
+        _safely(metrics.observe_answer, result, backend)
+        await record(
+            lambda: event_from_answer(
+                result, body.question, request_id, "ask", request.app.state.serving
+            )
+        )
         return AskResponse(
             answer=result.answer,
             language=result.language,
@@ -297,20 +545,29 @@ def create_app(
             invalid_citations=result.invalid_citations,
             request_id=request_id,
             prompt_version=result.prompt_version,
+            guardrails=result.guardrails,
             model=result.model,
             usage=result.usage,
             timings_ms=result.timings_ms,
         )
 
-    @app.post("/feedback", status_code=202, tags=["qa"])
-    def feedback(body: FeedbackRequest) -> dict[str, str]:
-        """Thumbs up/down on an answer, keyed by its request id (becomes a Langfuse score later).
-        Plain ``def``: FastAPI runs it in a worker thread, so the file write never blocks the loop."""
-        path = Path(settings.feedback_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        record = {"at": datetime.now(UTC).isoformat(), **body.model_dump()}
-        with path.open("a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    # rate limited like /ask: an unlimited write endpoint can fill the disk
+    @app.post(
+        "/feedback",
+        status_code=202,
+        tags=["qa"],
+        dependencies=[Depends(rate_limit)],
+        responses=RATE_LIMITED,
+    )
+    async def feedback(body: FeedbackRequest) -> dict[str, str]:
+        """Thumbs up/down on an answer by request id; the comment is stored with PII redacted."""
+        record = {
+            "at": datetime.now(UTC).isoformat(),
+            "request_id": body.request_id,
+            "rating": body.rating,
+            "comment": redact_pii(body.comment)[0] if body.comment else None,
+        }
+        await asyncio.to_thread(_append_line, Path(settings.feedback_path), record)
         return {"status": "recorded"}
 
     return app

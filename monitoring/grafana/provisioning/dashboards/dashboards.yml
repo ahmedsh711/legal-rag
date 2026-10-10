@@ -1,0 +1,10 @@
+# Provision every dashboard JSON mounted at /var/lib/grafana/dashboards (see build_dashboard.py).
+apiVersion: 1
+providers:
+  - name: legal-rag
+    folder: legal-rag
+    type: file
+    disableDeletion: true # the file in git is the source of truth
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

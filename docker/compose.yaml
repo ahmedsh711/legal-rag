@@ -1,19 +1,17 @@
-# One compose file, many profiles, so the laptop only runs what the current phase needs.
+# Local stack. Start only the profiles you need:
 #   docker compose -f docker/compose.yaml --profile core up -d
-# Profiles: core | tracking | llm | monitoring | llm-observability | airflow | serving
-# Services are added phase by phase (see task_plan.md); this is the Phase 0 skeleton.
+# Profiles: core | tracking | llm | monitoring | llm-observability | airflow
 name: legal-rag
 
 services:
   # ---------- core: what /ask needs ----------
-  # Ports are published on 127.0.0.1 only: these services have no auth (or dev passwords), so
-  # nobody else on the Wi-Fi should reach them. Containers talk to each other by service name.
+  # Host ports bind to 127.0.0.1 only: these services have no auth or use dev passwords.
   qdrant:
     image: qdrant/qdrant:v1.19.2  # keep within one minor version of qdrant-client in uv.lock
     profiles: [core]
     ports: ["127.0.0.1:6333:6333", "127.0.0.1:6334:6334"]
     volumes: [qdrant_data:/qdrant/storage]
-    healthcheck:  # the image has bash but no curl: "is the port accepting connections?"
+    healthcheck:  # no curl in the image; check that the port accepts connections
       test: ["CMD", "bash", "-c", ":> /dev/tcp/127.0.0.1/6333"]
       interval: 5s
       timeout: 3s
@@ -22,7 +20,7 @@ services:
 
   redis:
     image: redis:7.4-alpine
-    profiles: [core]
+    profiles: [core, llm-observability]
     ports: ["127.0.0.1:6379:6379"]
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes: [redis_data:/data]
@@ -40,36 +38,43 @@ services:
         required: false
     environment:
       QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0  # rate-limit buckets
       VLLM_BASE_URL: http://vllm:8000/v1
       FEEDBACK_PATH: /app/feedback/feedback.jsonl
+      EVENTS_DIR: /app/events  # one prediction event per answer (no text), read by drift-job
       # CONFIG_SOURCE=mlflow (in .env): runtime knobs from models:/legal-rag-config@production
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      LANGFUSE_HOST: http://langfuse-web:3000  # traces, when LANGFUSE_*_KEY are set in .env
     volumes:
-      # bge-m3 (~2.3 GB) is downloaded once into this volume, not baked into the image.
-      # (A Windows bind mount was tried: it appears as root:root 755 inside the container,
-      # so the non-root app user cannot write the model there.)
+      # bge-m3 (~2.3 GB) downloads here once. Named volume, not a bind mount: Windows bind
+      # mounts show up as root:root 755 and the non-root app user cannot write to them.
       - hf_cache:/home/app/.cache/huggingface
       - feedback:/app/feedback
+      - events:/app/events
       # only on machines with HTTPS inspection: LOCAL_CA_CERT=<path to root CA pem> in .env
       - ${LOCAL_CA_CERT:-./no-local-ca.pem}:/run/local-ca.pem:ro
-    ports: ["127.0.0.1:${API_HOST_PORT:-8000}:8000"]  # port 8000 taken on your machine? set API_HOST_PORT
+    ports: ["127.0.0.1:${API_HOST_PORT:-8000}:8000"]  # set API_HOST_PORT if 8000 is taken
     depends_on:
       qdrant:
         condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
-  # ---------- tracking: MLflow + DVC remote (Phase 1/3) ----------
+  # ---------- tracking: MLflow + DVC remote ----------
   postgres:
     image: postgres:17-alpine
-    profiles: [tracking, llm-observability, airflow]
+    profiles: [tracking, monitoring, llm-observability, airflow]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-legalrag}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: mlflow
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-}  # read-only Grafana role (zz-grafana-ro.sh)
     ports: ["127.0.0.1:5432:5432"]
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./postgres/zz-grafana-ro.sh:/docker-entrypoint-initdb.d/zz-grafana-ro.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-legalrag}"]
       interval: 10s
@@ -77,9 +82,9 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # S3-compatible object store: DVC remote, MLflow artifacts, Langfuse events.
-  # MinIO withdrew its community images from Docker Hub in 2025; this is the frozen Bitnami
-  # build of MinIO (fine for local dev). Production would use AWS S3 or a maintained store.
+  # S3-compatible store for the DVC remote, MLflow artifacts and Langfuse events.
+  # Upstream MinIO no longer publishes community images on Docker Hub; this is Bitnami's frozen
+  # build, fine for local dev only.
   minio:
     image: bitnamilegacy/minio:2025.7.23
     profiles: [tracking, llm-observability]
@@ -96,9 +101,9 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Experiment tracking + model registry. Runs/params/metrics in Postgres, artifacts in MinIO.
-  # The server proxies artifacts (--serve-artifacts is the default), so clients only need
-  # MLFLOW_TRACKING_URI; the S3 credentials stay here. "-full" = Postgres + S3 drivers included.
+  # Tracking + model registry: metadata in Postgres, artifacts in MinIO. The server proxies
+  # artifacts, so clients need only MLFLOW_TRACKING_URI and never see the S3 credentials.
+  # The -full image includes the Postgres and S3 drivers.
   mlflow:
     image: ghcr.io/mlflow/mlflow:v3.17.0-full
     profiles: [tracking]
@@ -109,7 +114,7 @@ services:
       - --port=5000
       - --backend-store-uri=postgresql+psycopg2://${POSTGRES_USER:-legalrag}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/mlflow
       - --artifacts-destination=s3://mlflow
-      # MLflow rejects unknown Host headers (DNS-rebinding protection); allow our names
+      # MLflow rejects unknown Host headers (DNS-rebinding protection)
       - --allowed-hosts=mlflow:5000,localhost:5000,127.0.0.1:5000
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
@@ -129,6 +134,248 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ---------- llm: local vLLM server on the GPU ----------
+  # OpenAI-compatible; the API switches to it with LLM_BACKEND=vllm (see compose.vllm.yaml).
+  # Sized for a 4 GB RTX 3050: Qwen2.5-1.5B-Instruct AWQ (4-bit), 78 % of VRAM (Windows keeps
+  # some for the desktop), 4,096-token context (longest prompt is 1,896 tokens + up to 800
+  # generated), at most 8 concurrent sequences.
+  vllm:
+    image: vllm/vllm-openai:v0.30.0
+    profiles: [llm]
+    # the API's entrypoint: trusts a mounted HTTPS-inspection CA, then runs `vllm serve`
+    entrypoint: ["sh", "/usr/local/bin/ca-entrypoint.sh", "vllm", "serve"]
+    environment:
+      HF_HUB_DISABLE_XET: "1"  # plain HTTPS download, so the trusted bundle above applies
+    command:
+      - --model=Qwen/Qwen2.5-1.5B-Instruct-AWQ
+      - --revision=3ecffa0ceb27851800f45519bab9c457a04405e1  # pinned commit
+      - --tokenizer-revision=3ecffa0ceb27851800f45519bab9c457a04405e1
+      - --quantization=awq_marlin  # Marlin kernels: fast 4-bit matmul on Ampere (sm_86)
+      - --gpu-memory-utilization=0.78
+      - --max-model-len=4096
+      - --max-num-seqs=8
+      - --host=0.0.0.0
+      - --port=8000
+    volumes:
+      - vllm_cache:/root/.cache/huggingface  # ~1.1 GB of weights, downloaded once
+      - ./entrypoint.sh:/usr/local/bin/ca-entrypoint.sh:ro
+      - ${LOCAL_CA_CERT:-./no-local-ca.pem}:/run/local-ca.pem:ro
+    ports: ["127.0.0.1:8001:8000"]
+    shm_size: 1gb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:  # /health is 200 once the weights are loaded and CUDA graphs are captured
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 300s
+    restart: unless-stopped
+
+  # ---------- monitoring: metrics, dashboards, alerts, logs ----------
+  # All configuration is provisioned from monitoring/; nothing is set up by hand in the UIs.
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle  # POST /-/reload after editing rules, no restart
+    volumes:
+      - ../monitoring/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    profiles: [monitoring]
+    command: [--config.file=/etc/alertmanager/alertmanager.yml]
+    volumes: [../monitoring/alertmanager:/etc/alertmanager:ro]
+    ports: ["127.0.0.1:9093:9093"]
+    restart: unless-stopped
+
+  # local webhook receiver in place of Slack/Discord; logs to monitoring/alerts/alerts.jsonl
+  alert-sink:
+    image: python:3.12-slim
+    profiles: [monitoring]
+    command: [python, /app/alert_sink.py]
+    environment:
+      ALERT_LOG: /data/alerts.jsonl
+    volumes:
+      - ../monitoring/alert_sink.py:/app/alert_sink.py:ro
+      - ../monitoring/alerts:/data
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.2
+    profiles: [monitoring]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"  # anonymous viewers are read-only; port is localhost-only
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/legal-rag.json
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:?set GRAFANA_DB_PASSWORD in .env}  # read-only role
+    volumes:
+      - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports: ["127.0.0.1:3001:3000"]  # 3000 is Langfuse
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+  # host metrics plus the textfile collector (*.prom files the batch jobs write to
+  # monitoring/textfile)
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    profiles: [monitoring]
+    command: [--collector.textfile.directory=/textfile]
+    volumes: [../monitoring/textfile:/textfile:ro]
+    restart: unless-stopped
+
+  # per-container CPU and memory; needs read access to the host's cgroups and Docker state
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    profiles: [monitoring]
+    privileged: true  # reads /dev/kmsg and cgroup stats; local-only, no published port
+    devices: [/dev/kmsg]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    restart: unless-stopped
+
+  # Batch drift job (API image). Reads the events volume; writes the report, textfile metrics
+  # and Postgres rows.
+  #   docker compose --env-file .env -f docker/compose.yaml --profile monitoring run --rm drift-job
+  drift-job:
+    image: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${API_TAG:-dev}
+    profiles: [monitoring]
+    entrypoint: ["python", "-m", "legalrag.monitoring.drift_job"]
+    command: ["--hours", "24", "--events", "/app/events", "--reference", "/app/reference/reference_events.jsonl",
+              "--out", "/app/reports", "--state", "/app/reports", "--textfile", "/textfile/drift.prom"]
+    user: "0"  # Windows bind mounts (reports, textfile) are writable by root only
+    environment:
+      MONITORING_DB_URL: postgresql://${POSTGRES_USER:-legalrag}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/monitoring
+    volumes:
+      - events:/app/events:ro
+      - ../data/monitoring:/app/reference:ro
+      - ../reports/drift:/app/reports
+      - ../monitoring/textfile:/textfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # probes /health from outside the app (blackbox-health job in prometheus.yml)
+  blackbox:
+    image: prom/blackbox-exporter:v0.28.0
+    profiles: [monitoring]
+    restart: unless-stopped
+
+  # Logs: Alloy ships stdout of the services listed in config.alloy to Loki.
+  loki:
+    image: grafana/loki:3.7.8
+    profiles: [monitoring]
+    command: [-config.file=/etc/loki/local-config.yaml]  # the image's single-node config
+    volumes: [loki_data:/loki]
+    ports: ["127.0.0.1:3100:3100"]
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.20.0
+    profiles: [monitoring]
+    command: [run, /etc/alloy/config.alloy, --storage.path=/var/lib/alloy/data]
+    volumes:
+      - ../monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # reads container logs (local only)
+    depends_on: [loki]
+    restart: unless-stopped
+
+  # ---------- llm-observability: Langfuse v4 ----------
+  # Traces (one span per stage, LLM calls with tokens and cost), scores and prompt labels.
+  # Shares Postgres (db "langfuse"), Redis and MinIO (bucket "langfuse"); ClickHouse stores traces.
+  # Org, project, API keys and the admin user are created on first start from LANGFUSE_INIT_*.
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4.46.0
+    profiles: [llm-observability]
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://${POSTGRES_USER:-legalrag}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT in .env}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?set LANGFUSE_ENCRYPTION_KEY in .env (openssl rand -hex 32)}
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio}
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+    depends_on: &langfuse-deps
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_started}
+      clickhouse: {condition: service_healthy}
+    restart: unless-stopped
+
+  langfuse-web:
+    image: langfuse/langfuse:4.46.0
+    profiles: [llm-observability]
+    environment:
+      <<: *langfuse-env
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET in .env}
+      LANGFUSE_INIT_ORG_ID: legal-rag
+      LANGFUSE_INIT_ORG_NAME: legal-rag
+      LANGFUSE_INIT_PROJECT_ID: legal-rag
+      LANGFUSE_INIT_PROJECT_NAME: legal-rag
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?set LANGFUSE_PUBLIC_KEY in .env}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?set LANGFUSE_SECRET_KEY in .env}
+      LANGFUSE_INIT_USER_EMAIL: admin@legal-rag.local
+      LANGFUSE_INIT_USER_NAME: admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set LANGFUSE_INIT_USER_PASSWORD in .env}
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: *langfuse-deps
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12.11.4-alpine
+    profiles: [llm-observability]
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      # 127.0.0.1, not localhost: localhost resolves to ::1 here and ClickHouse listens on IPv4
+      test: wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
 secrets:
   local_ca:
     file: ${LOCAL_CA_CERT:-./no-local-ca.pem}
@@ -140,3 +387,10 @@ volumes:
   redis_data:
   postgres_data:
   minio_data:
+  vllm_cache:
+  events:
+  prometheus_data:
+  grafana_data:
+  clickhouse_data:
+  clickhouse_logs:
+  loki_data:

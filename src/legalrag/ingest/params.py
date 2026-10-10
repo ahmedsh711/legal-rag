@@ -1,9 +1,4 @@
-"""Typed access to the ``corpus`` section of params.yaml (shared by the parse and validate stages).
-
-DVC tracks params.yaml, so every threshold here is versioned and changing one re-runs only the
-stages that use it. Loading goes through Pydantic so a typo fails with a clear message instead of
-a KeyError deep inside a stage.
-"""
+"""Typed access to the ``corpus`` section of params.yaml (parse and validate stages)."""
 
 from __future__ import annotations
 
@@ -13,7 +8,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-# Names of the validation checks. A known anomaly may allow some of them for one article.
+# validation check codes; a known anomaly can allow some of them for one article
 CheckCode = Literal[
     "empty_ar", "empty_en", "arabic_in_en", "latin_in_ar", "too_long", "length_ratio"
 ]
@@ -24,11 +19,11 @@ class CorpusInputError(Exception):
 
 
 class Anomaly(BaseModel):
-    """A defect in the *source PDF* that we document instead of hiding."""
+    """Documented defect in the source PDF."""
 
     model_config = ConfigDict(extra="forbid")
     reason: str
-    flag: str  # copied into Article.quality_flags so retrieval and answers can see it
+    flag: str  # copied into Article.quality_flags
     allow: list[CheckCode] = Field(default_factory=list)  # checks that become warnings
 
 

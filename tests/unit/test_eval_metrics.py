@@ -59,7 +59,7 @@ def test_language_match_latency_tokens_and_cost():
             question="ما هو الإيجار؟",
             answer="Lease [Art. 558].",
             latency_ms=3000.0,
-        ),  # fmt: skip
+        ),
     ]
     s = summarize(preds, price_in_per_m=0.09, price_out_per_m=0.55)
     assert s["all"]["language_match"] == pytest.approx(0.5)

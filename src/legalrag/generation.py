@@ -1,11 +1,4 @@
-"""Answer generation: the prompt, an OpenAI-compatible client, and citation checks.
-
-The same client code talks to OpenRouter (hosted models) and to our own vLLM server, because
-both speak the OpenAI chat-completions API; only ``base_url`` and ``model`` change.
-
-"A different prompt is a different model": ``PROMPT_VERSION`` is logged with every answer,
-MLflow run and (later) Langfuse trace. Change it whenever the prompt text changes.
-"""
+"""Prompt, OpenAI-compatible generation client and citation parsing."""
 
 from __future__ import annotations
 
@@ -16,8 +9,7 @@ from typing import Any
 
 from legalrag.ingest.normalize import has_arabic, has_latin
 
-# v2: answer language named in the user turn; rule 7 (attempts to change the rules -> refusal)
-# v3: rule 4 also asks to cite a repealed article
+# bump whenever the prompt text changes; logged with every answer, eval run and trace
 PROMPT_VERSION = "v3"
 REFUSAL_AR = "لا أجد في نصوص القانون المدني المصري المتاحة ما يجيب على هذا السؤال."
 REFUSAL_EN = (
@@ -68,7 +60,7 @@ def cited_articles(answer: str) -> list[int]:
 
 
 def format_article(c: Any) -> str:
-    """One article exactly as the model sees it (also what the RAGAS judge checks against)."""
+    """Render one article as the model sees it; the RAGAS judge sees the same text."""
     if c.is_repealed:
         return f"[Art. {c.article_number}] REPEALED. {c.note}"
     where = " / ".join(x for x in (c.section, c.topic) if x)
@@ -80,12 +72,14 @@ def format_article(c: Any) -> str:
     return "\n".join(lines)
 
 
-def build_messages(question: str, chunks: Sequence[Any]) -> list[dict[str, str]]:
+def build_messages(
+    question: str, chunks: Sequence[Any], system_prompt: str = SYSTEM_PROMPT
+) -> list[dict[str, str]]:
     articles = "\n\n".join(format_article(c) for c in chunks)
-    # said explicitly: with Arabic and English article text in context, rule 5 alone was ignored
+    # named explicitly: with bilingual articles in context the model ignores rule 5
     language = "Arabic" if detect_language(question) == "ar" else "English"
     user = f"<articles>\n{articles}\n</articles>\n\nAnswer in {language}.\nQuestion: {question}"
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user}]
 
 
 @dataclass(frozen=True)
@@ -115,7 +109,7 @@ class TokenStream:
                 if getattr(chunk, "usage", None):  # the last chunk carries usage, no choices
                     self.prompt_tokens = chunk.usage.prompt_tokens
                     self.completion_tokens = chunk.usage.completion_tokens
-        finally:  # client went away or we stopped early: stop the provider generating
+        finally:  # client disconnected or iteration stopped early: stop generation upstream
             await stream.close()
 
 
@@ -155,7 +149,6 @@ class Generator:
 
 
 def make_client(base_url: str, api_key: str, timeout_s: float) -> Any:
-    """The real OpenAI-compatible client (OpenRouter or vLLM). Never call a model without a timeout."""
     from openai import AsyncOpenAI
 
     return AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=timeout_s, max_retries=2)

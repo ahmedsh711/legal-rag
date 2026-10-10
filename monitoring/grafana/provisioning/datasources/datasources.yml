@@ -1,0 +1,32 @@
+# Data sources, provisioned at Grafana start-up.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s # matches scrape_interval so rate() windows never get too short
+  - name: Drift history
+    uid: drift-db
+    type: grafana-postgresql-datasource
+    url: postgres:5432
+    user: grafana_ro  # SELECT on the monitoring database only
+    jsonData:
+      database: monitoring
+      sslmode: disable
+    secureJsonData:
+      password: $GRAFANA_DB_PASSWORD
+  - name: Logs
+    uid: loki
+    type: loki
+    url: http://loki:3100
+    jsonData:
+      # turn trace_id in a log line into a link to the Langfuse trace
+      derivedFields:
+        - name: Langfuse trace
+          matcherRegex: '"trace_id": "([0-9a-f]+)"'
+          url: "http://127.0.0.1:3000/project/legal-rag/traces/$${__value.raw}"
+          urlDisplayLabel: Open trace in Langfuse

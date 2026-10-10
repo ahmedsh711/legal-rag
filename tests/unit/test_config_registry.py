@@ -12,8 +12,14 @@ from legalrag.config_registry import (
 from legalrag.generation import PROMPT_VERSION
 from legalrag.settings import Settings
 
-CONFIG = {"decider_backend": "jev", "retrieval_mode": "dense", "gate_threshold": 0.5,
-          "rerank_keep_top": 5, "prompt_version": PROMPT_VERSION, "llm_model": "whatever"}  # fmt: skip
+CONFIG = {
+    "decider_backend": "jev",
+    "retrieval_mode": "dense",
+    "gate_threshold": 0.5,
+    "rerank_keep_top": 5,
+    "prompt_version": PROMPT_VERSION,
+    "llm_model": "whatever",
+}
 
 
 def mlflow_server(config=CONFIG, alias_status=200):
@@ -21,8 +27,9 @@ def mlflow_server(config=CONFIG, alias_status=200):
         if request.url.path == "/api/2.0/mlflow/registered-models/alias":
             assert request.url.params["name"] == "legal-rag-config"
             assert request.url.params["alias"] == "production"
-            return httpx.Response(alias_status, json={"model_version": {"version": "3",
-                                                                        "run_id": "r1"}})  # fmt: skip
+            return httpx.Response(
+                alias_status, json={"model_version": {"version": "3", "run_id": "r1"}}
+            )
         if request.url.path == "/get-artifact":
             assert request.url.params["run_uuid"] == "r1"
             return httpx.Response(200, json=config)
@@ -36,8 +43,9 @@ def settings(**kw) -> Settings:
 
 
 def test_fetch_config_follows_alias_to_the_run_artifact():
-    config, version = fetch_config("http://mlflow:5000", "legal-rag-config", "production",
-                                   transport=mlflow_server())  # fmt: skip
+    config, version = fetch_config(
+        "http://mlflow:5000", "legal-rag-config", "production", transport=mlflow_server()
+    )
     assert config == CONFIG and version == "3"
 
 
@@ -60,8 +68,9 @@ def test_a_config_evaluated_with_another_prompt_is_refused():
 
 
 def test_unreachable_registry_keeps_env_settings():
-    s, source = apply_registry_config(settings(decider_backend="none"),
-                                      transport=mlflow_server(alias_status=503))  # fmt: skip
+    s, source = apply_registry_config(
+        settings(decider_backend="none"), transport=mlflow_server(alias_status=503)
+    )
     assert s.decider_backend == "none" and source.startswith("env")
 
 

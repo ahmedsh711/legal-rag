@@ -1,9 +1,4 @@
-"""Local decider: a cross-encoder reranker (bge-reranker-v2-m3) on CPU, no API key, no per-call
-cost. A cross-encoder reads the question and the article together and outputs one relevance logit;
-``sigmoid(logit)`` is the relevance, and the best article's relevance doubles as the gate score.
-
-This is the standard alternative to Jev that the ablation compares against.
-"""
+"""Local decider: a bge-reranker-v2-m3 cross-encoder; the best relevance is the gate score."""
 
 from __future__ import annotations
 
@@ -36,9 +31,8 @@ class LocalDecider(Decider):
         texts = [passage_text(c, lang) for c in chunks]
         try:
             logits = await asyncio.to_thread(self.score_pairs, question, texts)  # CPU work
-            relevance = {c.article_number: _sigmoid(x)
-                         for c, x in zip(chunks, logits, strict=True)}  # fmt: skip
-        except Exception as exc:  # torch/tokenizer failure: degrade like a Jev outage, not a 500
+            relevance = {c.article_number: _sigmoid(x) for c, x in zip(chunks, logits, strict=True)}
+        except Exception as exc:  # torch/tokenizer failure degrades like a Jev outage
             raise DeciderUnavailableError(f"local: {type(exc).__name__}: {exc}") from exc
         return Decision(
             relevance=relevance,
@@ -57,7 +51,7 @@ class LocalDecider(Decider):
         tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
         model = AutoModelForSequenceClassification.from_pretrained(model_name, revision=revision)
         model = model.to(device).eval()
-        # same reason as the embedder: the fast tokenizer is not thread-safe
+        # the fast tokenizer is not thread-safe
         lock = threading.Lock()
 
         @torch.inference_mode()

@@ -21,10 +21,18 @@ from legalrag.eval.metrics import Prediction
 
 
 def pred(i: int, lang: str = "en", refused: bool = False, category: str = "in_scope") -> Prediction:
-    return Prediction(id=f"p{i}-{lang}", lang=lang, category=category, question=f"q{i}?",
-                      gold_articles=[i] if category != "off_topic" else [], answer=f"a{i} [Art. {i}].",
-                      refused=refused, cited=[i], context_articles=[i],
-                      context_texts=[f"[Art. {i}] text {i}"])  # fmt: skip
+    return Prediction(
+        id=f"p{i}-{lang}",
+        lang=lang,
+        category=category,
+        question=f"q{i}?",
+        gold_articles=[i] if category != "off_topic" else [],
+        answer=f"a{i} [Art. {i}].",
+        refused=refused,
+        cited=[i],
+        context_articles=[i],
+        context_texts=[f"[Art. {i}] text {i}"],
+    )
 
 
 def test_label_sheet_has_only_answered_items_balanced_by_language(tmp_path):
@@ -110,8 +118,9 @@ async def test_calibration_adds_negatives_so_kappa_means_something():
 
 async def test_verbosity_probe_counts_flips():
     preds = [pred(i) for i in range(1, 3)]
-    report = await calibrate(preds, {p.id: 1 for p in preds},
-                             ScriptedJudge("judge", fooled_by_padding=True), None, {})  # fmt: skip
+    report = await calibrate(
+        preds, {p.id: 1 for p in preds}, ScriptedJudge("judge", fooled_by_padding=True), None, {}
+    )
     assert report["verbosity_probe"] == {"verdict_flips": 2, "of": 2}
 
 

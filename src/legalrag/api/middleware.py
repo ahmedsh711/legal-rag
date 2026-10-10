@@ -1,8 +1,4 @@
-"""Request-id middleware: one id per request, in every log line, the response header and (later)
-the Langfuse trace. An incoming ``X-Request-ID`` is reused so ids can cross service boundaries.
-
-It is also the last line of defence: an unexpected exception becomes a clean 500 that carries the
-request id (so the user can report it) but never the traceback (that stays in the logs)."""
+"""Request-id and timing middleware; unhandled errors become a 500 without the traceback."""
 
 from __future__ import annotations
 
@@ -18,7 +14,7 @@ from legalrag.api.schemas import REQUEST_ID_PATTERN
 from legalrag.logging_conf import get_logger, request_id_var
 
 log = get_logger("legalrag.api")
-_SAFE_ID = re.compile(REQUEST_ID_PATTERN)  # never trust a header blindly: it ends up in logs
+_SAFE_ID = re.compile(REQUEST_ID_PATTERN)  # the incoming id ends up in logs, validate it
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
@@ -26,6 +22,9 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         incoming = request.headers.get("x-request-id", "")
         request_id = incoming if _SAFE_ID.fullmatch(incoming) else uuid.uuid4().hex
         token = request_id_var.set(request_id)
+        metrics = getattr(request.app.state, "metrics", None)  # RagMetrics, set by create_app
+        if metrics:
+            metrics.inflight.inc()
         start = time.perf_counter()
         try:
             try:
@@ -36,7 +35,12 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
                     {"detail": "Internal server error", "request_id": request_id}, status_code=500
                 )
             # for a stream this is the time to the first byte, not the whole answer
-            elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
+            elapsed = time.perf_counter() - start
+            elapsed_ms = round(elapsed * 1000, 1)
+            if metrics:
+                metrics.observe_request(
+                    request.method, request.url.path, response.status_code, elapsed
+                )
             response.headers["X-Request-ID"] = request_id
             response.headers["X-Process-Time-Ms"] = str(elapsed_ms)
             log.info(
@@ -48,4 +52,6 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
             )
             return response
         finally:
+            if metrics:
+                metrics.inflight.dec()
             request_id_var.reset(token)
