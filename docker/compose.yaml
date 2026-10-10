@@ -3,6 +3,39 @@
 # Profiles: core | tracking | llm | monitoring | llm-observability | airflow
 name: legal-rag
 
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-legalrag}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/airflow
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-}
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  AIRFLOW_CONN_FS_DEFAULT: '{"conn_type": "fs", "extra": {"path": "/"}}'
+  # what the DAGs need to start task containers
+  DOCKER_URL: tcp://docker-proxy:2375
+  LEGALRAG_IMAGE: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${API_TAG:-dev}
+  LEGALRAG_HOST_DIR: ${LEGALRAG_HOST_DIR:-}
+  LEGALRAG_NETWORK: legal-rag_default
+  MONITORING_DB_URL: postgresql://${POSTGRES_USER:-legalrag}:${POSTGRES_PASSWORD}@postgres:5432/monitoring
+  GITHUB_DISPATCH_TOKEN: ${GITHUB_DISPATCH_TOKEN:-}
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:3.3.2-python3.12
+  profiles: [airflow]
+  environment: *airflow-env
+  user: "50000:0"
+  volumes:
+    - ../airflow/dags:/opt/airflow/dags:ro
+    - ../data/incoming:/opt/airflow/incoming
+    - airflow_logs:/opt/airflow/logs
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+
 services:
   # ---------- core: what /ask needs ----------
   # Host ports bind to 127.0.0.1 only: these services have no auth or use dev passwords.
@@ -348,8 +381,8 @@ services:
       LANGFUSE_INIT_ORG_NAME: legal-rag
       LANGFUSE_INIT_PROJECT_ID: legal-rag
       LANGFUSE_INIT_PROJECT_NAME: legal-rag
-      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?set LANGFUSE_PUBLIC_KEY in .env}
-      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?set LANGFUSE_SECRET_KEY in .env}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       LANGFUSE_INIT_USER_EMAIL: admin@legal-rag.local
       LANGFUSE_INIT_USER_NAME: admin
       LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set LANGFUSE_INIT_USER_PASSWORD in .env}
@@ -376,6 +409,79 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # ---------- airflow: scheduled reindex and drift checks ----------
+  # LocalExecutor on the shared Postgres; tasks run as containers of the API image, started
+  # through a socket proxy that only exposes the container and image endpoints.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.1
+    profiles: [airflow]
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      POST: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    command: version
+    environment:
+      <<: *airflow-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-}
+    restart: "no"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports: ["127.0.0.1:8080:8080"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      docker-proxy:
+        condition: service_started
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
 secrets:
   local_ca:
     file: ${LOCAL_CA_CERT:-./no-local-ca.pem}
@@ -394,3 +500,4 @@ volumes:
   clickhouse_data:
   clickhouse_logs:
   loki_data:
+  airflow_logs:

@@ -29,3 +29,5 @@ data/events-live/
 reports/
 *.tfvars
 !*.tfvars.example
+data/incoming/
+data/airflow/

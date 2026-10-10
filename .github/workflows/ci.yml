@@ -28,9 +28,9 @@ jobs:
       - name: Install (locked)
         run: uv sync --locked
       - name: Ruff lint
-        run: uv run ruff check src tests loadtest
+        run: uv run ruff check src tests loadtest airflow monitoring scripts
       - name: Ruff format check
-        run: uv run ruff format --check src tests loadtest
+        run: uv run ruff format --check src tests loadtest airflow monitoring scripts
 
   monitoring-config:
     runs-on: ubuntu-latest
@@ -46,6 +46,15 @@ jobs:
         run: |
           docker run --rm --entrypoint amtool -v "$PWD/monitoring/alertmanager:/etc/alertmanager:ro" \
             prom/alertmanager:v0.34.1 check-config /etc/alertmanager/alertmanager.yml
+
+  airflow-dags:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: DAGs import and keep their tasks
+        run: |
+          docker run --rm -v "$PWD/airflow:/opt/airflow/project:ro" -e PYTHONPATH=/opt/airflow/project/dags \
+            apache/airflow:3.3.2-python3.12 python /opt/airflow/project/check_dags.py
 
   test:
     needs: lint
