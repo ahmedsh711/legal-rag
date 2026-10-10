@@ -46,11 +46,15 @@ class FrozenRetriever:
     def __init__(self, contexts: Mapping[str, list[Chunk]]):
         self.contexts = contexts
 
-    def retrieve(self, question: str, top_n: int | None = None, book: str | None = None):
+    def retrieve(
+        self, question: str, top_n: int | None = None, book: str | None = None
+    ) -> list[Chunk]:
+        if question not in self.contexts:  # e.g. the guards rewrote it (PII placeholder)
+            raise KeyError(f"no frozen articles for {question!r}")
         return list(self.contexts[question])
 
 
-def freeze(predictions: Path, articles: Path, golden: Path, pairs: int = 5) -> list[dict]:
+def freeze(predictions: Path, articles: Path, golden: Path, pairs: int = 5) -> list[dict[str, Any]]:
     """Smoke rows from a production run: the first ``pairs`` in-scope pairs, AR + EN, each
     with the full payload of the articles that run showed the model."""
     from legalrag.index.store import payload
@@ -78,6 +82,8 @@ def load_smoke(path: Path) -> tuple[list[GoldenItem], dict[str, list[Chunk]]]:
             continue
         row = json.loads(line)
         item = GoldenItem(**{k: v for k, v in row.items() if k in GOLDEN_FIELDS})
+        if item.question in contexts:
+            raise ValueError(f"duplicate smoke question {item.id}: contexts are keyed by question")
         items.append(item)
         contexts[item.question] = [Chunk.from_payload(p) for p in row["context"]]
     return items, contexts
@@ -127,22 +133,32 @@ def _summary_markdown(v: Mapping[str, Any], model: str) -> str:
     return "\n".join(lines + [f"- {r}" for r in v["reasons"]]) + "\n"
 
 
-def _run(args: argparse.Namespace) -> dict[str, Any]:
+async def _generate_and_judge(
+    s: Any, items: list[GoldenItem], contexts: dict[str, list[Chunk]]
+) -> tuple[list[Prediction], list[dict[str, Any]]]:
     from legalrag.eval.ragas_run import make_metrics, score_predictions
     from legalrag.generation import Generator, make_client
     from legalrag.pipeline import RagPipeline
+
+    client = make_client(s.active_llm_base_url, s.active_llm_api_key, s.llm_timeout_s)
+    generator = Generator(client, s.active_llm_model, s.llm_max_tokens, s.llm_temperature)
+    pipeline = RagPipeline(FrozenRetriever(contexts), generator, context_size=5)
+    try:
+        preds = await smoke_predictions(pipeline, items, s.llm_rpm)
+    finally:
+        await client.close()
+    judge = make_metrics(s.judge_base_url, s.judge_api_key, s.judge_model,
+                         s.judge_embedding_model, names=["faithfulness"],
+                         reasoning_effort=s.judge_reasoning_effort)  # fmt: skip
+    return preds, await score_predictions(preds, judge, 2, s.judge_rpm)
+
+
+def _run(args: argparse.Namespace) -> dict[str, Any]:
     from legalrag.settings import get_settings
 
     s = get_settings()
     items, contexts = load_smoke(Path(args.smoke))
-    generator = Generator(make_client(s.active_llm_base_url, s.active_llm_api_key, s.llm_timeout_s),
-                          s.active_llm_model, s.llm_max_tokens, s.llm_temperature)  # fmt: skip
-    pipeline = RagPipeline(FrozenRetriever(contexts), generator, context_size=5)
-    preds = asyncio.run(smoke_predictions(pipeline, items, s.llm_rpm))
-    judge = make_metrics(s.judge_base_url, s.judge_api_key, s.judge_model,
-                         s.judge_embedding_model, names=["faithfulness"],
-                         reasoning_effort=s.judge_reasoning_effort)  # fmt: skip
-    rows = asyncio.run(score_predictions(preds, judge, 2, s.judge_rpm))
+    preds, rows = asyncio.run(_generate_and_judge(s, items, contexts))
     v = verdict(preds, rows, args.min_faithfulness, args.min_cited, args.max_errors)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

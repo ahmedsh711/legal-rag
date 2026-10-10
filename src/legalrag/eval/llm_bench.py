@@ -51,7 +51,9 @@ async def measure(generator: Generator, messages: Messages) -> Sample:
             if first is None:
                 first = time.perf_counter()
     except Exception as exc:  # noqa: BLE001 - one overloaded request must not end the benchmark
-        return Sample(0.0, 0.0, 0, f"{type(exc).__name__}: {exc}"[:200])
+        error = f"{type(exc).__name__}: {exc}"[:200]
+        log.warning("bench_request_failed", error=error)  # a code bug shows up here, not as nulls
+        return Sample(0.0, 0.0, 0, error)
     end = time.perf_counter()
     first = first or end
     return Sample((first - t0) * 1000, (end - t0) * 1000, stream.completion_tokens)
@@ -63,8 +65,8 @@ def _p(values: Sequence[float], q: float) -> float | None:
 
 def summarize(samples: Sequence[Sample], wall_s: float, concurrency: int) -> dict[str, Any]:
     ok = [s for s in samples if not s.error]
-    decode = [
-        s.completion_tokens / ((s.total_ms - s.ttft_ms) / 1000)
+    decode = [  # the first token is TTFT; decode speed is the rest over the time after it
+        (s.completion_tokens - 1) / ((s.total_ms - s.ttft_ms) / 1000)
         for s in ok
         if s.completion_tokens > 1 and s.total_ms > s.ttft_ms
     ]
@@ -81,7 +83,15 @@ def summarize(samples: Sequence[Sample], wall_s: float, concurrency: int) -> dic
         "throughput_tok_s": round(tokens / wall_s, 1) if wall_s else None,
         "requests_per_s": round(len(ok) / wall_s, 2) if wall_s else None,
         "completion_tokens_p50": _p([s.completion_tokens for s in ok], 50),
+        "first_error": next((s.error for s in samples if s.error), ""),
     }
+
+
+def require_answers(level: dict[str, Any], what: str) -> None:
+    """Stop when nothing was answered: a report of nulls from a dead server looks like data."""
+    if level["requests"] and level["errors"] == level["requests"]:
+        raise SystemExit(f"{what}: all {level['requests']} requests failed "
+                         f"(first error: {level.get('first_error', '?')})")  # fmt: skip
 
 
 async def run_level(
@@ -107,9 +117,9 @@ def gpu_memory_mib() -> dict[str, int] | None:
             ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=10, check=True,
         ).stdout  # fmt: skip
-    except (OSError, subprocess.SubprocessError):
+        used, total = (int(x) for x in out.strip().splitlines()[0].split(","))
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):  # no GPU, "[N/A]", empty
         return None
-    used, total = (int(x) for x in out.strip().splitlines()[0].split(","))
     return {"used_mib": used, "total_mib": total}
 
 
@@ -128,16 +138,20 @@ async def _bench(args: argparse.Namespace) -> dict[str, Any]:
     client = make_client(s.active_llm_base_url, s.active_llm_api_key, s.llm_timeout_s)
     generator = Generator(client, s.active_llm_model, s.llm_max_tokens, s.llm_temperature)
     prompts = smoke_prompts()
-    await run_level(generator, prompts, concurrency=1, requests=args.warmup)
     result: dict[str, Any] = {"backend": s.llm_backend, "model": s.active_llm_model,
                               "max_tokens": s.llm_max_tokens, "levels": []}  # fmt: skip
-    for n in args.levels:
-        level = await run_level(generator, prompts, n, max(args.requests, n))
-        if args.vram:
-            level["gpu"] = gpu_memory_mib()
-        log.info("bench_level", **{k: v for k, v in level.items() if k != "gpu"})
-        result["levels"].append(level)
-    await client.close()
+    try:
+        warmup = await run_level(generator, prompts, concurrency=1, requests=args.warmup)
+        require_answers(warmup, "warm-up")
+        for n in args.levels:
+            level = await run_level(generator, prompts, n, max(args.requests, n))
+            require_answers(level, f"concurrency {n}")
+            if args.vram:
+                level["gpu"] = gpu_memory_mib()
+            log.info("bench_level", **{k: v for k, v in level.items() if k != "gpu"})
+            result["levels"].append(level)
+    finally:
+        await client.close()
     return result
 
 
@@ -151,8 +165,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     configure_logging("INFO")
     result = asyncio.run(_bench(args))
-    if args.vram:
-        result["gpu_idle"] = gpu_memory_mib()
+    if args.vram:  # vLLM reserves its share of VRAM up front: this is not "idle" memory
+        result["gpu_after_run"] = gpu_memory_mib()
     out = Path("reports/eval/llm-bench")
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{args.name}.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8",

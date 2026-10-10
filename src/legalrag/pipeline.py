@@ -126,7 +126,11 @@ class RagPipeline:
         if blocked:
             log.warning("uncited_answer_blocked", chars=len(text))
         refused = is_refusal or blocked
-        fired = ["citation:invalid"] * bool(bad) + ["citation:uncited"] * blocked
+        fired = []
+        if bad:
+            fired.append("citation:invalid")
+        if blocked:
+            fired.append("citation:uncited")
         return {
             "sources": [] if refused else [c for c in context if c.article_number in cited],
             "invalid_citations": bad,
@@ -145,17 +149,20 @@ class RagPipeline:
             log.warning("guardrail_blocked", fired=check.fired)
             return check.text, None, check.fired, timings
         ctx = await self.select_context(check.text, book)
-        fired = check.fired + ["gate:unanswerable"] * ctx.gated
+        fired = list(check.fired)
+        if ctx.gated:
+            fired.append("gate:unanswerable")
         return check.text, ctx, fired, {**timings, **ctx.timings}
 
     async def ask(self, question: str, book: str | None = None) -> Answer:
         t0 = time.perf_counter()
         language = detect_language(question)
-        question, ctx, fired, timings = await self._guarded_context(question, book)
+        # safe_question: PII replaced; the only form used from here on
+        safe_question, ctx, fired, timings = await self._guarded_context(question, book)
         if ctx is None or not ctx.chunks or ctx.gated:  # blocked / nothing to ground on: no tokens
             log.info("refused_before_llm", guardrails=fired)
             return Answer(
-                question,
+                safe_question,
                 refusal_for(language),
                 language,
                 [],
@@ -170,11 +177,11 @@ class RagPipeline:
         context = ctx.chunks
 
         t1 = time.perf_counter()
-        completion = await self.generator.complete(build_messages(question, context))
+        completion = await self.generator.complete(build_messages(safe_question, context))
         timings["generate"] = _ms(t1)
         timings["total"] = _ms(t0)
         checked = self._finish(language, completion.text, context)
-        fired += checked.pop("fired")
+        fired = fired + checked.pop("fired")
         log.info(
             "answered",
             language=language,
@@ -185,7 +192,7 @@ class RagPipeline:
         )
         blocked = checked.pop("blocked")
         return Answer(
-            question=question,
+            question=safe_question,
             answer=refusal_for(language) if blocked else completion.text,
             language=language,
             context=context,
@@ -206,14 +213,14 @@ class RagPipeline:
         """Server-sent events: {"type": "token", "text": ...} ... then one {"type": "done", ...}."""
         t0 = time.perf_counter()
         language = detect_language(question)
-        question, ctx, fired, _ = await self._guarded_context(question, book)
+        safe_question, ctx, fired, _ = await self._guarded_context(question, book)
         if ctx is None or not ctx.chunks or ctx.gated:
             yield {"type": "token", "text": refusal_for(language)}
             yield {"type": "done", "refused": True, "sources": [], "invalid_citations": [],
                    "guardrails": fired}  # fmt: skip
             return
         context = ctx.chunks
-        stream = self.generator.stream(build_messages(question, context))
+        stream = self.generator.stream(build_messages(safe_question, context))
         parts: list[str] = []
         first_token_ms = None
         async for token in stream.tokens():

@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     # 0 switches the limit off. Redis down -> served without a limit (fail open), logged.
     rate_limit_per_minute: float = 30.0
     rate_limit_burst: int = 10
+    # issued API keys (comma-separated); only these get a bucket of their own, anyone else is
+    # limited per IP. Not authentication: /ask stays open, the key only names the client.
+    api_keys: SecretStr = SecretStr("")
 
     def _endpoint(self, backend: str) -> tuple[str, str]:
         """(base_url, api_key) of a backend. vLLM ignores the key, but the client needs one."""

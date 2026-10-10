@@ -76,11 +76,23 @@ class TokenBucket:
         await self.redis.aclose()
 
 
-def client_key(api_key: str | None, ip: str | None) -> str:
-    """Who is asking: the API key if one is sent (hashed, never stored in clear), else the IP.
-    # ponytail: behind a proxy (Phase 6 nginx) the IP must come from X-Forwarded-For."""
-    if api_key:
-        return "key:" + hashlib.sha256(api_key.encode()).hexdigest()[:16]
+def _hash(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def known_key_hashes(api_keys: str) -> frozenset[str]:
+    """Hashes of the API keys this deployment issued (``API_KEYS``, comma-separated)."""
+    return frozenset(_hash(k.strip()) for k in api_keys.split(",") if k.strip())
+
+
+def client_key(api_key: str | None, ip: str | None, known: frozenset[str]) -> str:
+    """Who is asking. An issued key gets its own bucket (stored hashed, never in clear); any other
+    header value is ignored and the IP is used, or a script could send a new made-up key with every
+    request and never be limited (found in code review).
+    # ponytail: behind a proxy (Phase 6 nginx) the IP must come from X-Forwarded-For, trusted
+    # only when it is set by our own proxy."""
+    if api_key and (hashed := _hash(api_key)) in known:
+        return f"key:{hashed}"
     return f"ip:{ip or 'unknown'}"
 
 

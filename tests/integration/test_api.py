@@ -31,8 +31,10 @@ class FakeQdrant:
         return SimpleNamespace(count=self.points)
 
 
-def make_client(tmp_path, pipeline, qdrant=None, limiter=None) -> TestClient:
-    settings = Settings(_env_file=None, feedback_path=str(tmp_path / "feedback.jsonl"))
+def make_client(tmp_path, pipeline, qdrant=None, limiter=None, api_keys="") -> TestClient:
+    settings = Settings(
+        _env_file=None, feedback_path=str(tmp_path / "feedback.jsonl"), api_keys=api_keys
+    )
     comp = Components(
         pipeline, qdrant or FakeQdrant(), "articles", "articles_test", {"articles": 5}, limiter
     )
@@ -132,6 +134,13 @@ def test_feedback_is_recorded(client, tmp_path):
     assert line["rating"] == "down" and line["request_id"] == "abcdef123456"
 
 
+def test_feedback_comment_is_stored_without_pii(client, tmp_path):
+    body = {"request_id": "abcdef123456", "rating": "down", "comment": "call me on 01012345678"}
+    assert client.post("/feedback", json=body).status_code == 202
+    stored = (tmp_path / "feedback.jsonl").read_text(encoding="utf-8")
+    assert "01012345678" not in stored and "[PHONE]" in stored
+
+
 class ExplodingPipeline:
     def __init__(self, exc):
         self.exc = exc
@@ -225,11 +234,18 @@ def test_rate_limit_is_a_429_with_retry_after_and_ops_stay_open(tmp_path, qdrant
     pipeline = RagPipeline(retriever, Generator(FakeLLM("Yes [Art. 147]."), "m", 100, 0.0))
     limiter = TokenBucket(fakeredis.FakeAsyncRedis(), capacity=1, per_minute=1)
     ask = {"json": {"question": "Is a contract binding?"}, "headers": {"X-API-Key": "user-a"}}
-    with make_client(tmp_path, pipeline, limiter=limiter) as c:
+    keys = "user-a,user-b"  # dummy issued keys  # pragma: allowlist secret
+    with make_client(tmp_path, pipeline, limiter=limiter, api_keys=keys) as c:
         assert c.post("/ask", **ask).status_code == 200
         r = c.post("/ask", **ask)
         assert r.status_code == 429 and 55 <= int(r.headers["Retry-After"]) <= 60
         assert r.json()["request_id"] == r.headers["X-Request-ID"]
         other = c.post("/ask", json=ask["json"], headers={"X-API-Key": "user-b"})
         assert other.status_code == 200  # one client's burst does not block another
+        # unknown keys buy no new bucket: they share the caller's IP bucket
+        rotating = [c.post("/ask", json=ask["json"], headers={"X-API-Key": f"random-{i}"})
+                    for i in range(2)]  # fmt: skip
+        assert [r.status_code for r in rotating] == [200, 429]
+        feedback = {"request_id": "abcdef123456", "rating": "up"}
+        assert c.post("/feedback", json=feedback).status_code == 429  # same IP bucket
         assert c.get("/health").status_code == 200 and c.get("/metadata").status_code == 200

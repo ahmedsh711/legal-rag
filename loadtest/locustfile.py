@@ -1,26 +1,33 @@
-"""Load test for the /ask API: a realistic question mix, per-user API keys, TTFT for streams.
+"""Load test for the /ask API: a realistic question mix, one API key per user, TTFT for streams.
 
+    export LOADTEST_API_KEYS=$(seq -f "loadtest-%g" 1 100 | paste -sd, -)   # issued keys
+    docker compose --env-file .env -f docker/compose.yaml -f docker/compose.vllm.yaml \
+        -f docker/compose.loadtest.yaml --profile core --profile llm up -d
     uv run --group load locust -f loadtest/locustfile.py --headless -u 50 -r 5 -t 4m \
         --host http://127.0.0.1:8010 --csv reports/load/<name>
 
 Traffic mix (per user): 80 % /ask (golden questions, Arabic and English), 15 % /ask?stream=true,
 5 % /metadata. Think time 2-5 s: a person reads an answer before asking the next question (it also
-keeps one user under the 30/min rate limit, so 429s mean the limiter fired on a real burst).
-Every simulated user sends its own X-API-Key, the way separate clients would.
+keeps one user under the 30/min rate limit, so a 429 means the limiter fired on a real burst).
+Every simulated user sends its own issued key (LOADTEST_API_KEYS, also given to the API as
+API_KEYS): the API only gives a bucket of its own to keys it issued, everyone else shares a
+bucket per IP, and all Locust users come from one IP.
 
-Besides Locust's own numbers, two custom entries:
+Besides Locust's own numbers:
 - "SSE ttft": time from sending the request to the first token event (what the user feels);
-- 429 responses are reported under their own name, so a rate-limited request is not hidden
-  among real errors.
+- failures carry their reason ("429 rate limited", "HTTP 503", "error event"), so the failure
+  table separates a rate-limited request from a broken one.
 """
 
 from __future__ import annotations
 
 import itertools
 import json
+import os
 import random
 import time
 from pathlib import Path
+from typing import Any
 
 from locust import HttpUser, between, events, task
 
@@ -30,16 +37,17 @@ QUESTIONS = [
     for row in map(json.loads, GOLDEN.read_text(encoding="utf-8").splitlines())
     if row["category"] in {"in_scope", "explicit_ref", "repealed"}
 ]
-_user_ids = itertools.count(1)
+KEYS = [k for k in os.environ.get("LOADTEST_API_KEYS", "").split(",") if k] or ["loadtest-1"]
+_next_key = itertools.cycle(KEYS)
 
 
 class LegalQuestionUser(HttpUser):
     wait_time = between(2, 5)
 
     def on_start(self) -> None:
-        self.client.headers["X-API-Key"] = f"loadtest-user-{next(_user_ids)}"
+        self.client.headers["X-API-Key"] = next(_next_key)
 
-    def _check(self, response) -> None:
+    def _check(self, response: Any) -> None:
         if response.status_code == 429:
             response.failure("429 rate limited")
         elif response.status_code != 200:
@@ -69,10 +77,13 @@ class LegalQuestionUser(HttpUser):
                 self._check(r)
                 return
             for line in r.iter_lines():
-                if line.startswith(b"data:") and ttft_ms is None:
+                if not line.startswith(b"data:"):
+                    continue
+                event = json.loads(line[5:])
+                if event["type"] == "token" and ttft_ms is None:
                     ttft_ms = (time.perf_counter() - t0) * 1000
-                if b'"type": "error"' in line:
-                    r.failure("error event in stream")
+                elif event["type"] == "error":
+                    r.failure("error event")
                     return
             r.success()
         if ttft_ms is not None:

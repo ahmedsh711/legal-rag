@@ -31,11 +31,12 @@ from legalrag.decider.base import Decider
 from legalrag.decider.jev import JevDecider
 from legalrag.decider.local import LocalDecider
 from legalrag.generation import PROMPT_VERSION, Generator, make_client
+from legalrag.guardrails import redact_pii
 from legalrag.index.store import alias_target, read_metadata
 from legalrag.ingest.normalize import NORMALIZATION_VERSION
 from legalrag.logging_conf import configure_logging, get_logger, request_id_var
 from legalrag.pipeline import RagPipeline
-from legalrag.ratelimit import build_limiter, client_key
+from legalrag.ratelimit import TokenBucket, build_limiter, client_key, known_key_hashes
 from legalrag.retrieval import Retriever
 from legalrag.settings import Settings, get_settings
 
@@ -53,7 +54,7 @@ class Components:
     alias: str
     collection: str
     index_meta: dict[str, Any]
-    limiter: Any = None  # TokenBucket, or None = no rate limit
+    limiter: TokenBucket | None = None  # None = no rate limit
 
 
 def check_index_compatible(meta: dict[str, Any] | None, settings: Settings) -> None:
@@ -171,12 +172,14 @@ async def _close(comp: Components) -> None:
         await comp.limiter.aclose()
 
 
-async def _rate_limited(request: Request, comp: Components) -> JSONResponse | None:
+async def _rate_limited(
+    request: Request, comp: Components, known_keys: frozenset[str]
+) -> JSONResponse | None:
     """429 + Retry-After when this client's bucket is empty, else None (go ahead)."""
     if comp.limiter is None:
         return None
     ip = request.client.host if request.client else None
-    verdict = await comp.limiter.take(client_key(request.headers.get("X-API-Key"), ip))
+    verdict = await comp.limiter.take(client_key(request.headers.get("X-API-Key"), ip, known_keys))
     if verdict.allowed:
         return None
     log.warning("rate_limited", retry_after_s=verdict.retry_after_s)
@@ -197,10 +200,17 @@ def _source(c: Any) -> Source:
     )
 
 
+def _append_line(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def create_app(
     build: Callable[[Settings], Components] = build_components, settings: Settings | None = None
 ) -> FastAPI:
     settings = settings or get_settings()
+    known_keys = known_key_hashes(settings.api_keys.get_secret_value())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -289,7 +299,7 @@ def create_app(
         """Answer a question about the Egyptian Civil Code with article citations.
         `?stream=true` sends the answer token by token as Server-Sent Events."""
         comp: Components = request.app.state.components
-        if limited := await _rate_limited(request, comp):
+        if limited := await _rate_limited(request, comp, known_keys):
             return limited
         pipeline = comp.pipeline
         request_id = request_id_var.get()
@@ -331,15 +341,16 @@ def create_app(
             timings_ms=result.timings_ms,
         )
 
-    @app.post("/feedback", status_code=202, tags=["qa"])
-    def feedback(body: FeedbackRequest) -> dict[str, str]:
+    @app.post("/feedback", status_code=202, tags=["qa"], response_model=None)
+    async def feedback(request: Request, body: FeedbackRequest) -> dict[str, str] | JSONResponse:
         """Thumbs up/down on an answer, keyed by its request id (becomes a Langfuse score later).
-        Plain ``def``: FastAPI runs it in a worker thread, so the file write never blocks the loop."""
-        path = Path(settings.feedback_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        record = {"at": datetime.now(UTC).isoformat(), **body.model_dump()}
-        with path.open("a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        Same rate limit as /ask (an unlimited write endpoint fills the disk), and the comment is
+        stored with PII redacted, like questions."""
+        if limited := await _rate_limited(request, request.app.state.components, known_keys):
+            return limited
+        comment = redact_pii(body.comment)[0] if body.comment else body.comment
+        record = {"at": datetime.now(UTC).isoformat(), **body.model_dump(), "comment": comment}
+        await asyncio.to_thread(_append_line, Path(settings.feedback_path), record)
         return {"status": "recorded"}
 
     return app

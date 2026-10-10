@@ -6,7 +6,14 @@ import asyncio
 
 import pytest
 
-from legalrag.eval.llm_bench import Sample, measure, run_level, summarize
+from legalrag.eval.llm_bench import (
+    Sample,
+    gpu_memory_mib,
+    measure,
+    require_answers,
+    run_level,
+    summarize,
+)
 from legalrag.generation import Generator
 from tests.fakes import FakeLLM
 
@@ -17,7 +24,7 @@ def test_summary_reports_percentiles_decode_speed_and_throughput():
     s = summarize(samples, wall_s=2.0, concurrency=4)
     assert s["requests"] == 5 and s["errors"] == 1
     assert s["ttft_p50_ms"] == 100 and s["latency_p95_ms"] == 1100
-    assert s["decode_tok_s_p50"] == 50.0  # 50 tokens in the 1.0 s after the first one
+    assert s["decode_tok_s_p50"] == 49.0  # 49 tokens in the 1.0 s after the first one
     assert s["throughput_tok_s"] == 100.0  # 200 tokens in 2 s of wall time
 
 
@@ -58,3 +65,18 @@ async def test_a_failed_request_is_counted_not_fatal():
 async def test_concurrency_must_be_positive(bad):
     with pytest.raises(ValueError):
         await run_level(Generator(FakeLLM("x"), "m", 1, 0.0), [[]], concurrency=bad, requests=1)
+
+
+def test_a_level_where_every_request_failed_stops_the_benchmark():
+    # found in review: a dead server used to produce a report full of nulls, exit code 0
+    with pytest.raises(SystemExit, match="all 2 requests failed"):
+        require_answers({"requests": 2, "errors": 2}, "warm-up")
+    require_answers({"requests": 2, "errors": 1}, "level 4")  # partial failure: keep going
+
+
+def test_unreadable_nvidia_smi_output_is_no_reading_not_a_crash(monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="[N/A], [N/A]"))
+    assert gpu_memory_mib() is None

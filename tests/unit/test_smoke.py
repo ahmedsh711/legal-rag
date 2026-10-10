@@ -78,3 +78,10 @@ async def test_smoke_runs_the_real_pipeline_on_the_frozen_articles(tmp_path):
     pipe = RagPipeline(FrozenRetriever(contexts), Generator(llm, "m", 100, 0.0), context_size=5)
     preds = await smoke_predictions(pipe, items)
     assert preds[0].cited == [374] and preds[0].context_texts[0].startswith("[Art. 374]")
+
+
+def test_frozen_retriever_names_the_question_it_has_no_articles_for():
+    import pytest
+
+    with pytest.raises(KeyError, match="no frozen articles for"):
+        FrozenRetriever({}).retrieve("a question that was rewritten")

@@ -53,7 +53,7 @@ def score_rows(rows: Iterable[Mapping[str, Any]], check: Check = check_question)
             false_pos.append(row["id"])
         elif not hit and group != "benign":
             missed.append(row["id"])
-        k = by_kind.setdefault(kind, {"n": 0, "hit": 0})
+        k = by_kind.setdefault(kind, {"group": group, "n": 0, "hit": 0})
         k["n"], k["hit"] = k["n"] + 1, k["hit"] + int(hit)
         totals[group][0] += int(hit)
         totals[group][1] += 1
@@ -76,7 +76,9 @@ def false_positives(texts: Mapping[str, str], check: Check = check_question) -> 
             "ids": flagged}  # fmt: skip
 
 
-def latency_profile(texts: list[str], repeats: int = 50, check: Check = check_question) -> dict:
+def latency_profile(
+    texts: list[str], repeats: int = 50, check: Check = check_question
+) -> dict[str, float]:
     samples = []
     for _ in range(repeats):
         for text in texts:
@@ -116,6 +118,8 @@ def evaluate(attack_set: Path, golden: list[Path], corpus: Path | None) -> dict[
     }
     if corpus is not None and corpus.is_file():
         summary["corpus"] = false_positives(_corpus_texts(corpus))
+    else:  # articles.json is DVC data: absent on a fresh clone or in CI until `dvc pull`
+        log.warning("corpus_skipped", path=str(corpus))
     return summary
 
 
@@ -128,7 +132,11 @@ def _metrics(summary: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         "clean_question_fpr": summary["clean_questions"]["rate"],
         "corpus_fpr": summary.get("corpus", {}).get("rate"),
         "latency_p95_us": summary["latency"]["p95_us"],
-        **{f"detect.{k}": v["rate"] for k, v in a["by_kind"].items()},
+        # for benign kinds a "hit" is a false positive: name it so in MLflow
+        **{
+            f"{'fp' if v['group'] == 'benign' else 'detect'}.{k}": v["rate"]
+            for k, v in a["by_kind"].items()
+        },  # fmt: skip
     }
     return {"guardrails": flat}
 

@@ -7,7 +7,7 @@ import asyncio
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from legalrag.ratelimit import TokenBucket, client_key
+from legalrag.ratelimit import TokenBucket, build_limiter, client_key, known_key_hashes
 
 fakeredis = pytest.importorskip("fakeredis")
 
@@ -50,8 +50,15 @@ async def test_redis_outage_fails_open_and_says_so():
     assert verdict.allowed and verdict.degraded  # serving without a limit beats refusing all
 
 
-def test_client_key_never_stores_an_api_key_in_clear():
-    key = client_key("my-secret-key", "10.0.0.7")
-    assert key.startswith("key:") and "my-secret-key" not in key
-    assert client_key(None, "10.0.0.7") == "ip:10.0.0.7"
-    assert client_key(None, None) == "ip:unknown"
+def test_only_known_api_keys_get_their_own_bucket():
+    known = known_key_hashes("key-a, key-b")
+    a = client_key("key-a", "10.0.0.7", known)
+    assert a.startswith("key:") and "key-a" not in a  # never stored in clear
+    assert a != client_key("key-b", "10.0.0.7", known)
+    # found by review: a made-up key used to buy a fresh bucket; now it is just the IP
+    assert client_key("made-up-key", "10.0.0.7", known) == "ip:10.0.0.7"
+    assert client_key(None, None, known) == "ip:unknown"
+
+
+def test_limit_zero_switches_the_limiter_off():
+    assert build_limiter("redis://127.0.0.1:1/0", per_minute=0, burst=10) is None
