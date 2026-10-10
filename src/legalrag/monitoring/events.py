@@ -61,7 +61,7 @@ def event_from_answer(answer: Any, question: str, request_id: str, endpoint: str
         answerable_score=answer.decision.answerable if answer.decision else None,
         refused=answer.refused, guardrails=list(answer.guardrails),
         timings_ms={k: v for k, v in answer.timings_ms.items() if k in STAGES},
-        **_common(question, serving),
+        **{**_common(question, serving), "prompt_version": answer.prompt_version},
     )  # fmt: skip
 
 
@@ -75,7 +75,8 @@ def event_from_stream_done(done: Mapping[str, Any], question: str, request_id: s
         answerable_score=done.get("answerable_score"), refused=done.get("refused", False),
         guardrails=list(done.get("guardrails", [])),
         timings_ms={k: v for k, v in done.get("timings_ms", {}).items() if k in STAGES and v is not None},
-        **_common(question, serving),
+        **{**_common(question, serving),
+           "prompt_version": done.get("prompt_version", serving["prompt_version"])},
     )  # fmt: skip
 
 

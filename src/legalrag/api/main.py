@@ -47,7 +47,8 @@ from legalrag.ingest.normalize import NORMALIZATION_VERSION
 from legalrag.logging_conf import configure_logging, get_logger, request_id_var
 from legalrag.monitoring.events import EventLog, event_from_answer, event_from_stream_done
 from legalrag.observability.metrics import RagMetrics, render
-from legalrag.observability.tracing import NoopTracer, build_tracer
+from legalrag.observability.prompts import CodePrompt, LangfusePrompt
+from legalrag.observability.tracing import LangfuseTracer, NoopTracer, build_tracer
 from legalrag.pipeline import RagPipeline
 from legalrag.ratelimit import TokenBucket, build_limiter, client_key, known_key_hashes
 from legalrag.retrieval import Retriever
@@ -128,6 +129,8 @@ def build_components(settings: Settings) -> Components:
         settings.llm_max_tokens,
         settings.llm_temperature,
     )
+    tracer = build_tracer(settings.langfuse_host, settings.langfuse_public_key.get_secret_value(),
+                          settings.langfuse_secret_key.get_secret_value(), settings.llm_backend)  # fmt: skip
     pipeline = RagPipeline(
         retriever,
         generator,
@@ -135,13 +138,11 @@ def build_components(settings: Settings) -> Components:
         top_n=settings.retrieve_top_n,
         decider=build_decider(settings),
         gate_threshold=settings.gate_threshold,
-        tracer=build_tracer(
-            settings.langfuse_host,
-            settings.langfuse_public_key.get_secret_value(),
-            settings.langfuse_secret_key.get_secret_value(),
-            settings.llm_backend,
-        ),
+        tracer=tracer,
         prices=(settings.llm_price_in_per_m, settings.llm_price_out_per_m),
+        prompts=LangfusePrompt(tracer.client, settings.prompt_label)
+        if isinstance(tracer, LangfuseTracer)
+        else CodePrompt(),
     )
     limiter = build_limiter(
         settings.redis_url, settings.rate_limit_per_minute, settings.rate_limit_burst
@@ -396,9 +397,12 @@ def create_app(
         """What is serving right now: versions of the app, prompt, models and index."""
         comp: Components = request.app.state.components
         served: Settings = request.app.state.settings
+        prompts = getattr(comp.pipeline, "prompts", None) or CodePrompt()
+        served_prompt = prompts.get()  # what the next answer will use (label -> version)
         return {
             "app_version": __version__,
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": served_prompt.version,
+            "prompt_source": served_prompt.source,
             "config_source": request.app.state.config_source,
             "llm_backend": served.llm_backend,
             "llm_model": served.active_llm_model,

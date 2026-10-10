@@ -80,12 +80,14 @@ def format_article(c: Any) -> str:
     return "\n".join(lines)
 
 
-def build_messages(question: str, chunks: Sequence[Any]) -> list[dict[str, str]]:
+def build_messages(
+    question: str, chunks: Sequence[Any], system_prompt: str = SYSTEM_PROMPT
+) -> list[dict[str, str]]:
     articles = "\n\n".join(format_article(c) for c in chunks)
     # said explicitly: with Arabic and English article text in context, rule 5 alone was ignored
     language = "Arabic" if detect_language(question) == "ar" else "English"
     user = f"<articles>\n{articles}\n</articles>\n\nAnswer in {language}.\nQuestion: {question}"
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+    return [{"role": "system", "content": system_prompt}, {"role": "user", "content": user}]
 
 
 @dataclass(frozen=True)

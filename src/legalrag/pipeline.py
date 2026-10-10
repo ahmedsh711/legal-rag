@@ -24,6 +24,7 @@ from legalrag.generation import (
 )
 from legalrag.guardrails import check_question
 from legalrag.logging_conf import get_logger
+from legalrag.observability.prompts import CodePrompt
 from legalrag.observability.tracing import NoopTracer
 from legalrag.retrieval import Chunk, article_numbers_in
 
@@ -79,12 +80,14 @@ class RagPipeline:
         gate_threshold: float = 0.75,
         tracer: Any = None,
         prices: tuple[float, float] = (0.0, 0.0),  # USD per 1M prompt / completion tokens
+        prompts: Any = None,  # where the system prompt comes from (CodePrompt or LangfusePrompt)
     ):
         self.retriever, self.generator = retriever, generator
         self.context_size, self.top_n = context_size, top_n
         self.decider, self.gate_threshold = decider, gate_threshold
         self.tracer = tracer or NoopTracer()  # one observation per stage (Langfuse in the API)
         self.prices = prices
+        self.prompts = prompts or CodePrompt()
 
     def _cost(self, prompt_tokens: int, completion_tokens: int) -> dict[str, float]:
         return {"input": prompt_tokens * self.prices[0] / 1e6,
@@ -197,9 +200,10 @@ class RagPipeline:
         context = ctx.chunks
 
         t1 = time.perf_counter()
-        messages = build_messages(safe_question, context)
+        served = self.prompts.get()  # the version behind the label right now (cached)
+        messages = build_messages(safe_question, context, served.text)
         with self.tracer.span("generate", as_type="generation", input=messages,
-                              model=self.generator.model) as span:  # fmt: skip
+                              model=self.generator.model, prompt=served.client) as span:  # fmt: skip
             completion = await self.generator.complete(messages)
             pt, ct = completion.prompt_tokens, completion.completion_tokens
             span.update(output=completion.text, model=completion.model,
@@ -223,6 +227,7 @@ class RagPipeline:
             language=language,
             context=context,
             model=completion.model,
+            prompt_version=served.version,
             usage={
                 "prompt_tokens": completion.prompt_tokens,
                 "completion_tokens": completion.completion_tokens,
@@ -252,12 +257,13 @@ class RagPipeline:
                    "timings_ms": {**timings, "total": _ms(t0)}}  # fmt: skip
             return
         context = ctx.chunks
-        messages = build_messages(safe_question, context)
+        served = self.prompts.get()
+        messages = build_messages(safe_question, context, served.text)
         stream = self.generator.stream(messages)
         parts: list[str] = []
         first_token_ms = None
         with self.tracer.span("generate", as_type="generation", input=messages,
-                              model=self.generator.model) as span:  # fmt: skip
+                              model=self.generator.model, prompt=served.client) as span:  # fmt: skip
             async for token in stream.tokens():
                 if first_token_ms is None:
                     first_token_ms = _ms(t0)  # time to first token, what the user feels as speed
@@ -289,6 +295,6 @@ class RagPipeline:
                 "completion_tokens": stream.completion_tokens,
             },
             "timings_ms": {**timings, "ttft": first_token_ms, "total": _ms(t0)},
-            "prompt_version": PROMPT_VERSION,
+            "prompt_version": served.version,
             **seen,
         }
