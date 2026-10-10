@@ -71,7 +71,7 @@ Serving on an RTX 3050 laptop GPU (4 GB), Qwen2.5-1.5B-Instruct-AWQ on vLLM hand
 | Retrieval | bge-m3, Qdrant, Jev |
 | Generation | Gemini / OpenRouter through an OpenAI-compatible client, vLLM |
 | Data and experiments | DVC, MLflow tracking and model registry, RAGAS |
-| Platform | Docker Compose, Redis, Postgres, MinIO |
+| Platform | Docker Compose, nginx, Redis, Postgres, MinIO, Airflow, Terraform, Kubernetes |
 | Observability | Prometheus, Alertmanager, Grafana, Loki, Grafana Alloy, Langfuse |
 | Quality | pytest, ruff, pre-commit, GitHub Actions, Locust |
 
@@ -133,6 +133,8 @@ Settings are environment variables, read by `src/legalrag/settings.py`; `.env.ex
 | `llm` | vLLM serving Qwen2.5-1.5B-Instruct-AWQ; combine with `-f docker/compose.vllm.yaml` to point the API at it |
 | `monitoring` | Prometheus, Alertmanager, Grafana (http://127.0.0.1:3001), Loki, Alloy, exporters, drift job |
 | `llm-observability` | Langfuse (http://127.0.0.1:3000) with ClickHouse |
+| `airflow` | Airflow 3 (http://127.0.0.1:8080) with the reindex and drift-check DAGs |
+| `serving` | nginx (http://127.0.0.1:8088) in front of a stable and a canary API; use with `-f docker/compose.serving.yaml` |
 
 ## Evaluation and experiments
 
@@ -161,6 +163,24 @@ With `CONFIG_SOURCE=mlflow`, the API loads the configuration registered under th
 ```bash
 docker compose --env-file .env -f docker/compose.yaml --profile core --profile monitoring --profile llm-observability up -d
 uv run --group monitoring python -m legalrag.monitoring.drift_job run --hours 24
+```
+
+## Automation and releases
+
+- **Index rebuilds (Airflow).** The `reindex` DAG checks `data/incoming/` every hour. When a new Civil Code PDF lands there, it parses and validates it, builds the index behind a candidate alias, and evaluates candidate and production on the golden set. Production moves to the candidate only if no language got worse. A test run with a deliberately degraded index (16-token embeddings, MRR 0.23 vs 0.96) was rejected and production stayed untouched. Every task runs in the application image.
+- **Drift checks (Airflow).** The `monitoring` DAG runs the drift job daily. When drift passes the storm guard, it sends a `drift-detected` event to GitHub.
+- **Continuous training (GitHub Actions).** `ct.yml` runs the quality gate on drift events, weekly or by hand, then waits for an approval on the `production` environment before a rebuild goes ahead.
+- **Canary releases.** nginx splits traffic between the stable and the canary API (`uv run python -m legalrag.release set 5`). A watcher compares the canary's error rate and p95 latency in Prometheus with the SLO and rolls back automatically; a rollback takes about 2 seconds.
+- **Infrastructure as code.** `infra/terraform` provisions the tracking services (Postgres, MinIO) with the Docker provider.
+- **Kubernetes.** `deploy/k8s` has a Deployment with startup, readiness and liveness probes, resource limits and zero-downtime rolling updates (`kubectl apply -k deploy/k8s`).
+- **Operations.** [`docs/runbook.md`](docs/runbook.md) has one section per alert and the rollback command for each layer.
+
+```bash
+docker compose --env-file .env -f docker/compose.yaml --profile core --profile airflow up -d
+docker compose --env-file .env -f docker/compose.yaml -f docker/compose.serving.yaml --profile core --profile serving up -d
+uv run python -m legalrag.release set 5            # 5 % canary
+uv run python -m legalrag.release watch            # roll back automatically on errors or latency
+uv run python -m legalrag.index.alias show         # which collection each alias serves
 ```
 
 ## Development
@@ -193,11 +213,17 @@ src/legalrag/
   observability/   Prometheus metrics, Langfuse tracing and prompts
   monitoring/      prediction events, drift statistics, drift job, online evaluation
   pipeline.py      guard -> retrieve -> decide -> generate
+  release.py       canary share, rollback and watcher
 tests/             unit and integration tests
 data/golden/       evaluation and guardrail test sets
 docker/            Dockerfile and Compose files
 monitoring/        Prometheus, Alertmanager, Grafana and Loki configuration
+airflow/dags/      reindex and drift-check DAGs
+serving/nginx/     canary routing
+deploy/k8s/        Kubernetes manifests (kustomize)
+infra/terraform/   tracking services as code
 loadtest/          Locust scenario and analysis scripts
+docs/runbook.md    what to do for each alert
 dvc.yaml           data pipeline: parse -> validate -> index
 ```
 
