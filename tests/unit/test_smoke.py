@@ -93,3 +93,17 @@ def test_one_unfaithful_answer_fails_the_gate_even_when_the_mean_passes():
     v = verdict(preds, rows, min_faithfulness=0.75, min_cited=0.8, max_errors=1)
     assert v["faithfulness"] == 0.875  # the mean alone would pass
     assert not v["passed"] and v["below_floor"] == ["q0"]
+
+
+def test_the_gate_can_judge_a_candidate_prompt_and_names_its_hash(tmp_path):
+    from legalrag.eval.smoke import prompt_under_test
+    from legalrag.generation import PROMPT_VERSION, SYSTEM_PROMPT
+    from legalrag.observability.prompts import prompt_sha256
+
+    served = prompt_under_test(None, None).get()
+    assert served.text == SYSTEM_PROMPT and served.version == PROMPT_VERSION
+    candidate = tmp_path / "v4.txt"
+    candidate.write_text("rules v4", encoding="utf-8")
+    served = prompt_under_test(candidate, "v4").get()
+    assert (served.text, served.version, served.source) == ("rules v4", "v4", "file")
+    assert prompt_sha256(served.text) == prompt_sha256("rules v4")

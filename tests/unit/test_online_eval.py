@@ -62,7 +62,7 @@ async def test_scores_go_back_to_the_traces_and_the_mean_to_prometheus():
     ]
     client = FakeLangfuse()
     summary, lines = await run_online_eval(gens, {"faithfulness": FakeMetric()}, client, rate=1.0)
-    assert summary == {"sampled": 2, "scored": 2, "faithfulness": 0.875}
+    assert summary == {"sampled": 2, "scored": 2, "unscored": 0, "faithfulness": 0.875}
     assert {(s["trace_id"], s["value"]) for s in client.scores} == {
         ("trace-1", 1.0),
         ("trace-2", 0.75),
@@ -72,3 +72,28 @@ async def test_scores_go_back_to_the_traces_and_the_mean_to_prometheus():
         for s in client.scores
     )
     assert "rag_eval_faithfulness 0.875" in lines and "rag_eval_samples 2" in lines
+
+
+async def test_the_rate_applies_to_judgeable_answers_and_failures_are_counted():
+    # found in review: sampling before dropping refusals shrank the real sample; a failed
+    # judge call vanished from the mean instead of being reported
+    class FlakyMetric:
+        async def ascore(self, **kwargs):
+            from types import SimpleNamespace
+
+            if "lease" in kwargs["user_input"]:
+                raise RuntimeError("judge 429")
+            return SimpleNamespace(value=1.0)
+
+    gens = [generation(i) for i in range(10)] + [
+        generation(10 + i, answer=REFUSAL_EN) for i in range(10)
+    ]
+    gens.append(generation(99, question="What is a lease?"))
+    summary, lines = await run_online_eval(gens, {"faithfulness": FlakyMetric()}, FakeLangfuse(),
+                                           rate=1.0)  # fmt: skip
+    assert summary["sampled"] == 11 and summary["scored"] == 10 and summary["unscored"] == 1
+    assert "rag_eval_unscored 1" in lines
+    half = await run_online_eval(
+        gens[:10], {"faithfulness": FakeMetric()}, FakeLangfuse(), rate=0.5
+    )
+    assert half[0]["sampled"] == 5

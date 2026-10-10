@@ -146,8 +146,19 @@ def _summary_markdown(v: Mapping[str, Any], model: str) -> str:
     return "\n".join(lines + [f"- {r}" for r in v["reasons"]]) + "\n"
 
 
+def prompt_under_test(prompt_file: Path | None, prompt_version: str | None) -> Any:
+    """The code prompt, or a candidate text from a file (judged before it gets a label)."""
+    from legalrag.observability.prompts import CodePrompt, StaticPrompt
+
+    if prompt_file is None:
+        return CodePrompt()
+    return StaticPrompt(
+        Path(prompt_file).read_text(encoding="utf-8"), prompt_version or "candidate"
+    )
+
+
 async def _generate_and_judge(
-    s: Any, items: list[GoldenItem], contexts: dict[str, list[Chunk]]
+    s: Any, items: list[GoldenItem], contexts: dict[str, list[Chunk]], prompts: Any
 ) -> tuple[list[Prediction], list[dict[str, Any]]]:
     from legalrag.eval.ragas_run import make_metrics, score_predictions
     from legalrag.generation import Generator, make_client
@@ -155,7 +166,7 @@ async def _generate_and_judge(
 
     client = make_client(s.active_llm_base_url, s.active_llm_api_key, s.llm_timeout_s)
     generator = Generator(client, s.active_llm_model, s.llm_max_tokens, s.llm_temperature)
-    pipeline = RagPipeline(FrozenRetriever(contexts), generator, context_size=5)
+    pipeline = RagPipeline(FrozenRetriever(contexts), generator, context_size=5, prompts=prompts)
     try:
         preds = await smoke_predictions(pipeline, items, s.llm_rpm)
     finally:
@@ -170,9 +181,14 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     from legalrag.settings import get_settings
 
     s = get_settings()
+    from legalrag.observability.prompts import prompt_sha256
+
     items, contexts = load_smoke(Path(args.smoke))
-    preds, rows = asyncio.run(_generate_and_judge(s, items, contexts))
+    prompts = prompt_under_test(args.prompt_file, args.prompt_version)
+    preds, rows = asyncio.run(_generate_and_judge(s, items, contexts, prompts))
     v = verdict(preds, rows, args.min_faithfulness, args.min_cited, args.max_errors, args.min_item)
+    served = prompts.get()  # what promotion checks: this exact text passed (or not)
+    v.update(prompt_version=served.version, prompt_sha256=prompt_sha256(served.text))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for name, data in (
@@ -200,6 +216,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--min-item", type=float, default=0.5)
     parser.add_argument("--out", default="reports/eval/smoke")
     parser.add_argument("--from-run", default="reports/eval/e2e-dense-jev/predictions.jsonl")
+    parser.add_argument("--prompt-file", type=Path, help="judge this candidate system prompt")
+    parser.add_argument("--prompt-version", help="its version name, e.g. v4")
     args = parser.parse_args(argv)
     configure_logging("INFO")
     if args.command == "freeze":

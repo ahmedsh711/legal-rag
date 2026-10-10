@@ -24,6 +24,14 @@ groups:
         expr: |
           sum(rate(rag_requests_total{endpoint="ask", status=~"5.."}[1h]))
           / clamp_min(sum(rate(rag_requests_total{endpoint="ask"}[1h])), 1e-9)
+      - record: rag:ask_error_ratio:30m
+        expr: |
+          sum(rate(rag_requests_total{endpoint="ask", status=~"5.."}[30m]))
+          / clamp_min(sum(rate(rag_requests_total{endpoint="ask"}[30m])), 1e-9)
+      - record: rag:ask_error_ratio:6h
+        expr: |
+          sum(rate(rag_requests_total{endpoint="ask", status=~"5.."}[6h]))
+          / clamp_min(sum(rate(rag_requests_total{endpoint="ask"}[6h])), 1e-9)
 
       - record: rag:refusal_ratio:15m
         expr: |

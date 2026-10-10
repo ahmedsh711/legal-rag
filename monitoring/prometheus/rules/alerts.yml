@@ -15,8 +15,9 @@ groups:
           first_action: "docker compose ps api; docker logs --tail 50 legal-rag-api-1 (index alias missing? model download?)"
           runbook: docs/runbook.md#apidown
 
+      # min traffic: a p95 of five requests is noise, not an incident
       - alert: AskLatencyHigh
-        expr: rag:ask_latency_p95:5m > 5
+        expr: rag:ask_latency_p95:5m > 5 and sum(rate(rag_request_seconds_count{endpoint="ask"}[5m])) > 0.05
         for: 10m
         labels: {severity: page, kind: symptom}
         annotations:
@@ -36,13 +37,28 @@ groups:
       # error budget: 1 % of requests per 30 days; burning it 14.4x faster than allowed empties
       # it in 2 days. Two windows: the long one proves it is real, the short one that it is now.
       - alert: ErrorBudgetBurnFast
-        expr: rag:ask_error_ratio:1h > (14.4 * 0.01) and rag:ask_error_ratio:5m > (14.4 * 0.01)
+        expr: >
+          rag:ask_error_ratio:1h > (14.4 * 0.01) and rag:ask_error_ratio:5m > (14.4 * 0.01)
+          and sum(rate(rag_requests_total{endpoint="ask"}[1h])) > 0.01
         for: 2m
         labels: {severity: page, kind: symptom}
         annotations:
           summary: "/ask is burning its monthly error budget 14x too fast"
           first_action: "same as AskErrorsHigh; consider rolling back the last deploy (Grafana deploy annotations)"
           runbook: docs/runbook.md#errorbudgetburnfast
+
+      # the slow tier: 6x the allowed rate for 6 hours empties the budget in 5 days; a ticket,
+      # not a page (found in review: only the fast tier existed)
+      - alert: ErrorBudgetBurnSlow
+        expr: >
+          rag:ask_error_ratio:6h > (6 * 0.01) and rag:ask_error_ratio:30m > (6 * 0.01)
+          and sum(rate(rag_requests_total{endpoint="ask"}[6h])) > 0.01
+        for: 15m
+        labels: {severity: ticket, kind: symptom}
+        annotations:
+          summary: "/ask is burning its monthly error budget 6x too fast for hours"
+          first_action: "rag_requests_total by status over 6 h; which deploy or dependency changed?"
+          runbook: docs/runbook.md#errorbudgetburnslow
 
       - alert: RefusalRateHigh
         expr: rag:refusal_ratio:15m > 0.5 and sum(rate(rag_answers_total[15m])) > 0.01
@@ -53,8 +69,10 @@ groups:
           first_action: "rag_guardrail_total by guard: citation:uncited = the LLM stopped citing (model/prompt change?); gate:unanswerable = off-topic traffic or retrieval drift"
           runbook: docs/runbook.md#refusalratehigh
 
+      # nightly online evaluation (24 h lag); only with enough judged answers to mean something.
+      # 0.80 is well under the golden-set baseline (0.97, self-judged, Phase 3).
       - alert: FaithfulnessLow
-        expr: rag_eval_faithfulness < 0.80
+        expr: rag_eval_faithfulness < 0.80 and on() rag_eval_samples >= 20
         for: 1m
         labels: {severity: ticket, kind: symptom}
         annotations:
@@ -111,13 +129,26 @@ groups:
           first_action: "docker compose ps redis; docker logs legal-rag-redis-1"
           runbook: docs/runbook.md#ratelimiterdegraded
 
-      # the drift job exports when drift last passed its storm guard; the alert stays up for an
-      # hour after that (a flag "this run triggered" was reset by the next quiet run, found live)
+      # the latest drift run found drift (any kind): stays firing while drift persists, run after
+      # run; the storm guard only limits *actions* such as retraining (found in review: alerting
+      # on the guard's trigger cleared the alert after an hour while drift went on)
       - alert: DriftDetected
-        expr: (time() - rag_drift_last_trigger_timestamp_seconds) < 3600
+        expr: rag_drift_detected == 1
         for: 1m
         labels: {severity: ticket, kind: cause}
         annotations:
-          summary: "drift passed the storm guard {{ $value | humanizeDuration }} ago"
+          summary: "the latest drift run found drift ({{ $value }})"
           first_action: "Grafana row 'Drift & quality' and reports/drift/ (which features, input or behaviour?); input drift: extend the golden set before retraining anything; behaviour drift: what changed in rag_info?"
           runbook: docs/runbook.md#driftdetected
+
+  - name: batch-jobs
+    rules:
+      # a nightly job that dies leaves its last numbers behind forever; alert on their age instead
+      - alert: BatchJobStale
+        expr: time() - node_textfile_mtime_seconds{file=~".*(drift|online_eval)\\.prom"} > 26 * 3600
+        for: 10m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "{{ $labels.file }} was last written {{ $value | humanizeDuration }} ago"
+          first_action: "did the scheduled job run? (Airflow / cron logs); run it by hand and read its log"
+          runbook: docs/runbook.md#batchjobstale

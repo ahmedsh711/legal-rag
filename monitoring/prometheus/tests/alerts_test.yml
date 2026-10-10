@@ -82,20 +82,62 @@ tests:
         alertname: RefusalRateHigh
         exp_alerts: []
 
-  # a drift trigger at minute 1 keeps DriftDetected firing even after later quiet runs
+  # the latest run found drift: DriftDetected fires and stays while runs keep finding it
   - interval: 1m
     input_series:
-      - series: "rag_drift_last_trigger_timestamp_seconds"
-        values: "60x10"
+      - series: "rag_drift_detected"
+        values: "0 0 1 1 1 1 1 1"
     alert_rule_test:
       - eval_time: 5m
         alertname: DriftDetected
         exp_alerts:
           - exp_labels: {severity: ticket, kind: cause}
             exp_annotations:
-              summary: "drift passed the storm guard 4m 0s ago"
+              summary: "the latest drift run found drift (1)"
               first_action: "Grafana row 'Drift & quality' and reports/drift/ (which features, input or behaviour?); input drift: extend the golden set before retraining anything; behaviour drift: what changed in rag_info?"
               runbook: docs/runbook.md#driftdetected
+
+  # a low nightly score from only 8 judged answers is noise: no alert; from 30 it is real
+  - interval: 1m
+    input_series:
+      - series: "rag_eval_faithfulness"
+        values: "0.6x10"
+      - series: "rag_eval_samples"
+        values: "8x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FaithfulnessLow
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: "rag_eval_faithfulness"
+        values: "0.6x10"
+      - series: "rag_eval_samples"
+        values: "30x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FaithfulnessLow
+        exp_alerts:
+          - exp_labels: {severity: ticket, kind: symptom}
+            exp_annotations:
+              summary: "nightly RAGAS faithfulness is 0.6 (threshold 0.80)"
+              first_action: "open the nightly predictions; compare prompt_version / llm_model in rag_info with the last good run in MLflow"
+              runbook: docs/runbook.md#faithfulnesslow
+
+  # the nightly drift job stopped writing: its file's age is the alert (scraped every 5 min)
+  - interval: 5m
+    input_series:
+      - series: 'node_textfile_mtime_seconds{file="/textfile/drift.prom"}'
+        values: "0x400"
+    alert_rule_test:
+      - eval_time: 27h
+        alertname: BatchJobStale
+        exp_alerts:
+          - exp_labels: {severity: ticket, kind: cause, file: /textfile/drift.prom}
+            exp_annotations:
+              summary: "/textfile/drift.prom was last written 1d 3h 0m 0s ago"
+              first_action: "did the scheduled job run? (Airflow / cron logs); run it by hand and read its log"
+              runbook: docs/runbook.md#batchjobstale
 
   # load-test tokens on the free local model do not count against the money budget
   - interval: 1m

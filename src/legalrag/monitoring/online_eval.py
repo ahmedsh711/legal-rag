@@ -26,8 +26,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from legalrag.generation import REFUSAL_AR, REFUSAL_EN
+from legalrag.generation import REFUSAL_AR, REFUSAL_EN, detect_language
 from legalrag.logging_conf import configure_logging, get_logger
+from legalrag.monitoring.files import write_atomic
 
 log = get_logger(__name__)
 
@@ -76,8 +77,11 @@ async def run_online_eval(generations: Sequence[Mapping[str, Any]], metrics: Map
     from legalrag.eval.metrics import Prediction
     from legalrag.eval.ragas_run import score_predictions
 
-    picked = [j for g in sample(generations, rate, seed) if (j := parse_generation(g))]
-    preds = [Prediction(id=j.observation_id, lang="en", category="in_scope", question=j.question,
+    # parse first, then sample: the rate is a share of answers that can be judged (review)
+    judgeable = [j for g in generations if (j := parse_generation(g))]
+    picked = sample(judgeable, rate, seed)
+    preds = [Prediction(id=j.observation_id, lang=detect_language(j.question),
+                        category="in_scope", question=j.question,
                         gold_articles=[], answer=j.answer, refused=False, cited=[],
                         context_articles=[], context_texts=j.contexts) for j in picked]  # fmt: skip
     rows = await score_predictions(preds, {"faithfulness": metrics["faithfulness"]}, 2, rpm)
@@ -93,9 +97,13 @@ async def run_online_eval(generations: Sequence[Mapping[str, Any]], metrics: Map
         values.append(value)
     client.flush()
     mean = round(sum(values) / len(values), 3) if values else None
-    summary = {"sampled": len(picked), "scored": len(values), "faithfulness": mean}
+    unscored = len(picked) - len(values)  # the judge failed: reported, not silently dropped
+    summary = {"sampled": len(picked), "scored": len(values), "unscored": unscored,
+               "faithfulness": mean}  # fmt: skip
     lines = ["# HELP rag_eval_samples Answers judged in the last online evaluation",
-             "# TYPE rag_eval_samples gauge", f"rag_eval_samples {len(values)}"]  # fmt: skip
+             "# TYPE rag_eval_samples gauge", f"rag_eval_samples {len(values)}",
+             "# HELP rag_eval_unscored Sampled answers the judge could not score",
+             "# TYPE rag_eval_unscored gauge", f"rag_eval_unscored {unscored}"]  # fmt: skip
     if mean is not None:
         lines += ["# HELP rag_eval_faithfulness Mean RAGAS faithfulness of sampled real answers",
                   "# TYPE rag_eval_faithfulness gauge", f"rag_eval_faithfulness {mean}"]  # fmt: skip
@@ -103,7 +111,7 @@ async def run_online_eval(generations: Sequence[Mapping[str, Any]], metrics: Map
 
 
 def fetch_generations(base_url: str, auth: tuple[str, str], since: datetime,
-                      limit: int = 500) -> list[dict[str, Any]]:  # fmt: skip
+                      limit: int = 5000) -> list[dict[str, Any]]:  # fmt: skip
     """Generations since ``since`` from the Langfuse v2 observations API (cursor pages)."""
     import httpx
 
@@ -139,11 +147,10 @@ def main(argv: list[str] | None = None) -> None:
     metrics = make_metrics(s.judge_base_url, s.judge_api_key, s.judge_model, s.judge_embedding_model,
                            names=["faithfulness"], reasoning_effort=s.judge_reasoning_effort)  # fmt: skip
     client = Langfuse(public_key=auth[0], secret_key=auth[1], base_url=s.langfuse_host)
-    summary, lines = asyncio.run(run_online_eval(gens, metrics, client, args.rate, rpm=s.judge_rpm))
-    out = Path(args.textfile)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.with_suffix(".tmp").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
-    out.with_suffix(".tmp").replace(out)
+    seed = int(datetime.now(UTC).strftime("%Y%m%d"))  # a new sample every day, reproducible
+    summary, lines = asyncio.run(run_online_eval(gens, metrics, client, args.rate, seed,
+                                                 rpm=s.judge_rpm))  # fmt: skip
+    write_atomic(Path(args.textfile), "\n".join(lines) + "\n")
     log.info("online_eval_done", generations=len(gens), **summary)
 
 

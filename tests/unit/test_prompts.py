@@ -65,3 +65,63 @@ def asyncio_run(coro):
     import asyncio
 
     return asyncio.run(coro)
+
+
+class VersionedPrompts(FakePrompts):
+    """get_prompt(version=N) returns that version's text, like Langfuse."""
+
+    def __init__(self, texts):
+        super().__init__()
+        self.texts = texts
+
+    def get_prompt(self, name, **kw):
+        n = kw["version"]
+        return SimpleNamespace(prompt=self.texts[n], version=n, is_fallback=False,
+                               config={"prompt_version": f"v{n + 2}"})  # fmt: skip
+
+
+def verdict_for(text, passed=True):
+    from legalrag.observability.prompts import prompt_sha256
+
+    return {"passed": passed, "prompt_sha256": prompt_sha256(text), "faithfulness": 0.95}
+
+
+def test_promotion_needs_a_passing_verdict_for_exactly_that_text(tmp_path):
+    import pytest
+
+    from legalrag.observability.prompts import promote
+
+    client = VersionedPrompts({1: "rules v3", 2: "rules v4"})
+    approved = tmp_path / "approved.json"
+    with pytest.raises(SystemExit, match="did not pass"):
+        promote(client, 2, verdict_for("rules v4", passed=False), approved)
+    with pytest.raises(SystemExit, match="different prompt"):
+        promote(client, 2, verdict_for("rules v3"), approved)  # the verdict is for another text
+    assert client.updates == []
+    promote(client, 2, verdict_for("rules v4"), approved)
+    assert client.updates == [{"name": PROMPT_NAME, "version": 2, "new_labels": ["production"]}]
+
+
+def test_rollback_only_to_a_version_that_passed_before(tmp_path):
+    import pytest
+
+    from legalrag.observability.prompts import promote, rollback
+
+    client = VersionedPrompts({1: "rules v3", 2: "rules v4", 3: "never gated"})
+    approved = tmp_path / "approved.json"
+    promote(client, 1, verdict_for("rules v3"), approved)
+    promote(client, 2, verdict_for("rules v4"), approved)
+    rollback(client, 1, approved)  # back to a gated version: allowed, no new evaluation needed
+    assert client.updates[-1]["version"] == 1
+    with pytest.raises(SystemExit, match="never passed"):
+        rollback(client, 3, approved)
+
+
+def test_new_versions_are_pushed_as_candidates_only():
+    import pytest
+
+    from legalrag.observability.prompts import check_push_labels
+
+    assert check_push_labels([]) == ["candidate"]
+    with pytest.raises(SystemExit, match="production"):
+        check_push_labels(["production"])
