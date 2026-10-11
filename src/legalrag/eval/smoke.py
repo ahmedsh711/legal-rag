@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -29,6 +30,8 @@ from legalrag.retrieval import Chunk
 log = get_logger(__name__)
 
 SMOKE_PATH = Path("data/golden/smoke.jsonl")
+# reviewed judge errors: {id: sha256 of the exact answer}; a changed answer is judged again
+WAIVERS_PATH = Path("data/golden/smoke_waivers.json")
 GOLDEN_FIELDS = set(GoldenItem.model_fields)
 
 
@@ -92,6 +95,16 @@ async def smoke_predictions(
     return await run_golden(pipeline, items, concurrency=2, requests_per_minute=rpm)
 
 
+def answer_sha256(answer: str) -> str:
+    return hashlib.sha256(answer.encode("utf-8")).hexdigest()
+
+
+def load_waivers(path: Path = WAIVERS_PATH) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    return {w["id"]: w["answer_sha256"] for w in json.loads(path.read_text(encoding="utf-8"))}
+
+
 def verdict(
     preds: Sequence[Prediction],
     ragas_rows: Sequence[Mapping[str, Any]],
@@ -99,10 +112,14 @@ def verdict(
     min_cited: float,
     max_errors: int,
     min_item: float = 0.5,
+    waivers: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     judged = [r for r in ragas_rows if r.get("faithfulness") is not None]
     scores = [r["faithfulness"] for r in judged]
-    below_floor = [r["id"] for r in judged if r["faithfulness"] < min_item]
+    answers = {p.id: answer_sha256(p.answer) for p in preds}
+    low = [r["id"] for r in judged if r["faithfulness"] < min_item]
+    waived = [i for i in low if (waivers or {}).get(i) == answers.get(i)]
+    below_floor = [i for i in low if i not in waived]
     ok = [p for p in preds if not p.error]
     unmeasured = len(preds) - len(scores)
     faith = round(sum(scores) / len(scores), 3) if scores else None
@@ -127,6 +144,7 @@ def verdict(
         "faithfulness": faith,
         "cited_gold": cited,
         "below_floor": below_floor,
+        "waived": waived,
         "n": len(preds),
         "unmeasured": unmeasured,
         "reasons": reasons,
@@ -145,6 +163,7 @@ def _summary_markdown(v: Mapping[str, Any], model: str) -> str:
         f"| faithfulness | {v['faithfulness']} |",
         f"| cited_gold | {v['cited_gold']} |",
         f"| unmeasured items | {v['unmeasured']} of {v['n']} |",
+        f"| waived (reviewed judge errors) | {', '.join(v.get('waived', [])) or 'none'} |",
     ]
     return "\n".join(lines + [f"- {r}" for r in v["reasons"]]) + "\n"
 
@@ -194,7 +213,15 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     items, contexts = load_smoke(Path(args.smoke))
     prompts = prompt_under_test(args.prompt_file, args.prompt_version)
     preds, rows = asyncio.run(_generate_and_judge(s, items, contexts, prompts))
-    v = verdict(preds, rows, args.min_faithfulness, args.min_cited, args.max_errors, args.min_item)
+    v = verdict(
+        preds,
+        rows,
+        args.min_faithfulness,
+        args.min_cited,
+        args.max_errors,
+        args.min_item,
+        waivers=load_waivers(),
+    )
     served = prompts.get()  # promotion checks the hash of this exact text
     v.update(prompt_version=served.version, prompt_sha256=prompt_sha256(served.text))
     out = Path(args.out)
