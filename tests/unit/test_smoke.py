@@ -59,7 +59,7 @@ def write_jsonl(path, rows):
     path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), "utf-8")
 
 
-def test_freeze_then_load_gives_the_exact_articles_back(tmp_path):
+def write_freeze_inputs(tmp_path, pairs, cited=lambda item_id: [374]):
     golden = [
         {
             "id": f"p0{n}-{lang}",
@@ -70,25 +70,36 @@ def test_freeze_then_load_gives_the_exact_articles_back(tmp_path):
             "gold_articles": [374],
             "reference": "ref ok",
         }
-        for n in (1, 2)
+        for n in range(1, pairs + 1)
         for lang in ("ar", "en")
     ]
     write_jsonl(tmp_path / "golden.jsonl", golden)
-    write_jsonl(
-        tmp_path / "preds.jsonl", [{"id": g["id"], "context_articles": [374, 147]} for g in golden]
-    )
+    preds = [
+        {"id": g["id"], "refused": False, "cited": cited(g["id"]), "context_articles": [374, 147]}
+        for g in golden
+    ]
+    write_jsonl(tmp_path / "preds.jsonl", preds)
     (tmp_path / "articles.json").write_text(
         json.dumps([a.model_dump() for a in SAMPLE_ARTICLES], ensure_ascii=False), "utf-8"
     )
-    rows = freeze(
-        tmp_path / "preds.jsonl", tmp_path / "articles.json", tmp_path / "golden.jsonl", pairs=1
-    )
+    return tmp_path / "preds.jsonl", tmp_path / "articles.json", tmp_path / "golden.jsonl"
+
+
+def test_freeze_then_load_gives_the_exact_articles_back(tmp_path):
+    rows = freeze(*write_freeze_inputs(tmp_path, pairs=2), pairs=1)
     write_jsonl(tmp_path / "smoke.jsonl", rows)
     items, contexts = load_smoke(tmp_path / "smoke.jsonl")
     assert [i.id for i in items] == ["p01-ar", "p01-en"]
     chunks = contexts["ما حكم المادة 1؟"]
     assert [c.article_number for c in chunks] == [374, 147]
     assert chunks[0].text_en.startswith("The term of prescription")
+
+
+def test_freeze_skips_pairs_the_run_did_not_answer_with_a_gold_citation(tmp_path):
+    # replayed articles without the gold one could never pass the cited_gold threshold
+    inputs = write_freeze_inputs(tmp_path, pairs=4, cited=lambda i: [] if i == "p02-en" else [374])
+    rows = freeze(*inputs, pairs=2)
+    assert [r["id"] for r in rows] == ["p01-ar", "p01-en", "p03-ar", "p03-en"]
 
 
 async def test_smoke_runs_the_real_pipeline_on_the_frozen_articles(tmp_path):
