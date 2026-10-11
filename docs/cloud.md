@@ -46,7 +46,7 @@ To run the UI locally instead: `uv run --group ui streamlit run ui/app.py` (it u
 
 ## Data and experiments on DagsHub
 
-1. Sign up at [dagshub.com](https://dagshub.com) with GitHub and connect the repository (New Repository → Connect a repository). Create a token under User Settings → Tokens.
+1. Sign up at [dagshub.com](https://dagshub.com) with GitHub and connect the repository (Create → New Repository → Connect a repository → GitHub). Create a token under User Settings → Tokens.
 2. DVC remote (the credentials go to `.dvc/config.local`, which git ignores):
    ```bash
    uv run dvc remote add dagshub s3://dvc
@@ -62,8 +62,9 @@ To run the UI locally instead: `uv run --group ui streamlit run ui/app.py` (it u
    MLFLOW_TRACKING_USERNAME=<user>
    MLFLOW_TRACKING_PASSWORD=<token>
    ```
-   then copy the production pipeline config from the local server, so the API can load it from the registry (`CONFIG_SOURCE=mlflow`):
+   then copy the production pipeline config from the local server, so the API can load it from the registry (`CONFIG_SOURCE=mlflow`). The MLflow client reads its credentials from the environment, so export them for commands run on the host (the API container gets them from `.env`):
    ```bash
+   export $(grep '^MLFLOW_TRACKING_' .env | xargs)
    docker compose --env-file .env -f docker/compose.yaml --profile tracking up -d mlflow
    uv run --group eval python -m legalrag.eval.track copy --from http://127.0.0.1:5000
    ```
