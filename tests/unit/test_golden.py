@@ -65,8 +65,12 @@ def test_real_golden_set_is_balanced_and_mirrored():
     assert len(items) >= 50
     assert sum(i.lang == "ar" for i in items) >= 25 and sum(i.lang == "en" for i in items) >= 25
     assert {i.category for i in items} == {
-        "in_scope", "explicit_ref", "repealed", "off_topic", "injection"
-    }  # fmt: skip
+        "in_scope",
+        "explicit_ref",
+        "repealed",
+        "off_topic",
+        "injection",
+    }
     assert check_golden(items, corpus=None) == []  # structure only; corpus check needs DVC data
 
 

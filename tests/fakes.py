@@ -28,7 +28,7 @@ class FakeLLM:
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_sync))
 
     def _create_sync(self, **kwargs):
-        self.calls.append(kwargs)  # recorded when called, like a real request being prepared
+        self.calls.append(kwargs)  # recorded at call time, even if the coroutine is never awaited
         return self._create(**kwargs)
 
     async def _create(self, **kwargs):

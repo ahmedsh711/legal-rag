@@ -1,30 +1,6 @@
-"""Egyptian Civil Code PDF -> one ``Article`` record per article.
+"""Parse the Egyptian Civil Code PDF into one ``Article`` record per article (DVC stage).
 
-How the PDF is laid out (found by inspection, see docs/research/03_corpus_inspection.md):
-
-    [Arabic headings]   الكتاب الثاني / العقود المسماة
-    [English headings]  BOOK II / SPECIFIC CONTRACTS
-    مادة٢١              <- Arabic header; multi-digit numbers come out digit-reversed
-    Arabic text ...
-    Article 12          <- English header; numbers are reliable
-    English text ...
-
-So an article runs from its Arabic header to the next Arabic header and holds, in order:
-Arabic text, English text, then the headings that belong to the *next* article. Each draft
-article moves through these modes:
-
-    ARABIC -> ENGLISH -> (ARABIC_AGAIN -> ENGLISH)* -> HEADINGS
-                     \\-> NOTE (a repeal note inside English text) -> HEADINGS
-
-Exceptions handled (each has a unit test): both headers on one line, Arabic text continuing
-after an early English header, Arabic and English glued on one line, alternating paragraphs,
-a header that lost its first letter, cross-references that start a line, repeal notes.
-
-Known limit: a cross-reference to a *later* article that starts a line and happens to keep the
-header numbers increasing (e.g. "Article 451" inside Article 450, followed by the real 451)
-would be taken as a header. ``longest_increasing`` removes every case seen in this PDF.
-
-Run as a DVC stage:  python -m legalrag.ingest.parse --pdf data/raw/... --out data/processed/...
+uv run python -m legalrag.ingest.parse --pdf data/raw/... --out data/processed/...
 """
 
 from __future__ import annotations
@@ -61,9 +37,8 @@ Line = tuple[int, str]  # (page number, text)
 
 # ---------------------------------------------------------------- patterns and limits
 
-START_MARKER = re.compile(
-    r"نصوص\s*القانون\s*المدن[يى]"
-)  # the code starts after the decree preamble
+# the code starts after the decree preamble
+START_MARKER = re.compile(r"نصوص\s*القانون\s*المدن[يى]")
 AR_HEADER = re.compile(r"^\s*م\s*ا\s*د\s*ة\s*[()\s]*([٠-٩0-9]+)?[()\s]*$")
 COMBINED_HEADER = re.compile(r"^\s*م\s*ا\s*د\s*ة\s*[()\s]*([٠-٩0-9]+)?[()\s]*Article\s*(\d+)\s*$")
 EN_HEADER = re.compile(r"^\s*A?rticle\s*(\d+)\b\s*(.*)$")  # one header lost its "A" ("rticle 452")
@@ -101,7 +76,7 @@ _LEADING_PUNCT = re.compile(r"^[\s.,،؛:)]*")
 
 def extract_lines(pdf_path: str | Path) -> list[Line]:
     """Every text line of the PDF with its 1-based page number (pypdf keeps Arabic order intact)."""
-    from pypdf import PdfReader  # heavy import kept local (course rule)
+    from pypdf import PdfReader  # heavy import kept local
 
     reader = PdfReader(str(pdf_path))
     return [
@@ -143,9 +118,8 @@ def _split_mixed(line: str) -> tuple[str, str]:
     if not m:
         return "", line.strip()
     ar, en = m.group(1), m.group(2)
-    lead = _LEADING_PUNCT.match(en).group(
-        0
-    )  # "مستحيلا. The vendor" -> keep the "." with the Arabic
+    # "مستحيلا. The vendor": the "." stays with the Arabic
+    lead = _LEADING_PUNCT.match(en).group(0)
     return (ar + lead).strip(), en[len(lead) :].strip()
 
 
@@ -251,6 +225,7 @@ def _classify(lines: list[Line]) -> list[Row]:
         else:
             rows.append(Row(page, text, Kind.TEXT))
     # keep only English numbers that increase through the document; the rest are cross-references
+    # (a forward reference that keeps the order increasing still slips through)
     numbered = [i for i, r in enumerate(rows) if r.number is not None]
     keep = {numbered[i] for i in longest_increasing([rows[i].number for i in numbered])}
     for i in numbered:
@@ -266,6 +241,9 @@ def _classify(lines: list[Line]) -> list[Row]:
 # ---------------------------------------------------------------- the parser
 
 
+# An article runs from its Arabic header to the next one: Arabic header ("مادة٢١", multi-digit
+# numbers digit-reversed), Arabic text, English header ("Article 12", reliable number), English
+# text, then the headings of the next article.
 class Mode(Enum):
     ARABIC = "arabic"
     ENGLISH = "english"
@@ -425,7 +403,7 @@ class _Parser:
 
 
 def _resolve_numbers(drafts: list[_Draft]) -> None:
-    """Number Arabic-only drafts from their (digit-reversed) Arabic header, between known neighbours."""
+    """Number Arabic-only drafts from their digit-reversed header, bounded by known neighbours."""
     for i, d in enumerate(drafts):
         if d.number is not None or not d.ar_digits:
             continue
@@ -439,7 +417,7 @@ def _resolve_numbers(drafts: list[_Draft]) -> None:
         if len(set(candidates)) > 1:
             log.warning("ambiguous_arabic_number", digits=d.ar_digits, chose=candidates[0])
         if candidates:
-            d.number = candidates[0]  # the reversed reading is preferred (it matched 1078/1087)
+            d.number = candidates[0]  # prefer the reversed reading, the usual extraction order
 
 
 def _build_articles(drafts: list[_Draft], repeals: list[Repeal]) -> list[Article]:
@@ -479,7 +457,7 @@ def _build_articles(drafts: list[_Draft], repeals: list[Repeal]) -> list[Article
 
 
 def parse_lines(lines: list[Line]) -> list[Article]:
-    """Lines of the PDF -> sorted articles. Raises ValueError when the input is not the expected PDF."""
+    """PDF lines -> sorted articles. Raises ValueError if this is not the expected PDF."""
     start = next((i for i, (_, t) in enumerate(lines) if START_MARKER.search(t)), None)
     if start is None:
         raise ValueError(
@@ -491,12 +469,11 @@ def parse_lines(lines: list[Line]) -> list[Article]:
 
 
 def parse_pdf(pdf_path: str | Path) -> list[Article]:
-    """Extract and parse the PDF in one call."""
     return parse_lines(extract_lines(pdf_path))
 
 
 def apply_quality_flags(articles: list[Article], params: CorpusParams) -> list[Article]:
-    """Copy documented source defects (params.yaml) onto the records so later stages can see them."""
+    """Copy documented source defects from params.yaml onto the records."""
     return [
         a.model_copy(update={"quality_flags": [params.known_anomalies[a.article_number].flag]})
         if a.article_number in params.known_anomalies

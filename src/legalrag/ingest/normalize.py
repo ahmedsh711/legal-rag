@@ -1,19 +1,10 @@
-"""Arabic/English text helpers used by the parser and by search.
-
-Two kinds of cleaning, kept separate on purpose:
-- *display* cleaning (``join_arabic_lines``, ``join_english_lines``, ``fix_mirrored_brackets``):
-  repairs extraction damage but keeps the legal wording exactly as written.
-- *search* normalization (``normalize_for_search``): folds spelling variants so that
-  "فى" and "في", or "أحكام" and "احكام", match. Never shown to users.
-
-Bump ``NORMALIZATION_VERSION`` whenever ``normalize_for_search`` changes: the index stores it
-and the API refuses to start when the index was built with a different version.
-"""
+"""Arabic/English text helpers: display cleanup that keeps the wording, folding for search."""
 
 from __future__ import annotations
 
 import re
 
+# bump whenever normalize_for_search changes; the API refuses an index built with another version
 NORMALIZATION_VERSION = "v1"
 
 # Arabic letters only: U+0621-U+064A minus tatweel (U+0640), which is decoration, not a letter
@@ -25,8 +16,8 @@ _DIACRITICS = re.compile(r"[ً-ٰٕ]")
 _TATWEEL = "ـ"
 _ALEF_FORMS = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا"})
 _DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
-# A paragraph marker at the start of a line, extracted with mirrored brackets:
-# ")١ (", "(٢ (", " )٢ (", ")أ)". Anchored to line start so prose like "(أ) و (ب)" is untouched.
+# paragraph marker extracted with mirrored brackets: ")١ (", "(٢ (", " )٢ (", ")أ)".
+# anchored to line start so prose like "(أ) و (ب)" is untouched
 _MIRRORED_MARKER = re.compile(r"^\s*[()]\s*([٠-٩0-9]{1,3}|[ء-ي])\s*[()]\s*")
 _SPACES = re.compile(r"\s+")
 
@@ -72,7 +63,7 @@ def _collapse(text: str) -> str:
 
 
 def join_arabic_lines(lines: list[str]) -> str:
-    """Join wrapped Arabic lines into paragraphs; a blank line or a paragraph marker starts a new one."""
+    """Join wrapped Arabic lines; a blank line or a paragraph marker starts a new paragraph."""
     paragraphs: list[list[str]] = [[]]
     for raw in lines:
         line = fix_mirrored_brackets(raw).strip()

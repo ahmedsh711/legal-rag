@@ -1,7 +1,7 @@
-"""Parity check: our BgeM3Embedder vs the official FlagEmbedding implementation.
+"""Check that BgeM3Embedder matches the reference FlagEmbedding implementation.
 
-Same idea as the course's pickle-vs-ONNX parity test: two implementations that should agree,
-checked on real inputs before we trust the lighter one.
+Encodes a sample of articles plus two queries with both and compares the dense vectors (cosine
+distance) and sparse weights. Exits 1 on a mismatch.
 
     uv run --with FlagEmbedding python scripts/parity_bge_m3.py
 """
@@ -13,7 +13,7 @@ import random
 import sys
 from pathlib import Path
 
-import legalrag  # noqa: F401  (OS certificate store for downloads)
+import legalrag  # noqa: F401 - enables the OS certificate store for downloads
 from legalrag.index.build import load_index_params
 from legalrag.index.embedder import BgeM3Embedder
 from legalrag.index.store import article_texts
@@ -28,10 +28,9 @@ def main() -> int:
     from huggingface_hub import snapshot_download
 
     params = load_index_params("params.yaml")
-    # Give FlagEmbedding a local folder at the pinned commit; otherwise it downloads the whole
-    # repo (pytorch_model.bin + a 2.2 GB ONNX copy) on its own.
-    # colbert_linear.pt is required too: without it FlagEmbedding silently uses a RANDOM sparse
-    # head (it only logs "new initialize" at INFO level) and the comparison is meaningless.
+    # Hand FlagEmbedding a local snapshot of the pinned commit; left alone it downloads the whole
+    # repo, including pytorch_model.bin and a 2.2 GB ONNX copy. colbert_linear.pt is required:
+    # without it FlagEmbedding silently initialises a random sparse head (logged only at INFO).
     local = snapshot_download(
         params.embedding_model,
         revision=params.embedding_revision,
@@ -60,8 +59,10 @@ def main() -> int:
         key_mismatch += len(set(ref_sparse) ^ set(emb.sparse))
         for k, v in ref_sparse.items():
             worst_sparse = max(worst_sparse, abs(v - emb.sparse.get(k, 0.0)))
-    print(f"texts={len(texts)} worst_dense_cosine_distance={worst_dense:.2e} "
-          f"worst_sparse_abs_diff={worst_sparse:.2e} sparse_key_mismatches={key_mismatch}")  # fmt: skip
+    print(
+        f"texts={len(texts)} worst_dense_cosine_distance={worst_dense:.2e} "
+        f"worst_sparse_abs_diff={worst_sparse:.2e} sparse_key_mismatches={key_mismatch}"
+    )
     ok = worst_dense < DENSE_TOL and worst_sparse < SPARSE_TOL and key_mismatch == 0
     print("PARITY OK" if ok else "PARITY FAILED")
     return 0 if ok else 1

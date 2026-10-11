@@ -1,0 +1,41 @@
+// Ships container logs from the legal-rag compose project to Loki.
+// Labels are kept low-cardinality (container, service). request_id and trace_id stay in the
+// JSON line and are filtered at query time: {container="legal-rag-api-1"} | json | ...
+discovery.docker "project" {
+  host = "unix:///var/run/docker.sock"
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=legal-rag"]
+  }
+}
+
+discovery.relabel "project" {
+  targets = discovery.docker.project.targets
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+  // allowlist: only these services' logs go to Loki
+  rule {
+    source_labels = ["service"]
+    regex         = "api|vllm|drift-job"
+    action        = "keep"
+  }
+}
+
+loki.source.docker "project" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.project.output
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

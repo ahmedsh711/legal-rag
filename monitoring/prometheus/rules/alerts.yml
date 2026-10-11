@@ -1,0 +1,151 @@
+# kind=symptom: users are affected (down, slow, errors, bad answers).
+# kind=cause:   leads to a symptom (queue, cache, budget, dependency); always a ticket.
+# severity picks the route in alertmanager.yml. Every rule has a `for:` so a single bad scrape
+# does not fire, and a first_action for whoever picks it up.
+groups:
+  - name: rag-symptoms
+    rules:
+      - alert: ApiDown
+        expr: up{job="api"} == 0 or probe_success{job="blackbox-health"} == 0
+        for: 1m
+        labels: {severity: page, kind: symptom}
+        annotations:
+          summary: "legal-rag API is not answering (/metrics or /health)"
+          first_action: "docker compose ps api; docker logs --tail 50 legal-rag-api-1 (index alias missing? model download?)"
+          runbook: docs/runbook.md#apidown
+
+      # traffic floor: a p95 over a handful of requests is noise
+      - alert: AskLatencyHigh
+        expr: rag:ask_latency_p95:5m > 5 and sum(rate(rag_request_seconds_count{endpoint="ask"}[5m])) > 0.05
+        for: 10m
+        labels: {severity: page, kind: symptom}
+        annotations:
+          summary: "/ask p95 is {{ $value | humanizeDuration }} (SLO: under 5 s)"
+          first_action: "Grafana row 'RAG behaviour': which stage grew? retrieve -> RetrieveStageSlow; generate -> provider or vLLM queue"
+          runbook: docs/runbook.md#asklatencyhigh
+
+      - alert: AskErrorsHigh
+        expr: rag:ask_error_ratio:5m > 0.01 and sum(rate(rag_requests_total{endpoint="ask"}[5m])) > 0.05
+        for: 5m
+        labels: {severity: page, kind: symptom}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of /ask requests fail with 5xx"
+          first_action: "503 = LLM provider down or quota (check llm_error logs); 500 = app bug (unhandled_error logs, by request_id)"
+          runbook: docs/runbook.md#askerrorshigh
+
+      # error budget: 1 % of requests over 30 days; a 14.4x burn empties it in ~2 days.
+      # Long window: the burn is sustained. Short window: it is still happening.
+      - alert: ErrorBudgetBurnFast
+        expr: >
+          rag:ask_error_ratio:1h > (14.4 * 0.01) and rag:ask_error_ratio:5m > (14.4 * 0.01)
+          and sum(rate(rag_requests_total{endpoint="ask"}[1h])) > 0.01
+        for: 2m
+        labels: {severity: page, kind: symptom}
+        annotations:
+          summary: "/ask is burning its monthly error budget 14x too fast"
+          first_action: "same as AskErrorsHigh; consider rolling back the last deploy (Grafana deploy annotations)"
+          runbook: docs/runbook.md#errorbudgetburnfast
+
+      # slow burn: 6x over 6 h empties the budget in ~5 days; ticket, not page
+      - alert: ErrorBudgetBurnSlow
+        expr: >
+          rag:ask_error_ratio:6h > (6 * 0.01) and rag:ask_error_ratio:30m > (6 * 0.01)
+          and sum(rate(rag_requests_total{endpoint="ask"}[6h])) > 0.01
+        for: 15m
+        labels: {severity: ticket, kind: symptom}
+        annotations:
+          summary: "/ask is burning its monthly error budget 6x too fast for hours"
+          first_action: "rag_requests_total by status over 6 h; which deploy or dependency changed?"
+          runbook: docs/runbook.md#errorbudgetburnslow
+
+      - alert: RefusalRateHigh
+        expr: rag:refusal_ratio:15m > 0.5 and sum(rate(rag_answers_total[15m])) > 0.01
+        for: 15m
+        labels: {severity: ticket, kind: symptom}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of answers are refusals"
+          first_action: "rag_guardrail_total by guard: citation:uncited = the LLM stopped citing (model/prompt change?); gate:unanswerable = off-topic traffic or retrieval drift"
+          runbook: docs/runbook.md#refusalratehigh
+
+      # nightly online eval (24 h lag); needs >= 20 judged answers to mean anything.
+      # 0.80 is well below the golden-set baseline (0.97, self-judged).
+      - alert: FaithfulnessLow
+        expr: rag_eval_faithfulness < 0.80 and on() rag_eval_samples >= 20
+        for: 1m
+        labels: {severity: ticket, kind: symptom}
+        annotations:
+          summary: "nightly RAGAS faithfulness is {{ $value }} (threshold 0.80)"
+          first_action: "open the nightly predictions; compare prompt_version / llm_model in rag_info with the last good run in MLflow"
+          runbook: docs/runbook.md#faithfulnesslow
+
+  - name: rag-causes
+    rules:
+      - alert: RetrieveStageSlow
+        expr: rag:stage_latency_p95:5m{stage="retrieve"} > 2
+        for: 5m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "retrieve p95 is {{ $value | humanizeDuration }}: the CPU embedder is saturated"
+          first_action: "API container CPU (row Resources); QUERY_BATCH_MAX set? (one-at-a-time embedding is the first bottleneck under load)"
+          runbook: docs/runbook.md#retrievestageslow
+
+      - alert: LlmQueueBacklog
+        expr: sum(vllm:num_requests_waiting) > 0
+        for: 5m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "{{ $value }} requests wait for a vLLM slot"
+          first_action: "KV cache usage low? raise --max-num-seqs; high? the GPU is full: shed load or add capacity"
+          runbook: docs/runbook.md#llmqueuebacklog
+
+      - alert: KvCacheNearlyFull
+        expr: max(vllm:kv_cache_usage_perc) > 0.9
+        for: 5m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "vLLM KV cache {{ $value | humanizePercentage }} full: requests will be preempted"
+          first_action: "lower --max-num-seqs or --max-model-len, or move to a bigger GPU"
+          runbook: docs/runbook.md#kvcachenearlyfull
+
+      # paid tokens only: local vLLM tokens cost nothing and are excluded
+      - alert: DailyTokenBudget
+        expr: sum(increase(rag_llm_tokens_total{backend!="vllm"}[24h])) > 2e6
+        for: 10m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "{{ $value | humanize }} paid LLM tokens in 24 h (budget 2M)"
+          first_action: "rag:tokens:1h by backend; a single client looping? (rate-limit logs); a prompt that grew?"
+          runbook: docs/runbook.md#dailytokenbudget
+
+      - alert: RateLimiterDegraded
+        expr: sum(increase(rag_ratelimit_total{outcome="degraded"}[5m])) > 0
+        for: 2m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "Redis unreachable: the API serves without a rate limit (fail open)"
+          first_action: "docker compose ps redis; docker logs legal-rag-redis-1"
+          runbook: docs/runbook.md#ratelimiterdegraded
+
+      # follows the latest drift run, so it keeps firing while drift persists. Deliberately not
+      # tied to the storm guard: that only rate-limits actions such as retraining, and alerting
+      # on its trigger would clear the alert after an hour while drift continues.
+      - alert: DriftDetected
+        expr: rag_drift_detected == 1
+        for: 1m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "the latest drift run found drift ({{ $value }})"
+          first_action: "Grafana row 'Drift & quality' and reports/drift/ (which features, input or behaviour?); input drift: extend the golden set before retraining anything; behaviour drift: what changed in rag_info?"
+          runbook: docs/runbook.md#driftdetected
+
+  - name: batch-jobs
+    rules:
+      # a dead nightly job leaves its last values behind; alert on the file age instead
+      - alert: BatchJobStale
+        expr: time() - node_textfile_mtime_seconds{file=~".*(drift|online_eval)\\.prom"} > 26 * 3600
+        for: 10m
+        labels: {severity: ticket, kind: cause}
+        annotations:
+          summary: "{{ $labels.file }} was last written {{ $value | humanizeDuration }} ago"
+          first_action: "did the scheduled job run? (Airflow / cron logs); run it by hand and read its log"
+          runbook: docs/runbook.md#batchjobstale

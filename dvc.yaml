@@ -1,6 +1,5 @@
-# Reproducible corpus pipeline. `dvc repro` re-runs only stages whose deps/params changed.
-# uv.lock is a dependency on purpose: a pypdf upgrade can change extraction, so it must rebuild.
-# Later phases add: index (embed -> Qdrant) and evaluate (golden set -> RAGAS -> MLflow).
+# Corpus and index pipeline: parse -> validate -> index.
+# uv.lock is a dependency because a pypdf upgrade can change the extracted text.
 stages:
   parse:
     cmd: uv run python -m legalrag.ingest.parse --pdf data/raw/egyptian_civil_code.pdf --out data/processed/articles.json --params params.yaml
@@ -18,7 +17,7 @@ stages:
       - data/processed/articles.meta.json
 
   validate:
-    cmd: uv run python -m legalrag.ingest.validate --articles data/processed/articles.json --params params.yaml --metrics reports/corpus_metrics.json
+    cmd: uv run python -m legalrag.ingest.validate --articles data/processed/articles.json --params params.yaml --metrics metrics/corpus.json
     deps:
       - data/processed/articles.json
       - src/legalrag/ingest
@@ -26,19 +25,18 @@ stages:
     params:
       - corpus
     metrics:
-      - reports/corpus_metrics.json:
+      - metrics/corpus.json:
           cache: false
 
   index:
-    # embeds every article with bge-m3 and loads it into Qdrant (needs: docker compose --profile core up -d qdrant)
-    # always_changed: the real output lives in Qdrant, which DVC cannot see (fresh clone, wiped
-    # volume). The stage runs on every repro; the build reuses an existing identical collection
-    # in seconds and only embeds when it is missing.
+    # embeds every article with bge-m3 into Qdrant; needs the qdrant service running
+    # always_changed: the real output lives in Qdrant, which DVC cannot track. The build reuses
+    # an identical existing collection, so an unchanged repro takes seconds.
     always_changed: true
-    cmd: uv run python -m legalrag.index.build --articles data/processed/articles.json --params params.yaml --manifest data/processed/index_manifest.json --metrics reports/index_metrics.json
+    cmd: uv run python -m legalrag.index.build --articles data/processed/articles.json --params params.yaml --manifest data/processed/index_manifest.json --metrics metrics/index.json
     deps:
       - data/processed/articles.json
-      - reports/corpus_metrics.json   # runs only after `validate` passed: never embed an invalid corpus
+      - metrics/corpus.json   # runs only after `validate` passed: never embed an invalid corpus
       - src/legalrag/index
       - uv.lock
     params:
@@ -47,5 +45,5 @@ stages:
       - data/processed/index_manifest.json:
           cache: false
     metrics:
-      - reports/index_metrics.json:
+      - metrics/index.json:
           cache: false

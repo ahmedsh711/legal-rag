@@ -10,12 +10,15 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi[standard]>=0.142.4",
     "httpx>=0.28.1",
+    "langfuse==4.15.6",
     "openai>=1.60",
+    "prometheus-client>=0.21",
     "pydantic>=2",
     "pydantic-settings>=2.13.1",
     "pypdf>=6.19.0",
     "pyyaml>=6.0.3",
     "qdrant-client>=1.19",
+    "redis>=5",
     "structlog>=25.5.0",
     "torch>=2.14.1",
     "transformers>=4.44,<6",
@@ -26,6 +29,7 @@ dependencies = [
 dev = [
     "detect-secrets>=1.5.0",
     "dvc[s3]>=3.67.1",
+    "fakeredis[lua]>=2.39.0",
     "pre-commit>=4.6.0",
     "pytest>=9.1.0",
     "pytest-asyncio>=1.4.0",
@@ -37,6 +41,14 @@ eval = [
     "mlflow==3.17.0",
     "ragas==0.4.3",
 ]
+load = [
+    "locust>=2.37",
+]
+monitoring = [
+    "psycopg[binary]>=3.2",
+    "scikit-learn>=1.5",
+    "scipy>=1.14",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.0,<0.13.0"]
@@ -45,24 +57,24 @@ build-backend = "uv_build"
 [tool.uv]
 system-certs = true
 
-# --- Lint / format: one tool (Ruff) replaces flake8 + isort + black (course session 2) ---
+# --- Lint / format ---
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.format]
-line-ending = "lf"  # DVC hashes raw bytes of source deps: CRLF on Windows = "changed" on Linux
+line-ending = "lf"  # DVC hashes raw bytes; CRLF on Windows would invalidate stages on Linux
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "N", "T20"]  # T20 = no print() in src (course rule)
+select = ["E", "F", "I", "B", "UP", "N", "T20"]  # T20: no print() in library code
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["T20"]
 "scripts/**" = ["T20"]
 
-# --- Tests: coverage gate enforced here so CI and local runs agree (course: >=80%) ---
+# --- Tests: the coverage gate lives here so CI and local runs agree ---
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=src/legalrag --cov-report=term-missing --cov-fail-under=80"

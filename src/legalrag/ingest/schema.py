@@ -1,4 +1,4 @@
-"""The record we produce for every article: the contract between ingestion and everything else."""
+"""Article record: the contract between ingestion and the rest of the system."""
 
 from __future__ import annotations
 
@@ -8,14 +8,13 @@ SCHEMA_VERSION = "1"  # bump when fields change; written to articles.meta.json
 
 
 class Article(BaseModel):
-    """One article of the Egyptian Civil Code (handbook schema, extended where ingestion needed it).
+    """One article of the Egyptian Civil Code.
 
-    Hierarchy follows the Arabic headings, named like the English edition of the PDF:
     الكتاب -> book, الباب -> chapter, الفصل -> section, الفرع -> subsection, numbered headings -> topic.
     ``id``, ``citation`` and ``citation_ar`` are derived from ``article_number`` and checked on load.
     """
 
-    model_config = ConfigDict(extra="forbid")  # an unknown field means a schema mismatch: fail
+    model_config = ConfigDict(extra="forbid")  # unknown field = schema mismatch
 
     article_number: int = Field(ge=1)
     id: str = ""

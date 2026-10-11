@@ -1,15 +1,4 @@
-"""Qdrant layout for the articles index.
-
-- One collection per index build, named ``articles_<hash>``; the alias ``articles`` points at the
-  live one. Re-indexing builds a new collection and moves the alias in one atomic step, so a bad
-  build never touches what is serving, and a rollback is moving the alias back.
-- Each article becomes up to two points (Arabic text, English text) sharing one payload; a
-  repealed article becomes one "note" point. Point ids are deterministic, so re-running upserts
-  overwrites instead of duplicating.
-- Index metadata (embedding model, normalization, source hash, git SHA) lives in a tiny side
-  collection ``index_meta``, one point per collection. The API reads it at startup and refuses
-  to start if its own embedding model does not match (the instructor's 18%-zero-hit incident).
-"""
+"""Qdrant layout: one collection per index build behind an alias, plus ``index_meta``."""
 
 from __future__ import annotations
 
@@ -24,15 +13,29 @@ from legalrag.ingest.schema import Article
 
 META_COLLECTION = "index_meta"
 DENSE, SPARSE = "dense", "sparse"
-# Bump when article_texts() or the payload changes: it is part of the collection name, so new
-# text gives a new collection instead of silently reusing vectors of the old text.
+# bump when article_texts() or the payload changes; it is part of the collection name, so new
+# text never reuses vectors of the old text
 TEXT_FORMAT_VERSION = "v1"
-LANG_OFFSET = {"ar": 1, "en": 2, "note": 3}  # point id = article_number * 10 + offset
+# deterministic point ids (article_number * 10 + offset), so re-runs overwrite, not duplicate
+LANG_OFFSET = {"ar": 1, "en": 2, "note": 3}
 
 PAYLOAD_FIELDS = (
-    "article_number", "book", "chapter", "section", "subsection", "topic", "heading_en",
-    "text_ar", "text_en", "is_repealed", "note", "quality_flags", "source_page", "citation", "citation_ar",
-)  # fmt: skip
+    "article_number",
+    "book",
+    "chapter",
+    "section",
+    "subsection",
+    "topic",
+    "heading_en",
+    "text_ar",
+    "text_en",
+    "is_repealed",
+    "note",
+    "quality_flags",
+    "source_page",
+    "citation",
+    "citation_ar",
+)
 
 
 def point_id(article_number: int, lang: str) -> int:

@@ -1,12 +1,4 @@
-"""Hybrid retrieval over the articles index.
-
-``retrieve(question)`` does two things and merges them:
-1. **explicit references**: "المادة ١٤٧" / "Article 147" in the question -> fetch those articles
-   by number (including repealed ones, so "Article 60" can be answered "repealed");
-2. **hybrid search**: dense (meaning) + sparse (keywords) from bge-m3, fused with Reciprocal Rank
-   Fusion inside Qdrant, repealed articles filtered out, optional filter on the book.
-Arabic and English points of the same article are merged into one ``Chunk``.
-"""
+"""Article retrieval: explicit article references plus hybrid dense + sparse search in Qdrant."""
 
 from __future__ import annotations
 
@@ -26,7 +18,7 @@ _ARTICLE_REF = re.compile(
     r"(?:الماد[ةه]|ماد[ةه]|(?<![A-Za-z])(?:article|art\.))\s*\(?\s*([0-9٠-٩]{1,4})(?![0-9٠-٩])",
     re.IGNORECASE,
 )
-PREFETCH_MULTIPLIER = 4  # each language contributes points, so fetch more than we keep
+PREFETCH_MULTIPLIER = 4  # each article has AR and EN points, so over-fetch before deduplicating
 
 
 class Embedder(Protocol):
@@ -83,7 +75,7 @@ class Retriever:
         embedder: Embedder,
         top_n: int = 12,
         max_article: int = 1149,
-        mode: Literal["hybrid", "dense", "sparse"] = "hybrid",  # dense/sparse: for ablations
+        mode: Literal["hybrid", "dense", "sparse"] = "hybrid",  # dense/sparse for ablations
     ):
         self.client, self.alias, self.embedder = client, alias, embedder
         self.top_n, self.max_article, self.mode = top_n, max_article, mode
@@ -123,9 +115,13 @@ class Retriever:
         else:
             name = DENSE if self.mode == "dense" else SPARSE
             result = self.client.query_points(
-                self.alias, query=queries[name], using=name, query_filter=flt, limit=limit,
+                self.alias,
+                query=queries[name],
+                using=name,
+                query_filter=flt,
+                limit=limit,
                 with_payload=True,
-            )  # fmt: skip
+            )
         chunks: dict[int, Chunk] = {}
         for point in result.points:  # already sorted by fused score
             n = point.payload["article_number"]

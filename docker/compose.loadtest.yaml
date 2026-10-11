@@ -1,0 +1,15 @@
+# Load-test overrides for the API (use with compose.vllm.yaml):
+#   export LOADTEST_API_KEYS=$(seq -f "loadtest-%g" 1 100 | paste -sd, -)
+#   docker compose --env-file .env -f docker/compose.yaml -f docker/compose.vllm.yaml \
+#     -f docker/compose.loadtest.yaml --profile core --profile llm up -d
+# - config from env, so the test does not depend on MLflow;
+# - dense retrieval, no Jev decider: measures the local stack (API, bge-m3, Qdrant, Redis, vLLM)
+#   without third-party rate limits or cost;
+# - rate limiting stays on; each Locust user sends one of the issued keys.
+services:
+  api:
+    environment:
+      CONFIG_SOURCE: env
+      RETRIEVAL_MODE: dense
+      DECIDER_BACKEND: none
+      API_KEYS: ${LOADTEST_API_KEYS:?export LOADTEST_API_KEYS (see the comment at the top)}

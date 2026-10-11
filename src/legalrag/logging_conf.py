@@ -1,9 +1,4 @@
-"""Structured JSON logging with a request-scoped correlation id.
-
-"print() is not logging" (course session 1). Every line carries timestamp, level, logger,
-event and ``request_id`` so one request can be traced end to end across the API, the
-pipeline stages and, later, Langfuse traces.
-"""
+"""Structured JSON logging with a request-scoped ``request_id``."""
 
 from __future__ import annotations
 
@@ -22,7 +17,7 @@ def _add_request_id(_logger, _method, event_dict: dict) -> dict:
 
 
 def configure_logging(level: str = "INFO") -> None:
-    # UTF-8 stdout: Arabic text (and MLflow's emoji) crash the default Windows console encoding
+    # Arabic text and MLflow's emoji crash the default Windows console encoding
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     # stdout, not stderr: containers and log shippers read stdout

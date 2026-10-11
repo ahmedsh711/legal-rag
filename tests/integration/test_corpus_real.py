@@ -1,4 +1,4 @@
-"""End-to-end checks on the real PDF. Skipped when the PDF is not present (e.g. CI without `dvc pull`)."""
+"""Checks on the real PDF; skipped when it has not been fetched with `dvc pull`."""
 
 import random
 from pathlib import Path

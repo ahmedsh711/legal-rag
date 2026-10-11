@@ -1,16 +1,8 @@
-"""The golden set: questions with known answers that every pipeline change is measured on.
+"""Golden set: questions with known answers, in mirrored Arabic/English pairs.
 
-One JSON object per line (``data/golden/golden_set.jsonl``), in mirrored Arabic/English pairs so
-the two languages can be compared on exactly the same questions. Categories:
-
-- ``in_scope`` / ``explicit_ref``: answerable; ``gold_articles`` are the articles a correct answer
-  must cite, ``reference`` is a correct answer written from the article text.
-- ``repealed``: the gold article is repealed; a correct answer says so.
-- ``off_topic`` / ``injection``: not answerable from the Civil Code; the correct answer is the
-  exact refusal sentence the API uses.
-
-``check_golden`` is run in the tests (and against ``articles.json`` when it is present), so a typo
-in an article number fails CI instead of silently lowering a metric.
+``in_scope`` and ``explicit_ref`` items must cite ``gold_articles``; ``repealed`` items expect the
+answer to say the article is repealed; ``off_topic`` and ``injection`` items expect the exact
+refusal sentence.
 """
 
 from __future__ import annotations

@@ -1,24 +1,4 @@
-"""Validate articles.json before anything is embedded.
-
-"A silent parsing bug becomes a hallucination three steps later, and by then you will blame
-the model" (handbook). Checks, each derived from what the corpus inspection found:
-
-Per article (codes in ``CheckCode``; a documented anomaly may *allow* specific codes):
-- ``empty_ar`` / ``empty_en``: live articles need both texts;
-- ``arabic_in_en`` / ``latin_in_ar``: mixed scripts mean the column split failed;
-- ``too_long``: longer than ``max_chars_*`` means an article split failed;
-- ``length_ratio``: English/Arabic length outside the measured band means text moved
-  between articles even though the counts look right.
-Repealed articles must carry a note and no text.
-
-Whole corpus:
-- numbers 1..expected, each exactly once;
-- pinned golden phrases are present in their articles;
-- each book starts at its documented first article;
-- a book or chapter never reappears after another one started (hierarchy is contiguous).
-
-Run as a DVC stage; it writes metrics for ``dvc metrics show`` and exits 1 on any error.
-"""
+"""Validate articles.json before indexing (DVC stage); writes metrics and exits 1 on any error."""
 
 from __future__ import annotations
 
@@ -62,12 +42,14 @@ def _article_problems(a: Article, params: CorpusParams) -> list[tuple[CheckCode,
         problems.append(("empty_ar", f"article {n}: empty Arabic text"))
     if not en:
         problems.append(("empty_en", f"article {n}: empty English text"))
+    # mixed scripts mean the column split failed
     if has_arabic(en):
         problems.append(("arabic_in_en", f"article {n}: Arabic letters in English text"))
     if LATIN_WORD.search(ar):
         problems.append(("latin_in_ar", f"article {n}: Latin words in Arabic text"))
     if len(ar) > params.max_chars_ar or len(en) > params.max_chars_en:
         problems.append(("too_long", f"article {n}: text too long, probably a failed split"))
+    # text moved between articles shifts the ratio even when the counts look right
     if ar and en:
         ratio = len(en) / len(ar)
         low, high = params.length_ratio
@@ -166,7 +148,7 @@ def validate_articles(articles: list[Article], params: CorpusParams) -> Validati
 
 
 def load_articles(path: str | Path) -> list[Article]:
-    """Read articles.json; a bad record is reported with its position, not as a wall of errors."""
+    """Read articles.json; a bad record is reported with its index in the list."""
     path = Path(path)
     if not path.is_file():
         raise CorpusInputError(f"articles file not found: {path} (run `dvc repro` or `dvc pull`)")
@@ -196,7 +178,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Validate articles.json")
     parser.add_argument("--articles", default=None, help="default: settings.articles_path")
     parser.add_argument("--params", default="params.yaml")
-    parser.add_argument("--metrics", default="reports/corpus_metrics.json")
+    parser.add_argument("--metrics", default="metrics/corpus.json")
     args = parser.parse_args(argv)
 
     from legalrag.settings import get_settings  # after argparse so --help works without a valid env

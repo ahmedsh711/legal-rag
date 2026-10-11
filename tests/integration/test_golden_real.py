@@ -1,4 +1,4 @@
-"""Golden set against the real corpus. Skipped when articles.json is not present (CI without DVC)."""
+"""Golden set against the real corpus; skipped without the DVC-tracked articles.json."""
 
 from pathlib import Path
 

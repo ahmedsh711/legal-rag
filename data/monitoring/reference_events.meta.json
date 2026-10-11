@@ -1,0 +1,12 @@
+{
+  "built_at": "2026-10-10T15:07:16.879938+00:00",
+  "from_runs": [
+    "reports\\eval\\e2e-dense-jev\\predictions.jsonl",
+    "reports\\eval\\heldout-dense-jev\\predictions.jsonl"
+  ],
+  "events": 66,
+  "llm_model": "gemini-3.1-flash-lite",
+  "prompt_version": "v3",
+  "decider": "jev",
+  "index_collection": "eval"
+}

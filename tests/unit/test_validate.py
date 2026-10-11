@@ -1,4 +1,4 @@
-"""Corpus validation: a silent parsing bug must fail loudly here, not become a hallucination later."""
+"""Corpus validation: parsing bugs must fail here, not surface later as hallucinations."""
 
 import json
 

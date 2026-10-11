@@ -1,0 +1,152 @@
+# promtool unit tests for rules/alerts.yml:
+#   docker run --rm --entrypoint promtool -v ./monitoring/prometheus:/etc/prometheus \
+#     prom/prometheus:v3.15.0 test rules /etc/prometheus/tests/alerts_test.yml
+rule_files:
+  - ../rules/recording.yml
+  - ../rules/alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # the API stops answering at minute 2: pending at 2, firing from 3 (for: 1m)
+  - interval: 1m
+    input_series:
+      - series: 'up{job="api"}'
+        values: "1 1 0 0 0 0"
+      - series: 'probe_success{job="blackbox-health"}'
+        values: "1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ApiDown
+        exp_alerts: [] # pending, not firing yet
+      - eval_time: 4m
+        alertname: ApiDown
+        exp_alerts:
+          - exp_labels: {severity: page, kind: symptom, job: api}
+            exp_annotations:
+              summary: "legal-rag API is not answering (/metrics or /health)"
+              first_action: "docker compose ps api; docker logs --tail 50 legal-rag-api-1 (index alias missing? model download?)"
+              runbook: docs/runbook.md#apidown
+
+  # a one-scrape blip is not an incident
+  - interval: 1m
+    input_series:
+      - series: 'up{job="api"}'
+        values: "1 1 0 1 1 1"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ApiDown
+        exp_alerts: []
+
+  # Redis down: the limiter reports "degraded" for every request
+  - interval: 1m
+    input_series:
+      - series: 'rag_ratelimit_total{outcome="degraded"}'
+        values: "0 0 5 10 15 20 25 30"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: RateLimiterDegraded
+        exp_alerts:
+          - exp_labels: {severity: ticket, kind: cause}
+            exp_annotations:
+              summary: "Redis unreachable: the API serves without a rate limit (fail open)"
+              first_action: "docker compose ps redis; docker logs legal-rag-redis-1"
+              runbook: docs/runbook.md#ratelimiterdegraded
+
+  # 8 in 10 answers refused for over 30 min
+  - interval: 1m
+    input_series:
+      - series: 'rag_answers_total{outcome="refused"}'
+        values: "0+8x40"
+      - series: 'rag_answers_total{outcome="answered"}'
+        values: "0+2x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: RefusalRateHigh
+        exp_alerts:
+          - exp_labels: {severity: ticket, kind: symptom}
+            exp_annotations:
+              summary: "80% of answers are refusals"
+              first_action: "rag_guardrail_total by guard: citation:uncited = the LLM stopped citing (model/prompt change?); gate:unanswerable = off-topic traffic or retrieval drift"
+              runbook: docs/runbook.md#refusalratehigh
+
+  # healthy traffic: 1 refusal in 10 never alerts
+  - interval: 1m
+    input_series:
+      - series: 'rag_answers_total{outcome="refused"}'
+        values: "0+1x40"
+      - series: 'rag_answers_total{outcome="answered"}'
+        values: "0+9x40"
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: RefusalRateHigh
+        exp_alerts: []
+
+  # the latest run found drift: DriftDetected fires and stays while runs keep finding it
+  - interval: 1m
+    input_series:
+      - series: "rag_drift_detected"
+        values: "0 0 1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DriftDetected
+        exp_alerts:
+          - exp_labels: {severity: ticket, kind: cause}
+            exp_annotations:
+              summary: "the latest drift run found drift (1)"
+              first_action: "Grafana row 'Drift & quality' and reports/drift/ (which features, input or behaviour?); input drift: extend the golden set before retraining anything; behaviour drift: what changed in rag_info?"
+              runbook: docs/runbook.md#driftdetected
+
+  # a low nightly score from only 8 judged answers is noise: no alert; from 30 it is real
+  - interval: 1m
+    input_series:
+      - series: "rag_eval_faithfulness"
+        values: "0.6x10"
+      - series: "rag_eval_samples"
+        values: "8x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FaithfulnessLow
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: "rag_eval_faithfulness"
+        values: "0.6x10"
+      - series: "rag_eval_samples"
+        values: "30x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FaithfulnessLow
+        exp_alerts:
+          - exp_labels: {severity: ticket, kind: symptom}
+            exp_annotations:
+              summary: "nightly RAGAS faithfulness is 0.6 (threshold 0.80)"
+              first_action: "open the nightly predictions; compare prompt_version / llm_model in rag_info with the last good run in MLflow"
+              runbook: docs/runbook.md#faithfulnesslow
+
+  # the nightly drift job stopped writing: its file's age is the alert (scraped every 5 min)
+  - interval: 5m
+    input_series:
+      - series: 'node_textfile_mtime_seconds{file="/textfile/drift.prom"}'
+        values: "0x400"
+    alert_rule_test:
+      - eval_time: 27h
+        alertname: BatchJobStale
+        exp_alerts:
+          - exp_labels: {severity: ticket, kind: cause, file: /textfile/drift.prom}
+            exp_annotations:
+              summary: "/textfile/drift.prom was last written 1d 3h 0m 0s ago"
+              first_action: "did the scheduled job run? (Airflow / cron logs); run it by hand and read its log"
+              runbook: docs/runbook.md#batchjobstale
+
+  # vLLM tokens are free and do not count toward the paid-token budget
+  - interval: 1m
+    input_series:
+      - series: 'rag_llm_tokens_total{backend="vllm",type="prompt"}'
+        values: "0+200000x60"
+      - series: 'rag_llm_tokens_total{backend="gemini",type="prompt"}'
+        values: "0+100x60"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: DailyTokenBudget
+        exp_alerts: []

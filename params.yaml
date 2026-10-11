@@ -5,7 +5,7 @@ corpus:
   max_chars_en: 2700        # ~1.25x the longest measured English article (2,141)
   length_ratio: [0.9, 2.8]  # English/Arabic chars; measured p0.5 = 0.98, p99.5 = 2.59
 
-  # golden checks: these phrases must stay in these articles, whatever the parser change
+  # regression checks: each article must still contain its phrase after any parser change
   pinned:
     1: "تسرى النصوص التشريعية"
     89: "يتم العقد بمجرد أن يتبادل طرفان"
@@ -21,8 +21,8 @@ corpus:
     802: "الكتاب الثالث"
     1030: "الكتاب الرابع"
 
-  # defects in the SOURCE PDF, flagged instead of hidden (reports/module-1.md).
-  # `allow` lists the only checks that become warnings; `flag` is copied onto the record.
+  # known defects in the source PDF, flagged on the record rather than fixed silently.
+  # `allow`: checks downgraded to warnings for that article; `flag`: copied onto the record.
   known_anomalies:
     1022:
       reason: "the PDF prints Article 1022's Arabic inside Article 1021's Arabic block"

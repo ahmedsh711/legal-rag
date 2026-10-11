@@ -1,12 +1,4 @@
-"""Jev (TypeSafe's decision model) through OpenRouter's ``/systemone`` endpoint.
-
-One request per question asks one ``score`` question per article ("how well does it answer?") and
-one ``noul`` (a yes/no probability: "can the question be answered from these articles?"). Jev
-returns probabilities, not text, so there is nothing to parse and nothing to hallucinate.
-
-Articles are sent in English: Jev's documentation says English is its primary language and other
-languages are "handled but not equally well". The question is sent as the user typed it.
-"""
+"""Decider backed by Jev through OpenRouter's ``/systemone`` endpoint."""
 
 from __future__ import annotations
 
@@ -51,6 +43,7 @@ class JevDecider(Decider):
             for c in chunks
         }
         questions["answerable"] = ANSWERABLE
+        # English is Jev's primary language; the question is sent as typed
         passages = {f"p{c.article_number}": passage_text(c, "en") for c in chunks}
         return {
             "model": self.model,
@@ -89,7 +82,7 @@ class JevDecider(Decider):
 
 
 def _cost(data: dict[str, Any]) -> float:
-    """OpenRouter's reported cost; a missing or odd value must not lose a good decision."""
+    """OpenRouter's reported cost, 0.0 if missing or malformed."""
     try:
         return float((data.get("usage") or {}).get("cost") or 0.0)
     except (TypeError, ValueError):

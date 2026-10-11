@@ -1,11 +1,8 @@
 """MLflow: one run per evaluation, and the RAG config versioned in the model registry.
 
-A run records *what was tried* (params: models, decider, top-k, prompt version), *how it did*
-(metrics, overall and per language) and *exactly which data and code* (tags: git SHA, the md5 of
-articles.json, the Qdrant collection). That is the lineage chain git SHA -> DVC hash -> MLflow run.
-
-The winning config is registered as a tiny pyfunc model holding ``rag_config.json`` and promoted by
-moving the alias ``production`` ("load by alias, never by path").
+Runs carry the config as params, metrics overall and per language, and lineage tags (git SHA,
+articles.json md5, Qdrant collection). A chosen config is registered as a small pyfunc model
+holding ``rag_config.json`` and promoted by moving the ``production`` alias.
 """
 
 from __future__ import annotations
@@ -37,8 +34,13 @@ def flatten_metrics(summary: Mapping[str, Mapping[str, Any]]) -> dict[str, float
 
 def git_sha() -> str:
     try:
-        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
-                             text=True, check=True, timeout=10)  # fmt: skip
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
         return out.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return "unknown"
@@ -69,14 +71,13 @@ class RagConfig(PythonModel):
     def load_context(self, context: Any) -> None:
         self.config = json.loads(Path(context.artifacts["config"]).read_text(encoding="utf-8"))
 
-    # list[...] type hints: what MLflow's signature inference expects
+    # MLflow's signature inference expects list[...] hints
     def predict(self, context: Any, model_input: list[str], params: Any = None) -> list[str]:
         return [json.dumps(self.config)]
 
 
 def register_config(config: Mapping[str, Any], name: str, alias: str | None = None) -> str:
-    """Register ``config`` as a new version of ``name`` (inside the active run); optionally
-    point ``alias`` at it. Returns the version number."""
+    """Register ``config`` as a new version of ``name`` in the active run; returns the version."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / CONFIG_FILE
         path.write_text(json.dumps(dict(config), indent=2), encoding="utf-8", newline="\n")
@@ -121,7 +122,7 @@ def main(argv: list[str] | None = None) -> None:
     mode = MlflowClient().get_run(args.run_id).data.tags.get("eval_mode")
     if mode != "end_to_end":  # a retrieval-only run never measured an answer
         raise SystemExit(f"run {args.run_id} is {mode!r}; only end_to_end runs can be promoted")
-    if uri.startswith("http"):  # a tracking server: stream through it (see fetch_run_config)
+    if uri.startswith("http"):  # tracking server, see fetch_run_config
         from legalrag.config_registry import fetch_run_config
 
         config = fetch_run_config(uri, args.run_id)
@@ -130,8 +131,13 @@ def main(argv: list[str] | None = None) -> None:
         config = json.loads(Path(path).read_text(encoding="utf-8"))
     with mlflow.start_run(run_id=args.run_id):  # the version links back to the evaluated run
         version = register_config(config, settings.mlflow_config_model_name, args.alias)
-    get_logger(__name__).info("config_registered", model=settings.mlflow_config_model_name,
-                              version=version, alias=args.alias, run_id=args.run_id)  # fmt: skip
+    get_logger(__name__).info(
+        "config_registered",
+        model=settings.mlflow_config_model_name,
+        version=version,
+        alias=args.alias,
+        run_id=args.run_id,
+    )
 
 
 if __name__ == "__main__":

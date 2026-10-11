@@ -1,0 +1,28 @@
+# Both receivers post to the local alert-sink (monitoring/alert_sink.py), which logs every
+# delivery. For a real channel, swap in slack_configs / discord_configs with webhook_url_file.
+route:
+  receiver: tickets
+  group_by: [alertname]
+  group_wait: 30s # batch alerts that fire together
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="page"'] # user-facing: notify sooner, repeat more often
+      receiver: pages
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  - name: pages
+    webhook_configs:
+      - url: http://alert-sink:8080/page
+        send_resolved: true
+  - name: tickets
+    webhook_configs:
+      - url: http://alert-sink:8080/ticket
+        send_resolved: true
+
+inhibit_rules:
+  # while the API is down, cause alerts are noise; report the outage only
+  - source_matchers: ['alertname="ApiDown"']
+    target_matchers: ['kind="cause"']
