@@ -49,6 +49,41 @@ flowchart LR
 4. **Decision.** A small decision model, [Jev](https://docs.typesafe.ai), scores each retrieved article and decides whether the top articles can answer the question at all. It costs about $0.0001 per question and replaces an LLM call for ranking and refusing. A local cross-encoder (`bge-reranker-v2-m3`) can be used instead, with no external calls.
 5. **Generation.** Gemini, any OpenRouter model, or a self-hosted vLLM server writes the answer from the selected articles only. An answer that cites none of the articles it was shown is replaced by the refusal, and PII in an answer is redacted the same way as in questions.
 
+### Architecture
+
+```mermaid
+flowchart LR
+    subgraph data[Data and index]
+        PDF[Civil Code PDF] -->|dvc repro| JSON[articles.json]
+        JSON -->|bge-m3| QD[(Qdrant<br/>alias: articles)]
+        DH[(DagsHub<br/>DVC remote)] -.-> PDF
+        AF[Airflow<br/>reindex DAG] -.-> QD
+    end
+    subgraph serving[Serving]
+        UI[Streamlit UI] --> NG[nginx<br/>stable / canary]
+        NG --> API[FastAPI /ask<br/>SSE]
+        BE[BentoML /ask]
+        API --> QD
+        API --> RE[(Redis<br/>rate limit)]
+        API --> JV[Jev decider]
+        API --> LLM[Gemini / OpenRouter /<br/>vLLM Qwen2.5-1.5B AWQ]
+    end
+    subgraph exp[Experiments and CI]
+        GA[GitHub Actions<br/>lint, test, index, RAGAS gate] --> HUB[(Docker Hub)]
+        EV[Golden set + RAGAS] --> ML[(MLflow<br/>runs + registry)]
+        ML -->|config@production| API
+    end
+    subgraph obs[Monitoring]
+        API -->|metrics| PR[Prometheus] --> GR[Grafana]
+        PR --> AM[Alertmanager]
+        API -->|traces, prompts| LF[Langfuse]
+        API -->|logs| LK[Loki] --> GR
+        API -->|events| DJ[Drift job] -->|drift-detected| CT[CT workflow<br/>+ approval]
+    end
+```
+
+Everything runs locally with Docker Compose profiles. The UI, tracing, experiment tracking and dashboards also run on free hosted services (Streamlit Community Cloud, Langfuse Cloud, DagsHub, Grafana Cloud).
+
 ## Results
 
 Measured on a hand-written golden set of 56 questions: 28 Arabic/English pairs, including off-topic and prompt-injection questions. The set is small and was also used to choose the gate threshold, so the numbers are indicative; a held-out set of 5 new pairs gave the same picture.
@@ -78,30 +113,38 @@ Serving on an RTX 3050 laptop GPU (4 GB), Qwen2.5-1.5B-Instruct-AWQ on vLLM hand
 | UI | Streamlit |
 | Quality | pytest, ruff, pre-commit, GitHub Actions, Locust |
 
-## Getting started
+## Quick start
 
-### Prerequisites
-
-- Docker with Compose v2
-- [uv](https://docs.astral.sh/uv/), which installs Python 3.12 and the dependencies
-- An API key for generation (Gemini or OpenRouter) and an OpenRouter key for the Jev decider
-- The Civil Code PDF at `data/raw/egyptian_civil_code.pdf`, or `uv run dvc pull` if you have access to the DVC remote
-- Optional: an NVIDIA GPU with at least 4 GB of memory for the vLLM profile
-
-### Run
+You need Docker with Compose v2 and a free Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey).
 
 ```bash
-cp .env.example .env          # fill in the API keys
-uv sync
-
-docker compose --env-file .env -f docker/compose.yaml --profile core up -d   # Qdrant, Redis, API
-uv run dvc repro                                                             # parse, validate, embed, index
-curl -s http://127.0.0.1:8000/health
+git clone https://github.com/ahmedsh711/legal-rag && cd legal-rag
+cp .env.example .env     # then paste your key after GEMINI_API_KEY=
+docker compose --env-file .env -f docker/compose.yaml --profile core up -d
 ```
 
-The first `dvc repro` embeds the corpus on CPU, which takes 10 to 30 minutes on a laptop; later runs reuse the existing index in seconds. The API container downloads bge-m3 on its first start and reports healthy once the index is reachable. Interactive API docs are served at http://127.0.0.1:8000/docs.
+On the first start Compose pulls the API image from Docker Hub ([`ahmedshobaki/legal-rag-api`](https://hub.docker.com/r/ahmedshobaki/legal-rag-api)). A one-shot `index-init` container restores the prebuilt index into Qdrant from the [v1.0.0 release](https://github.com/ahmedsh711/legal-rag/releases/tag/v1.0.0): a 30 MB snapshot instead of a 30-minute embedding run. The API then downloads bge-m3 (2.3 GB) to embed questions. When `curl -s http://127.0.0.1:8000/health` reports `healthy`, ask a question:
+
+```bash
+curl -s http://127.0.0.1:8000/ask -H 'content-type: application/json' \
+  -d '{"question": "What is the prescription period for obligations?"}'
+curl -sN 'http://127.0.0.1:8000/ask?stream=true' -H 'content-type: application/json' \
+  -d '{"question": "Who is liable for damage caused by an animal?"}'       # tokens as they are generated
+```
+
+Interactive API docs are at http://127.0.0.1:8000/docs. The quick start uses dense retrieval with no reranker. The production setup adds the Jev decider (`DECIDER_BACKEND=jev`), which needs an OpenRouter key.
 
 On Windows, use `127.0.0.1` instead of `localhost`, and send Arabic questions from a UTF-8 file (`curl --data-binary @question.json`) or from Python, because Git Bash passes inline arguments through the ANSI code page.
+
+### Rebuild from the source PDF
+
+```bash
+uv sync                  # Python 3.12 and the locked dependencies
+uv run dvc pull          # the PDF and articles.json from the DagsHub remote
+uv run dvc repro         # parse -> validate -> embed -> index; unchanged stages are skipped
+```
+
+DagsHub does not allow anonymous downloads, so `dvc pull` needs a free DagsHub account (`uv run dvc remote modify --local dagshub access_key_id <token>`, same for `secret_access_key`). Without one, put the course PDF at `data/raw/egyptian_civil_code.pdf` and run `dvc repro`. Embedding the corpus takes 10 to 30 minutes on a laptop CPU. Building the image yourself instead of pulling it: `docker compose ... build api`. An NVIDIA GPU with at least 4 GB of memory is needed only for the vLLM profile.
 
 ### Chat UI
 
@@ -182,7 +225,8 @@ uv run --group monitoring python -m legalrag.monitoring.drift_job reference   # 
 - **Index rebuilds (Airflow).** The `reindex` DAG checks `data/incoming/` every hour. When a new Civil Code PDF lands there, it parses and validates it, builds the index behind a candidate alias, and evaluates candidate and production on the golden set. Production moves to the candidate only if no language got worse. A test run with a deliberately degraded index (16-token embeddings, MRR 0.23 vs 0.96) was rejected and production stayed untouched. Every task runs in the application image.
 - **Drift checks (Airflow).** The `monitoring` DAG runs the drift job daily. When drift passes the storm guard, it sends a `drift-detected` event to GitHub.
 - **Continuous training (GitHub Actions).** `ct.yml` runs the quality gate on drift events, weekly or by hand, then waits for an approval on the `production` environment before a rebuild goes ahead.
-- **Canary releases.** nginx splits traffic between the stable and the canary API (`uv run python -m legalrag.release set 5`). A watcher compares the canary's error rate and p95 latency in Prometheus with the SLO and rolls back automatically; a rollback takes about 2 seconds.
+- **Canary releases.** nginx splits traffic between the stable and the canary API (`serving/nginx`, a `split_clients` block, so changing the share is a reload and no request is dropped). Rollout stages: 5 % → 25 % → 50 % → 100 %, each held for at least 10 minutes while the watcher compares the canary's error rate and p95 latency in Prometheus with the SLO. Any breach rolls back to 0 % automatically; a rollback takes about 2 seconds.
+- **BentoML.** `serving/bento` wraps the same pipeline as an async BentoML service with the same request validation (`uv run --group bento bentoml serve serving/bento/service.py:LegalRag --port 3005`). The FastAPI app stays the public entry point because it carries the rate limits, metrics and prediction events.
 - **Infrastructure as code.** `infra/terraform` provisions the tracking services (Postgres, MinIO) with the Docker provider.
 - **Kubernetes.** `deploy/k8s` has a Deployment with startup, readiness and liveness probes, resource limits and zero-downtime rolling updates (`kubectl apply -k deploy/k8s`).
 - **Operations.** [`docs/runbook.md`](docs/runbook.md) has one section per alert and the rollback command for each layer.
@@ -241,6 +285,20 @@ docs/runbook.md    what to do for each alert
 docs/future-work.md  known gaps and next steps
 dvc.yaml           data pipeline: parse -> validate -> index
 ```
+
+## Changelog
+
+Each phase was built on its own branch, merged through a pull request with CI checks, and tagged. The course modules are those of the ITI × MLOps MENA handbook.
+
+| Version | Module | What was added |
+|---|---|---|
+| v0.1.0 | M1 · code, API, Docker | PDF parser and validation as a DVC pipeline, bge-m3 index in Qdrant, FastAPI `/ask` with SSE streaming, Docker image on Docker Hub |
+| v0.2.0 | M2 · tracking and versioning | Golden set, RAGAS and a calibrated LLM judge, MLflow runs and model registry, Jev decider ablation |
+| v0.3.0 | M3 · serving | Guardrails, rate limiting, CI quality gate, vLLM with an AWQ model, Locust load test, query-embedding batching (+68 % throughput) |
+| v0.4.0 | M5 · monitoring | Prometheus metrics and alert rules, Grafana, Loki, Langfuse traces and prompt labels, drift detection |
+| v0.5.0 | automation | Terraform, Airflow DAGs, continuous training with an approval gate, canary releases, Kubernetes manifests |
+| v1.0.0 | M4 · wrap-up | Optimisation summary, runbook, future work |
+| unreleased | all | Streamlit UI, hosted options (Streamlit Cloud, Langfuse Cloud, DagsHub, Grafana Cloud), index restore from release snapshots, BentoML service, CI index rebuild, 20-question gate, PII redaction of answers, LLM cost metric, query-embedding drift with ADWIN/HDDM_A and Evidently |
 
 ## Limitations
 
