@@ -45,11 +45,16 @@ def for_cloud(dashboard: dict[str, Any], uids: dict[str, str]) -> dict[str, Any]
     return out
 
 
+STACK_SUFFIX = {"prometheus": "-prom", "loki": "-logs"}
+
+
 def stack_uids(client: httpx.Client) -> dict[str, str]:
-    """The stack's own Prometheus and Loki datasources (Grafana Cloud provisions one of each)."""
+    """The stack's own metrics and logs datasources (named ``<stack>-prom`` and ``<stack>-logs``;
+    Grafana Cloud also provisions internal ones such as usage insights and alert state history)."""
     found: dict[str, str] = {}
     for ds in client.get("/api/datasources").raise_for_status().json():
-        if ds["type"] in ("prometheus", "loki") and "usage" not in ds["name"]:
+        suffix = STACK_SUFFIX.get(ds["type"])
+        if suffix and ds["name"].endswith(suffix):
             found.setdefault(ds["type"], ds["uid"])
     return found
 
