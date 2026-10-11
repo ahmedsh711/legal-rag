@@ -28,11 +28,14 @@ class FakeQdrant:
         return SimpleNamespace(count=self.points)
 
 
-def make_client(tmp_path, pipeline, qdrant=None, limiter=None, api_keys="") -> TestClient:
+def make_client(
+    tmp_path, pipeline, qdrant=None, limiter=None, api_keys="", require_api_key=False
+) -> TestClient:
     settings = Settings(
         _env_file=None,
         feedback_path=str(tmp_path / "feedback.jsonl"),
         api_keys=api_keys,
+        require_api_key=require_api_key,
         events_dir=str(tmp_path / "events"),
     )
     comp = Components(
@@ -381,3 +384,17 @@ def test_a_broken_tracer_never_breaks_an_answer(tmp_path, qdrant, embedder):
     events = [json.loads(ln[5:]) for ln in r.text.splitlines() if ln.startswith("data:")]
     assert events[-1]["type"] == "done" and not any(e["type"] == "error" for e in events)
     assert "_monitoring" not in events[-1] and "context_articles" not in events[-1]
+
+
+def test_a_public_deployment_answers_only_issued_keys(tmp_path, qdrant, embedder):
+    retriever = Retriever(qdrant, alias="articles", embedder=embedder, top_n=3)
+    pipeline = RagPipeline(
+        retriever, Generator(FakeLLM("Fifteen years [Art. 374]."), "m", 100, 0.0)
+    )
+    ask = {"question": "What is the prescription period of fifteen years?"}
+    key = "ui-key"  # pragma: allowlist secret
+    with make_client(tmp_path, pipeline, api_keys=key, require_api_key=True) as c:
+        assert c.post("/ask", json=ask).status_code == 401
+        assert c.post("/ask", json=ask, headers={"X-API-Key": "guess"}).status_code == 401
+        assert c.post("/ask", json=ask, headers={"X-API-Key": key}).status_code == 200
+        assert c.get("/health").status_code == 200  # probes stay open

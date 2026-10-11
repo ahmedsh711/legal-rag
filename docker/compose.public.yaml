@@ -1,0 +1,22 @@
+# Expose the API to the Streamlit Community Cloud UI through an ngrok tunnel.
+#   docker compose --env-file .env -f docker/compose.yaml -f docker/compose.public.yaml \
+#     --profile core --profile public up -d
+# Needs NGROK_AUTHTOKEN, NGROK_DOMAIN (the free static domain of your ngrok account) and
+# UI_API_KEY in .env. The API then answers only requests that carry UI_API_KEY.
+
+services:
+  api:
+    environment:
+      REQUIRE_API_KEY: "true"  # pragma: allowlist secret
+      API_KEYS: ${UI_API_KEY:?set UI_API_KEY in .env}
+
+  tunnel:
+    image: ngrok/ngrok:3.39.11-alpine
+    profiles: [public]
+    command: ["http", "--url=${NGROK_DOMAIN:?set NGROK_DOMAIN in .env}", "api:8000"]
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?set NGROK_AUTHTOKEN in .env}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

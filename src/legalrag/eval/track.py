@@ -94,6 +94,16 @@ def register_config(config: Mapping[str, Any], name: str, alias: str | None = No
     return version
 
 
+def copy_config(config: Mapping[str, Any], name: str, alias: str, source: str) -> str:
+    """Register a config taken from another tracking server here, under the same alias."""
+    mlflow.set_experiment("legal-rag-config")
+    with mlflow.start_run(run_name=f"{name}@{alias} copied"):
+        mlflow.set_tag("copied_from", source)
+        mlflow.log_params({k: v for k, v in config.items() if not isinstance(v, dict | list)})
+        mlflow.log_dict(dict(config), CONFIG_FILE)  # where the API reads it
+        return register_config(config, name, alias)
+
+
 def load_config(name: str, alias: str = "production") -> dict[str, Any]:
     """The config behind ``models:/name@alias`` without unpickling anything."""
     path = mlflow.artifacts.download_artifacts(f"models:/{name}@{alias}/artifacts/{CONFIG_FILE}")
@@ -110,6 +120,9 @@ def main(argv: list[str] | None = None) -> None:
     reg = sub.add_parser("register", help="register a run's rag_config.json")
     reg.add_argument("--run-id", required=True)
     reg.add_argument("--alias", default=None, help="e.g. production (omit to only register)")
+    cp = sub.add_parser("copy", help="copy name@alias from another server, e.g. local -> DagsHub")
+    cp.add_argument("--from", dest="source", required=True, help="source tracking server URL")
+    cp.add_argument("--alias", default="production")
     args = parser.parse_args(argv)
 
     from legalrag.logging_conf import configure_logging, get_logger
@@ -119,6 +132,14 @@ def main(argv: list[str] | None = None) -> None:
     configure_logging(settings.log_level)
     uri = settings.mlflow_tracking_uri
     mlflow.set_tracking_uri(uri)
+    name = settings.mlflow_config_model_name
+    if args.command == "copy":
+        from legalrag.config_registry import fetch_config
+
+        config, version = fetch_config(args.source, name, args.alias)
+        new = copy_config(config, name, args.alias, source=f"{args.source} v{version}")
+        get_logger(__name__).info("config_copied", model=name, version=new, alias=args.alias)
+        return
     mode = MlflowClient().get_run(args.run_id).data.tags.get("eval_mode")
     if mode != "end_to_end":  # a retrieval-only run never measured an answer
         raise SystemExit(f"run {args.run_id} is {mode!r}; only end_to_end runs can be promoted")

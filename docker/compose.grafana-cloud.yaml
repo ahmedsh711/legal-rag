@@ -1,0 +1,18 @@
+# Also ship metrics and logs to Grafana Cloud (the local stack keeps working).
+#   docker compose --env-file .env -f docker/compose.yaml -f docker/compose.grafana-cloud.yaml \
+#     --profile core --profile monitoring up -d
+# Needs GRAFANA_CLOUD_PROM_URL, GRAFANA_CLOUD_PROM_USER, GRAFANA_CLOUD_LOKI_URL,
+# GRAFANA_CLOUD_LOKI_USER and GRAFANA_CLOUD_TOKEN in .env (docs/cloud.md).
+
+services:
+  alloy:
+    # a directory: Alloy loads config.alloy and cloud.alloy together
+    command: [run, /etc/alloy/, --storage.path=/var/lib/alloy/data]
+    volumes:
+      - ../monitoring/alloy/cloud.alloy:/etc/alloy/cloud.alloy:ro
+    environment:
+      GRAFANA_CLOUD_PROM_URL: ${GRAFANA_CLOUD_PROM_URL:?set GRAFANA_CLOUD_PROM_URL in .env}
+      GRAFANA_CLOUD_PROM_USER: ${GRAFANA_CLOUD_PROM_USER:?set GRAFANA_CLOUD_PROM_USER in .env}
+      GRAFANA_CLOUD_LOKI_URL: ${GRAFANA_CLOUD_LOKI_URL:?set GRAFANA_CLOUD_LOKI_URL in .env}
+      GRAFANA_CLOUD_LOKI_USER: ${GRAFANA_CLOUD_LOKI_USER:?set GRAFANA_CLOUD_LOKI_USER in .env}
+      GRAFANA_CLOUD_TOKEN: ${GRAFANA_CLOUD_TOKEN:?set GRAFANA_CLOUD_TOKEN in .env}

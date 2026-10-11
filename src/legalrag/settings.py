@@ -105,6 +105,7 @@ class Settings(BaseSettings):
     # issued API keys, comma-separated. Only these get their own bucket, others are limited per IP.
     # Not authentication: /ask stays open, the key only identifies the client.
     api_keys: SecretStr = SecretStr("")
+    require_api_key: bool = False  # set when the API is reachable from the internet
 
     def _endpoint(self, backend: str) -> tuple[str, str]:
         """(base_url, api_key) of a backend. vLLM ignores the key but the client needs one."""

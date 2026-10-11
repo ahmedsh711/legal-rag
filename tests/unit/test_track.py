@@ -1,10 +1,13 @@
 """MLflow logging and config registry against a throwaway local tracking store."""
 
+from pathlib import Path
+
 import pytest
 
 mlflow = pytest.importorskip("mlflow")
 
 from legalrag.eval.track import (  # noqa: E402
+    copy_config,
     flatten_metrics,
     load_config,
     log_eval_run,
@@ -85,3 +88,15 @@ def test_config_is_loaded_by_alias(tracking):
     mlflow.MlflowClient().set_registered_model_alias("rag-config-test", "production", "2")
     assert load_config("rag-config-test", "production") == {"decider": "jev"}  # promotion
     assert v1 == "1"
+
+
+def test_a_config_copied_to_another_server_is_served_by_the_same_alias(tracking):
+    config = {"decider_backend": "jev", "gate_threshold": 0.5, "llm_model": "m"}
+    version = copy_config(config, "rag-config-test", "production", source="http://old:5000")
+    assert version == "1" and load_config("rag-config-test", "production") == config
+    run_id = mlflow.MlflowClient().get_model_version("rag-config-test", version).run_id
+    run = mlflow.get_run(run_id)
+    assert run.data.tags["copied_from"] == "http://old:5000"
+    # the API reads rag_config.json at the root of the version's run
+    path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="rag_config.json")
+    assert Path(path).read_text(encoding="utf-8").count("gate_threshold") == 1

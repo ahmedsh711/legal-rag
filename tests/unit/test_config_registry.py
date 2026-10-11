@@ -97,3 +97,21 @@ def test_matching_decider_model_is_accepted():
     ok = {**CONFIG, "decider_model": "jev-1.13"}
     s, _ = apply_registry_config(settings(jev_model="jev-1.13"), transport=mlflow_server(config=ok))
     assert s.decider_backend == "jev"
+
+
+def test_hosted_mlflow_gets_the_standard_mlflow_credentials(monkeypatch):
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("authorization"))
+        return mlflow_server().handle_request(request)
+
+    monkeypatch.setenv("MLFLOW_TRACKING_USERNAME", "ahmed")
+    monkeypatch.setenv("MLFLOW_TRACKING_PASSWORD", "token")
+    fetch_config(
+        "https://mlflow.example",
+        "legal-rag-config",
+        "production",
+        transport=httpx.MockTransport(handler),
+    )
+    assert seen and all(h and h.startswith("Basic ") for h in seen)
