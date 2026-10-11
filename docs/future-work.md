@@ -11,7 +11,7 @@ The golden set has 28 Arabic/English question pairs written by the author, and t
 - Done when hit@1, citation recall and refusal rates are reported with confidence intervals on the held-out split.
 
 ### An independent judge with negative human labels
-Faithfulness is scored by a judge from the same model family as the generator, and all 20 human-labelled answers were "supported", so calibration relies on synthetic negatives.
+Faithfulness is scored by a judge from the same model family as the generator, and all 20 human-labelled answers were "supported", so calibration relies on synthetic negatives. Calibration (20 human labels + 20 synthetic negatives): the rubric judge agrees with humans on 95 % (kappa 0.90), but RAGAS faithfulness at a 0.8 threshold agrees on only 75 % (kappa 0.5).
 - Use a judge from another model family.
 - Label at least 20 real unsupported answers (the small vLLM model produces plenty).
 - Run the RAGAS metrics that were skipped for quota reasons: answer relevancy and context precision.
