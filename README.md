@@ -45,7 +45,7 @@ flowchart LR
 2. **Indexing.** Every article is embedded in both languages with [BAAI/bge-m3](https://huggingface.co/BAAI/bge-m3) (dense and sparse vectors) and stored in Qdrant: 2,241 points behind an alias, so a rebuilt index can be swapped in without downtime.
 3. **Retrieval.** Articles the question names explicitly ("Article 60") are fetched directly, repealed ones included. Everything else goes through dense search over both languages, limited to articles in force.
 4. **Decision.** A small decision model, [Jev](https://docs.typesafe.ai), scores each retrieved article and decides whether the top articles can answer the question at all. It costs about $0.0001 per question and replaces an LLM call for ranking and refusing. A local cross-encoder (`bge-reranker-v2-m3`) can be used instead, with no external calls.
-5. **Generation.** Gemini, any OpenRouter model, or a self-hosted vLLM server writes the answer from the selected articles only. An answer that cites none of the articles it was shown is replaced by the refusal.
+5. **Generation.** Gemini, any OpenRouter model, or a self-hosted vLLM server writes the answer from the selected articles only. An answer that cites none of the articles it was shown is replaced by the refusal, and PII in an answer is redacted the same way as in questions.
 
 ## Results
 

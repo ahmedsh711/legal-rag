@@ -6,7 +6,8 @@ import pytest
 from prometheus_client import CollectorRegistry
 
 from legalrag.decider.base import Decision
-from legalrag.observability.metrics import RagMetrics, render
+from legalrag.guardrails import PII_PATTERNS
+from legalrag.observability.metrics import GUARDS, RagMetrics, render
 from legalrag.pipeline import Answer
 
 
@@ -66,6 +67,10 @@ def test_every_fired_guard_is_counted_and_unknown_names_cannot_add_series(metric
     assert value(reg, "rag_guardrail_total", guard="gate:unanswerable") == 1
     assert value(reg, "rag_guardrail_total", guard="other") == 1  # bounded label set
     assert value(reg, "rag_answers_total", outcome="refused", prompt_version="v3") == 1
+
+
+def test_pii_found_in_answers_has_its_own_guard_series():
+    assert {f"pii_out:{kind}" for kind in PII_PATTERNS} <= set(GUARDS)
 
 
 def test_requests_are_labelled_by_route_not_by_raw_path(metrics):

@@ -41,6 +41,9 @@ GUARDS = (
     "injection:role_play",
     "injection:delimiter",
     "gate:unanswerable",
+    "pii_out:national_id",
+    "pii_out:phone",
+    "pii_out:email",
     "citation:invalid",
     "citation:uncited",
 )

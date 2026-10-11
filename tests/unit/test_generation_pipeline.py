@@ -177,6 +177,22 @@ async def test_stream_tells_the_client_to_replace_an_uncited_answer():
     assert done["guardrails"] == ["citation:uncited"]
 
 
+async def test_pii_in_an_answer_is_redacted_and_named():
+    reply = "Call the clerk on 01012345678 [Art. 147]."
+    pipe = RagPipeline(StubRetriever([chunk(147)]), Generator(FakeLLM(reply), "m", 100, 0.0))
+    ans = await pipe.ask("Is a contract binding?")
+    assert ans.answer == "Call the clerk on [PHONE] [Art. 147]."
+    assert ans.guardrails == ["pii_out:phone"] and not ans.refused
+
+
+async def test_stream_tells_the_client_to_replace_an_answer_with_pii():
+    reply = "Write to clerk@court.eg [Art. 147]."
+    pipe = RagPipeline(StubRetriever([chunk(147)]), Generator(FakeLLM(reply), "m", 100, 0.0))
+    done = [e async for e in pipe.ask_stream("Is a contract binding?")][-1]
+    assert done["replace_with"].strip() == "Write to [EMAIL] [Art. 147]."
+    assert done["guardrails"] == ["pii_out:email"] and not done["refused"]
+
+
 async def test_pipeline_marks_model_refusal():
     ans = await RagPipeline(
         StubRetriever([chunk(147)]), Generator(FakeLLM(REFUSAL_EN), "m", 100, 0.0)
@@ -200,6 +216,7 @@ async def test_pipeline_stream_events_end_with_done():
     assert events[0]["type"] == "token"
     done = events[-1]
     assert done["type"] == "done" and done["sources"][0]["article_number"] == 147
+    assert "replace_with" not in done  # nothing to correct in what was streamed
 
 
 async def test_pipeline_with_real_retriever(qdrant, embedder):
