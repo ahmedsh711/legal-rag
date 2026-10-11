@@ -254,6 +254,7 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/legal-rag.json
       GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:?set GRAFANA_DB_PASSWORD in .env}  # read-only role
+      LANGFUSE_UI_URL: ${LANGFUSE_UI_URL:-http://127.0.0.1:3000/project/legal-rag}  # trace links from logs
     volumes:
       - ../monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro

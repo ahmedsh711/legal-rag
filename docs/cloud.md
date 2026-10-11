@@ -35,14 +35,14 @@ To run the UI locally instead: `uv run --group ui streamlit run ui/app.py` (it u
 ## Tracing and prompts on Langfuse Cloud
 
 1. Sign up at [cloud.langfuse.com](https://cloud.langfuse.com), create a project and an API key pair.
-2. In `.env` set `LANGFUSE_HOST=https://cloud.langfuse.com` (or the US region URL shown in the project), `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`. Restart the API.
+2. In `.env` set `LANGFUSE_HOST=https://cloud.langfuse.com` (Langfuse shows it as `LANGFUSE_BASE_URL`; use the US URL if your project is there), `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`. Restart the API.
 3. Recreate the system prompt there and promote it through the quality gate:
    ```bash
    uv run python -m legalrag.observability.prompts push
    uv run --group eval python -m legalrag.eval.smoke          # writes the verdict for this text
    uv run python -m legalrag.observability.prompts promote --version 1 --verdict reports/eval/smoke/verdict.json
    ```
-4. The local `llm-observability` profile is no longer needed. In `monitoring/grafana/provisioning/datasources/datasources.yml`, point the log-to-trace link at your cloud project URL.
+4. Set `LANGFUSE_UI_URL=https://cloud.langfuse.com/project/<project id>` so Grafana's log-to-trace links open the cloud project. The local `llm-observability` profile is no longer needed.
 
 ## Data and experiments on DagsHub
 
