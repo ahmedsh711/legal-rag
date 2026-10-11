@@ -1,0 +1,15 @@
+# Build from the repository root: uv run --group bento bentoml build -f serving/bento/bentofile.yaml
+service: "serving/bento/service.py:LegalRag"
+name: legal-rag
+description: "Egyptian Civil Code Q&A with article citations"
+include:
+  - "serving/bento/service.py"
+  - "src/legalrag/**/*.py"
+python:
+  is_src_layout: true  # src/legalrag lands at the bento root, importable as legalrag
+  requirements_txt: "serving/bento/requirements.txt"
+  lock_packages: false  # already pinned by uv.lock
+  extra_index_url:
+    - "https://download.pytorch.org/whl/cpu"  # torch is pinned to the CPU-only build
+docker:
+  python_version: "3.12"
