@@ -76,6 +76,10 @@ def known_key_hashes(api_keys: str) -> frozenset[str]:
     return frozenset(_hash(k.strip()) for k in api_keys.split(",") if k.strip())
 
 
+def is_issued(api_key: str | None, known: frozenset[str]) -> bool:
+    return bool(api_key) and _hash(api_key) in known
+
+
 def client_key(api_key: str | None, ip: str | None, known: frozenset[str]) -> str:
     """Bucket key: the hashed API key if it was issued, otherwise the client IP.
 

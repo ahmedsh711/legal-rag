@@ -1,0 +1,40 @@
+// Grafana Cloud: loaded next to config.alloy by docker/compose.grafana-cloud.yaml.
+// Metrics are federated from the local Prometheus (only the series the dashboard and alerts
+// use, to stay inside the free tier); container logs go to Grafana Cloud Loki as well.
+
+prometheus.scrape "federate" {
+  targets         = [{"__address__" = "prometheus:9090"}]
+  metrics_path    = "/federate"
+  params          = {"match[]" = ["{__name__=~\"rag_.*|rag:.*|up|probe_success|vllm:.*|container_cpu_usage_seconds_total|container_memory_working_set_bytes|node_textfile_mtime_seconds\"}"]}
+  honor_labels    = true
+  scrape_interval = "30s"
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GRAFANA_CLOUD_PROM_URL")
+
+    basic_auth {
+      username = sys.env("GRAFANA_CLOUD_PROM_USER")
+      password = sys.env("GRAFANA_CLOUD_TOKEN")
+    }
+  }
+}
+
+loki.source.docker "cloud" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.project.output
+  forward_to = [loki.write.grafana_cloud.receiver]
+}
+
+loki.write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GRAFANA_CLOUD_LOKI_URL")
+
+    basic_auth {
+      username = sys.env("GRAFANA_CLOUD_LOKI_USER")
+      password = sys.env("GRAFANA_CLOUD_TOKEN")
+    }
+  }
+}

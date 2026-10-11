@@ -73,6 +73,7 @@ Serving on an RTX 3050 laptop GPU (4 GB), Qwen2.5-1.5B-Instruct-AWQ on vLLM hand
 | Data and experiments | DVC, MLflow tracking and model registry, RAGAS |
 | Platform | Docker Compose, nginx, Redis, Postgres, MinIO, Airflow, Terraform, Kubernetes |
 | Observability | Prometheus, Alertmanager, Grafana, Loki, Grafana Alloy, Langfuse |
+| UI | Streamlit |
 | Quality | pytest, ruff, pre-commit, GitHub Actions, Locust |
 
 ## Getting started
@@ -99,6 +100,14 @@ curl -s http://127.0.0.1:8000/health
 The first `dvc repro` embeds the corpus on CPU, which takes 10 to 30 minutes on a laptop; later runs reuse the existing index in seconds. The API container downloads bge-m3 on its first start and reports healthy once the index is reachable. Interactive API docs are served at http://127.0.0.1:8000/docs.
 
 On Windows, use `127.0.0.1` instead of `localhost`, and send Arabic questions from a UTF-8 file (`curl --data-binary @question.json`) or from Python, because Git Bash passes inline arguments through the ANSI code page.
+
+### Chat UI
+
+```bash
+uv run --group ui streamlit run ui/app.py      # http://localhost:8501, talks to API_URL (default http://127.0.0.1:8000)
+```
+
+A Streamlit chat that streams answers, renders Arabic right to left, lists the cited articles and sends 👍/👎 feedback to `/feedback`. It can also be deployed on Streamlit Community Cloud; see [docs/cloud.md](docs/cloud.md).
 
 ### API
 
@@ -174,6 +183,7 @@ uv run --group monitoring python -m legalrag.monitoring.drift_job run --hours 24
 - **Infrastructure as code.** `infra/terraform` provisions the tracking services (Postgres, MinIO) with the Docker provider.
 - **Kubernetes.** `deploy/k8s` has a Deployment with startup, readiness and liveness probes, resource limits and zero-downtime rolling updates (`kubectl apply -k deploy/k8s`).
 - **Operations.** [`docs/runbook.md`](docs/runbook.md) has one section per alert and the rollback command for each layer.
+- **Cloud.** The UI, tracing, data and experiments, and monitoring can each move to a free hosted service (Streamlit Community Cloud, Langfuse Cloud, DagsHub, Grafana Cloud); see [`docs/cloud.md`](docs/cloud.md).
 
 ```bash
 docker compose --env-file .env -f docker/compose.yaml --profile core --profile airflow up -d
@@ -214,6 +224,7 @@ src/legalrag/
   monitoring/      prediction events, drift statistics, drift job, online evaluation
   pipeline.py      guard -> retrieve -> decide -> generate
   release.py       canary share, rollback and watcher
+ui/               Streamlit chat UI (standalone, its own requirements.txt)
 tests/             unit and integration tests
 data/golden/       evaluation and guardrail test sets
 docker/            Dockerfile and Compose files

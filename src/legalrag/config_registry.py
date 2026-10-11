@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
@@ -26,6 +27,13 @@ class ConfigMismatchError(RuntimeError):
     """The registered config was evaluated with something this code does not serve."""
 
 
+def _auth() -> tuple[str, str] | None:
+    """Basic auth for a hosted server (DagsHub), from MLflow's own environment variables."""
+    user = os.environ.get("MLFLOW_TRACKING_USERNAME")
+    password = os.environ.get("MLFLOW_TRACKING_PASSWORD")
+    return (user, password) if user and password else None
+
+
 def fetch_run_config(
     tracking_uri: str, run_id: str, transport: httpx.BaseTransport | None = None
 ) -> dict[str, Any]:
@@ -33,7 +41,9 @@ def fetch_run_config(
 
     ``mlflow.artifacts.download_artifacts`` returns a presigned MinIO URL that only resolves
     inside Docker."""
-    with httpx.Client(base_url=tracking_uri, timeout=10, transport=transport) as client:
+    with httpx.Client(
+        base_url=tracking_uri, timeout=10, transport=transport, auth=_auth()
+    ) as client:
         art = client.get("/get-artifact", params={"path": "rag_config.json", "run_uuid": run_id})
         art.raise_for_status()
         return art.json()
@@ -43,7 +53,9 @@ def fetch_config(
     tracking_uri: str, name: str, alias: str, transport: httpx.BaseTransport | None = None
 ) -> tuple[dict[str, Any], str]:
     """Return (config, version) behind ``models:/name@alias``."""
-    with httpx.Client(base_url=tracking_uri, timeout=5, transport=transport) as client:
+    with httpx.Client(
+        base_url=tracking_uri, timeout=5, transport=transport, auth=_auth()
+    ) as client:
         r = client.get(
             "/api/2.0/mlflow/registered-models/alias", params={"name": name, "alias": alias}
         )

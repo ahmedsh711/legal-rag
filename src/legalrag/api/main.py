@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import APIConnectionError, APIStatusError
@@ -47,7 +47,13 @@ from legalrag.observability.metrics import RagMetrics, render
 from legalrag.observability.prompts import CodePrompt, LangfusePrompt
 from legalrag.observability.tracing import LangfuseTracer, NoopTracer, build_tracer
 from legalrag.pipeline import RagPipeline
-from legalrag.ratelimit import TokenBucket, build_limiter, client_key, known_key_hashes
+from legalrag.ratelimit import (
+    TokenBucket,
+    build_limiter,
+    client_key,
+    is_issued,
+    known_key_hashes,
+)
 from legalrag.retrieval import Retriever
 from legalrag.settings import Settings, get_settings
 
@@ -214,10 +220,15 @@ async def rate_limit(request: Request, response: Response) -> None:
     """Take one token for this client or raise 429. Runs before body validation, so invalid
     requests are limited too."""
     comp: Components = request.app.state.components
+    api_key = request.headers.get("X-API-Key")
+    if request.app.state.settings.require_api_key and not is_issued(
+        api_key, request.app.state.known_keys
+    ):
+        raise HTTPException(401, "A valid X-API-Key header is required.")
     if comp.limiter is None:
         return
     ip = request.client.host if request.client else None
-    key = client_key(request.headers.get("X-API-Key"), ip, request.app.state.known_keys)
+    key = client_key(api_key, ip, request.app.state.known_keys)
     verdict = await comp.limiter.take(key)
     outcome = "limited" if not verdict.allowed else "degraded" if verdict.degraded else "allowed"
     request.app.state.metrics.ratelimit.labels(outcome).inc()

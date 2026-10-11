@@ -28,9 +28,9 @@ jobs:
       - name: Install (locked)
         run: uv sync --locked
       - name: Ruff lint
-        run: uv run ruff check src tests loadtest airflow monitoring scripts
+        run: uv run ruff check src tests loadtest airflow monitoring scripts ui
       - name: Ruff format check
-        run: uv run ruff format --check src tests loadtest airflow monitoring scripts
+        run: uv run ruff format --check src tests loadtest airflow monitoring scripts ui
 
   monitoring-config:
     runs-on: ubuntu-latest
