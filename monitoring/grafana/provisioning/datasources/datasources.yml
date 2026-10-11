@@ -28,5 +28,5 @@ datasources:
       derivedFields:
         - name: Langfuse trace
           matcherRegex: '"trace_id": "([0-9a-f]+)"'
-          url: "http://127.0.0.1:3000/project/legal-rag/traces/$${__value.raw}"
+          url: "${LANGFUSE_UI_URL}/traces/$${__value.raw}"  # project URL, local or cloud
           urlDisplayLabel: Open trace in Langfuse
