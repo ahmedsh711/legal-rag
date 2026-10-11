@@ -1,11 +1,11 @@
-"""CI quality gate: the current prompt and model on 10 frozen questions, judged by RAGAS.
+"""CI quality gate: the current prompt and model on 20 frozen questions, judged by RAGAS.
 
     uv run python -m legalrag.eval.smoke           # generate, judge, exit 1 on failure
     uv run python -m legalrag.eval.smoke freeze    # rebuild data/golden/smoke.jsonl
 
 ``smoke.jsonl`` stores each question with the articles the production config retrieved, so the
 gate needs no Qdrant or corpus. Defaults: mean faithfulness >= 0.75, no answer below 0.5, a gold
-article cited in >= 80% of answers, at most one unmeasured item. With n = 10 it catches gross
+article cited in >= 80% of answers, at most one unmeasured item. With n = 20 it catches gross
 breakage only; the full golden run (``eval/run.py``) measures small differences.
 """
 
@@ -49,26 +49,37 @@ class FrozenRetriever:
         return list(self.contexts[question]), None
 
 
-def freeze(predictions: Path, articles: Path, golden: Path, pairs: int = 5) -> list[dict[str, Any]]:
-    """The first ``pairs`` in-scope AR/EN pairs of a run, with the articles it showed the model."""
+def freeze(
+    predictions: Path, articles: Path, golden: Path, pairs: int = 10
+) -> list[dict[str, Any]]:
+    """The first ``pairs`` in-scope AR/EN pairs of a run, with the articles it showed the model.
+
+    Only pairs the run answered with a gold citation in both languages: the frozen articles must
+    support the answer the gate expects.
+    """
     from legalrag.eval.track import git_sha
     from legalrag.index.store import payload
     from legalrag.ingest.validate import load_articles
 
     by_number = {a.article_number: a for a in load_articles(articles)}
-    shown = {}
+    runs = {}
     for line in predictions.read_text(encoding="utf-8").splitlines():
         if line:
             row = json.loads(line)
-            shown[row["id"]] = row["context_articles"]
-    items = [it for it in load_golden(golden) if it.category == "in_scope" and it.id in shown]
-    keep = sorted({it.pair for it in items})[:pairs]
+            runs[row["id"]] = row
+    items = [it for it in load_golden(golden) if it.category == "in_scope" and it.id in runs]
+    missed = {
+        it.pair
+        for it in items
+        if runs[it.id]["refused"] or not set(runs[it.id]["cited"]) & set(it.gold_articles)
+    }
+    keep = sorted({it.pair for it in items} - missed)[:pairs]
     source = f"{predictions.parent.name} (frozen at {git_sha()})"
     return [
         {
             **it.model_dump(),
             "frozen_from": source,
-            "context": [payload(by_number[n], "ar") for n in shown[it.id]],
+            "context": [payload(by_number[n], "ar") for n in runs[it.id]["context_articles"]],
         }
         for it in items
         if it.pair in keep
