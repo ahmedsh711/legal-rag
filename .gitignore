@@ -25,8 +25,14 @@ node_modules/
 .prometheus-multiproc/
 data/events/
 data/events-live/
-# generated outputs: evaluation runs, load tests, drift reports
-reports/
+# generated outputs: evaluation runs, load tests, drift reports; only the module reports,
+# their screenshots and the final load-test report are kept in git
+reports/*
+!reports/module-*.md
+!reports/images/
+!reports/load/
+reports/load/*
+!reports/load/locust-50-users.html
 *.tfvars
 !*.tfvars.example
 data/incoming/
