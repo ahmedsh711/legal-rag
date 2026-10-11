@@ -16,7 +16,7 @@ x-airflow-env: &airflow-env
   AIRFLOW_CONN_FS_DEFAULT: '{"conn_type": "fs", "extra": {"path": "/"}}'
   # what the DAGs need to start task containers
   DOCKER_URL: tcp://docker-proxy:2375
-  LEGALRAG_IMAGE: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${API_TAG:-dev}
+  LEGALRAG_IMAGE: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${API_TAG:-latest}
   LEGALRAG_HOST_DIR: ${LEGALRAG_HOST_DIR:-}
   LEGALRAG_NETWORK: legal-rag_default
   MONITORING_DB_URL: postgresql://${POSTGRES_USER:-legalrag}:${POSTGRES_PASSWORD}@postgres:5432/monitoring
@@ -51,6 +51,22 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # First start on a new machine: Qdrant pulls the built index (v1.0.0 release assets) instead of
+  # running the 30-minute embedding step. Exits at once when the alias already exists.
+  index-init:
+    image: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${API_TAG:-latest}
+    profiles: [core]
+    entrypoint: ["python", "-m", "legalrag.index.snapshot"]
+    command: ["restore", "--source", "${INDEX_SNAPSHOTS:-https://github.com/ahmedsh711/legal-rag/releases/download/v1.0.0}"]
+    environment:
+      QDRANT_URL: http://qdrant:6333
+    volumes:
+      - ../data/processed/index_manifest.json:/app/data/processed/index_manifest.json:ro
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    restart: "no"
+
   redis:
     image: redis:7.4-alpine
     profiles: [core, llm-observability]
@@ -64,7 +80,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       secrets: [local_ca]
-    image: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${API_TAG:-dev}
+    image: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${API_TAG:-latest}
     profiles: [core]
     env_file:
       - path: ../.env
@@ -90,6 +106,8 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+      index-init:
+        condition: service_completed_successfully
       redis:
         condition: service_started
     restart: unless-stopped
@@ -289,7 +307,7 @@ services:
   # and Postgres rows.
   #   docker compose --env-file .env -f docker/compose.yaml --profile monitoring run --rm drift-job
   drift-job:
-    image: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${API_TAG:-dev}
+    image: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${API_TAG:-latest}
     profiles: [monitoring]
     entrypoint: ["python", "-m", "legalrag.monitoring.drift_job"]
     command: ["--hours", "24", "--events", "/app/events", "--reference", "/app/reference/reference_events.jsonl",
