@@ -38,6 +38,7 @@ log = get_logger(__name__)
 
 ALPHA = 0.01
 JS_MAX, WASSERSTEIN_MAX, AUC_MAX = 0.1, 0.25, 0.7  # smallest effect sizes that count as material
+DETECTORS = (("question_chars", "adwin"), ("refused", "hddm_a"))  # streaming change detection
 
 
 @dataclass
@@ -51,6 +52,14 @@ class Row:
 
 
 @dataclass
+class ChangePoint:
+    feature: str
+    detector: str
+    index: int  # in the time-ordered window; detectors fire a few events after the change
+    ts: str
+
+
+@dataclass
 class DriftReport:
     n_reference: int
     n_current: int
@@ -58,6 +67,7 @@ class DriftReport:
     reason: str
     rows: list[Row] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    change_points: list[ChangePoint] = field(default_factory=list)
 
 
 def _counts(events: Sequence[PredictionEvent], key: str) -> dict[str, int]:
@@ -208,6 +218,25 @@ def aa_check(events: Sequence[PredictionEvent], runs: int = 100, seed: int = 0) 
     return {k: round(flags[k] / runs, 3) for k in keys}
 
 
+def change_points(events: Sequence[PredictionEvent]) -> list[ChangePoint]:
+    """Where in the window the traffic changed: ADWIN on question length, HDDM_A on refusals.
+
+    HDDM_A is DDM with Hoeffding bounds; plain DDM fires on about a third of steady 300-event
+    windows at a 10 % refusal rate."""
+    from river import drift
+
+    make = {"adwin": drift.ADWIN, "hddm_a": drift.binary.HDDMA}
+    ordered = sorted(events, key=lambda e: e.ts)
+    points = []
+    for feature, name in DETECTORS:
+        detector = make[name]()
+        for i, event in enumerate(ordered):
+            detector.update(getattr(event, feature))
+            if detector.drift_detected:
+                points.append(ChangePoint(feature, name, i, event.ts.isoformat()))
+    return points
+
+
 def textfile_lines(report: DriftReport, alert: bool, last_trigger: datetime | None) -> list[str]:
     """Prometheus text format for node-exporter's textfile collector."""
     lines = [
@@ -229,6 +258,13 @@ def textfile_lines(report: DriftReport, alert: bool, last_trigger: datetime | No
         "# HELP rag_drift_window_events Events in the current window",
         "# TYPE rag_drift_window_events gauge",
         f"rag_drift_window_events {report.n_current}",
+        "# HELP rag_drift_change_points Changes streaming detectors found inside the window",
+        "# TYPE rag_drift_change_points gauge",
+    ]
+    found = Counter((p.feature, p.detector) for p in report.change_points)
+    lines += [
+        f'rag_drift_change_points{{feature="{feature}",detector="{name}"}} {found[feature, name]}'
+        for feature, name in DETECTORS
     ]
     if last_trigger is not None:
         lines += [
@@ -263,6 +299,9 @@ def run(args: argparse.Namespace) -> int:
     until = parse_since(args.until) if args.until else None
     current = read_events(args.events, since=since, until=until)
     report = compare(reference, current, min_samples=args.min_samples)
+    # informational, not part of the verdict: a change inside the window is not a difference
+    # from the reference, and these detectors are outside the Bonferroni-corrected alpha
+    report = replace(report, change_points=change_points(current))
     history_path = Path(args.state) / "drift_triggers.json"
     history = _trigger_history(history_path)
     guard = ds.StormGuard(min_samples=args.guard_min_samples)
@@ -300,6 +339,7 @@ def run(args: argparse.Namespace) -> int:
         notes=report.notes,
         n_reference=report.n_reference,
         n_current=report.n_current,
+        change_points=len(report.change_points),
     )
     return 1 if args.fail_on_drift and report.drift else 0
 

@@ -4,23 +4,33 @@ from __future__ import annotations
 
 import json
 import random
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from legalrag.eval.metrics import Prediction
 from legalrag.monitoring.drift_job import (
+    ChangePoint,
     aa_check,
     build_reference,
+    change_points,
     compare,
+    main,
     parse_since,
     textfile_lines,
 )
-from legalrag.monitoring.events import PredictionEvent
+from legalrag.monitoring.events import EventLog, PredictionEvent
 from legalrag.monitoring.query_centroid import load_centroid
 from tests.conftest import SAMPLE_ARTICLES
 
 BOOKS = ["Book 1", "Book 2", "Book 3", "Book 4"]
+START = datetime(2026, 10, 10, 13, tzinfo=UTC)
+
+
+def timed(window: list[PredictionEvent]) -> list[PredictionEvent]:
+    """One event per second from START, in list order."""
+    return [e.model_copy(update={"ts": START + timedelta(seconds=i)}) for i, e in enumerate(window)]
 
 
 def events(
@@ -202,3 +212,54 @@ def test_the_reference_has_a_query_cosine_per_question_and_a_saved_centroid(tmp_
     assert centroid is not None and len(centroid.vector) == embedder.dim
     meta = json.loads(out.with_suffix(".meta.json").read_text(encoding="utf-8"))
     assert meta["events"] == 4 and meta["query_centroid"] == str(centroid_path)
+
+
+def test_streaming_detectors_find_where_in_the_window_the_traffic_changed():
+    calm = events(150, seed=1, chars=(20, 40), refused_share=0.05)
+    window = timed(calm + events(150, seed=2, chars=(120, 160), refused_share=0.7))
+    points = change_points(random.Random(0).sample(window, len(window)))  # order comes from ts
+    assert {(p.feature, p.detector) for p in points} == {
+        ("question_chars", "adwin"),
+        ("refused", "hddm_a"),
+    }
+    assert all(p.index >= 150 and p.ts == window[p.index].ts.isoformat() for p in points)
+
+
+def test_steady_traffic_has_no_change_points():
+    assert change_points(timed(events(300, seed=3))) == []
+
+
+def test_textfile_counts_change_points_per_detector_even_when_there_are_none():
+    report = compare(events(300, seed=1), events(300, seed=2))
+    report = replace(report, change_points=[ChangePoint("refused", "hddm_a", 210, "t")])
+    lines = textfile_lines(report, alert=False, last_trigger=None)
+    assert 'rag_drift_change_points{feature="refused",detector="hddm_a"} 1' in lines
+    assert 'rag_drift_change_points{feature="question_chars",detector="adwin"} 0' in lines
+
+
+def run_job(tmp_path, *flags: str) -> tuple[int, dict]:
+    reference = tmp_path / "reference.jsonl"
+    reference.write_text(
+        "".join(e.model_dump_json() + "\n" for e in events(200, seed=1, cosine=(0.6, 0.05))),
+        encoding="utf-8",
+    )
+    log = EventLog(tmp_path / "events")
+    for e in timed(events(200, seed=2, cosine=(0.6, 0.05))):
+        log.write(e)
+    out = tmp_path / "reports"
+    argv = ["run", "--reference", str(reference), "--events", str(tmp_path / "events")]
+    argv += ["--since", START.isoformat(), "--until", (START + timedelta(hours=1)).isoformat()]
+    argv += ["--out", str(out), "--state", str(out), "--textfile", str(tmp_path / "drift.prom")]
+    with pytest.raises(SystemExit) as done:
+        main([*argv, "--db-url", "", *flags])
+    [report] = [p for p in out.glob("*.json") if ".evidently." not in p.name]
+    return done.value.code, json.loads(report.read_text(encoding="utf-8"))
+
+
+def test_a_run_reports_change_points_without_letting_them_decide_drift(tmp_path):
+    code, report = run_job(tmp_path)
+    assert code == 0 and not report["drift"]
+    assert report["n_current"] == 200 and report["change_points"] == []
+    assert any(r["feature"] == "query_cosine" for r in report["rows"])
+    prom = (tmp_path / "drift.prom").read_text(encoding="utf-8")
+    assert 'rag_drift_change_points{feature="refused",detector="hddm_a"} 0' in prom
