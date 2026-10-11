@@ -32,3 +32,4 @@ reports/
 data/incoming/
 data/airflow/
 serving/nginx/release/
+.streamlit/secrets.toml
