@@ -69,7 +69,7 @@ jobs:
       - name: Tests with coverage gate
         run: uv run pytest
 
-  # RAGAS gate on 10 frozen golden questions (faithfulness >= 0.75, gold citation >= 0.8).
+  # RAGAS gate on 20 frozen golden questions (faithfulness >= 0.75, gold citation >= 0.8).
   # Uses free-tier quota: on PRs it runs only when answer-affecting files change; always on main.
   ragas-smoke:
     needs: test
