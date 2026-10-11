@@ -224,10 +224,13 @@ deploy/k8s/        Kubernetes manifests (kustomize)
 infra/terraform/   tracking services as code
 loadtest/          Locust scenario and analysis scripts
 docs/runbook.md    what to do for each alert
+docs/future-work.md  known gaps and next steps
 dvc.yaml           data pipeline: parse -> validate -> index
 ```
 
 ## Limitations
+
+Known gaps and next steps are tracked in [`docs/future-work.md`](docs/future-work.md).
 
 - The golden set is small (28 question pairs) and was written by the author. It catches regressions; it does not prove general accuracy.
 - PII redaction covers national IDs, phone numbers and email addresses, not names or street addresses.
