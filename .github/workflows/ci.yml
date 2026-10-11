@@ -1,5 +1,6 @@
-# lint -> test (coverage gate in pyproject.toml) -> ragas-smoke + image (pushed on main only).
-# monitoring-config runs in parallel. Branch protection on main requires these checks.
+# lint -> test (coverage gate in pyproject.toml) -> index -> image (pushed on main only), with
+# ragas-smoke after test. monitoring-config runs in parallel. Branch protection on main requires
+# these checks.
 name: CI
 
 on:
@@ -126,10 +127,49 @@ jobs:
           path: reports/eval/smoke/
           if-no-files-found: ignore
 
+  # Rebuilds a real bge-m3 index from a 23-article sample and checks that it retrieves.
+  index:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.19.2 # same as docker/compose.yaml
+        ports: ["6333:6333"]
+        options: >-
+          --health-cmd "bash -c ':> /dev/tcp/127.0.0.1/6333'"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install (locked)
+        run: uv sync --locked
+      - name: Embedding revision
+        id: model
+        run: |
+          rev=$(uv run python -c "from legalrag.index.build import load_index_params as p; print(p('params.yaml').embedding_revision)")
+          echo "revision=$rev" >> "$GITHUB_OUTPUT"
+      - name: Cache bge-m3 (~2.3 GB)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-bge-m3-${{ steps.model.outputs.revision }}
+      - name: Build the index
+        run: |
+          uv run python -m legalrag.index.build --articles tests/fixtures/articles_sample.json \
+            --manifest "$RUNNER_TEMP/index_manifest.json" --metrics "$RUNNER_TEMP/index.json"
+      - name: The gold article comes first
+        env:
+          INDEX_ALIAS: articles
+          RETRIEVAL_MODE: dense # as deployed (deploy/k8s/configmap.yaml)
+        run: uv run pytest tests/integration/test_index_live.py --no-cov
+
   # Built on every run so a broken Dockerfile fails the PR. On main, the tested image is pushed
   # as sha-<commit> (immutable) and latest.
   image:
-    needs: test
+    needs: [test, index]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

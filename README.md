@@ -202,7 +202,7 @@ uv run ruff check . && uv run ruff format --check .
 uv run pytest            # unit and integration tests; fails below 80 % coverage
 ```
 
-CI (`.github/workflows/ci.yml`) runs lint, tests, Prometheus and Alertmanager config checks, a RAGAS quality gate on 20 frozen questions (faithfulness ≥ 0.75, gold citations ≥ 0.8, and it fails if the judge cannot score the answers), and a Docker image build. On `main` the image is pushed to Docker Hub as `sha-<commit>` and `latest`.
+CI (`.github/workflows/ci.yml`) runs lint, tests, Prometheus and Alertmanager config checks, a RAGAS quality gate on 20 frozen questions (faithfulness ≥ 0.75, gold citations ≥ 0.8, and it fails if the judge cannot score the answers), a rebuild of a real bge-m3 index in Qdrant from a 23-article sample that must rank the gold article first for every in-scope golden question, and a Docker image build. On `main` the image is pushed to Docker Hub as `sha-<commit>` and `latest`.
 
 Load test:
 
