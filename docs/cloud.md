@@ -13,9 +13,9 @@ Everything runs locally by default. Each section below moves one part to a free 
 
 The UI is a thin client: it needs the API, which needs about 3 GB of memory for the embedding model and does not fit the free hosting tiers. The API therefore keeps running locally and is reached through an ngrok tunnel with a fixed address.
 
-1. Create a free [ngrok](https://ngrok.com) account, then copy your authtoken and claim the free static domain (Dashboard → Domains).
-2. In `.env` set `NGROK_AUTHTOKEN` and `NGROK_DOMAIN` (for example `your-name.ngrok-free.app`). `UI_API_KEY` is already generated; it is the only key the API accepts while it is public.
-3. Start the API with the tunnel:
+1. Create a free [ngrok](https://ngrok.com) account. Copy your authtoken (Getting Started → Your Authtoken) and your dev domain (Domains; every free account has one, for example `something.ngrok-free.dev`).
+2. In `.env` set `NGROK_AUTHTOKEN` and `NGROK_DOMAIN`. `UI_API_KEY` is already generated; it is the only key the API accepts while it is public. If the tunnel logs `failed to fetch CRL`, also set `NGROK_CRL_NOVERIFY=true`.
+3. Rebuild the API image if it predates the key check (`docker compose ... build api`), then start the API with the tunnel:
    ```bash
    docker compose --env-file .env -f docker/compose.yaml -f docker/compose.public.yaml \
      --profile core --profile public up -d

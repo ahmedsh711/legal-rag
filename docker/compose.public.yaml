@@ -13,9 +13,17 @@ services:
   tunnel:
     image: ngrok/ngrok:3.39.11-alpine
     profiles: [public]
-    command: ["http", "--url=${NGROK_DOMAIN:?set NGROK_DOMAIN in .env}", "api:8000"]
+    # NGROK_CRL_NOVERIFY=true skips the certificate revocation check, for networks where the
+    # agent cannot download ngrok's CRL ("failed to fetch CRL")
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        printf 'version: 3\nagent:\n  crl_noverify: %s\n' "$${NGROK_CRL_NOVERIFY}" > /tmp/ngrok.yml &&
+        exec ngrok http api:8000 --url="$${NGROK_DOMAIN}" --config /tmp/ngrok.yml --log stdout
     environment:
       NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?set NGROK_AUTHTOKEN in .env}
+      NGROK_DOMAIN: ${NGROK_DOMAIN:?set NGROK_DOMAIN in .env}
+      NGROK_CRL_NOVERIFY: ${NGROK_CRL_NOVERIFY:-false}
     depends_on:
       api:
         condition: service_healthy
