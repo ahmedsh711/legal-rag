@@ -18,7 +18,7 @@ from legalrag.generation import (
     detect_language,
     refusal_for,
 )
-from legalrag.guardrails import check_question
+from legalrag.guardrails import check_question, redact_pii
 from legalrag.logging_conf import get_logger
 from legalrag.observability.prompts import CodePrompt
 from legalrag.observability.tracing import NoopTracer
@@ -45,11 +45,12 @@ class Answer:
     prompt_version: str = PROMPT_VERSION
     model: str = ""
     usage: dict[str, int] = field(default_factory=dict)
+    llm_cost_usd: float = 0.0
     timings_ms: dict[str, float] = field(default_factory=dict)
     decision: Decision | None = None  # rerank + gate, when a decider ran
     gated: bool = False  # refused by the gate before any LLM call
     # guards that fired, in order: "pii:phone", "injection:override", "gate:unanswerable",
-    # "citation:invalid", "citation:uncited"
+    # "pii_out:phone", "citation:invalid", "citation:uncited"
     guardrails: list[str] = field(default_factory=list)
 
 
@@ -132,6 +133,9 @@ class RagPipeline:
             return None
 
     def _finish(self, language: str, text: str, context: list[Chunk]) -> dict[str, Any]:
+        redacted, pii = redact_pii(text)
+        if pii:  # the model never sees the user's PII, but it can still write some
+            text = redacted
         cited = cited_articles(text)  # [Art. N] brackets, as the prompt asks
         known = {c.article_number for c in context}
         if bad := [n for n in cited if n not in known]:
@@ -144,12 +148,13 @@ class RagPipeline:
         if blocked:
             log.warning("uncited_answer_blocked", chars=len(text))
         refused = is_refusal or blocked
-        fired = []
+        fired = [f"pii_out:{label}" for label in pii]
         if bad:
             fired.append("citation:invalid")
         if blocked:
             fired.append("citation:uncited")
         return {
+            "text": text,
             "sources": [] if refused else [c for c in context if c.article_number in cited],
             "invalid_citations": bad,
             "refused": refused,
@@ -208,16 +213,17 @@ class RagPipeline:
             prompt=served.client,
         ) as span:
             completion = await self.generator.complete(messages)
+            checked = self._finish(language, completion.text, context)
             pt, ct = completion.prompt_tokens, completion.completion_tokens
+            cost = self._cost(pt, ct)
             span.update(
-                output=completion.text,
+                output=checked["text"],
                 model=completion.model,
                 usage_details={"input": pt, "output": ct},
-                cost_details=self._cost(pt, ct),
+                cost_details=cost,
             )
         timings["generate"] = _ms(t1)
         timings["total"] = _ms(t0)
-        checked = self._finish(language, completion.text, context)
         fired = fired + checked.pop("fired")
         log.info(
             "answered",
@@ -227,10 +233,10 @@ class RagPipeline:
             guardrails=fired,
             **timings,
         )
-        blocked = checked.pop("blocked")
+        text, blocked = checked.pop("text"), checked.pop("blocked")
         return Answer(
             question=safe_question,
-            answer=refusal_for(language) if blocked else completion.text,
+            answer=refusal_for(language) if blocked else text,
             language=language,
             context=context,
             model=completion.model,
@@ -239,6 +245,7 @@ class RagPipeline:
                 "prompt_tokens": completion.prompt_tokens,
                 "completion_tokens": completion.completion_tokens,
             },
+            llm_cost_usd=sum(cost.values()),
             timings_ms=timings,
             decision=ctx.decision,
             guardrails=fired,
@@ -291,16 +298,19 @@ class RagPipeline:
                     span.update(completion_start_time=datetime.now(UTC))
                 parts.append(token)
                 yield {"type": "token", "text": token}
+            streamed = "".join(parts)
+            checked = self._finish(language, streamed, context)
             pt, ct = stream.prompt_tokens, stream.completion_tokens
+            cost = self._cost(pt, ct)
             span.update(
-                output="".join(parts),
+                output=checked["text"],
                 model=stream.model or self.generator.model,
                 usage_details={"input": pt, "output": ct},
-                cost_details=self._cost(pt, ct),
+                cost_details=cost,
             )
-        checked = self._finish(language, "".join(parts), context)
-        # tokens were already sent; tell the client to replace them with the refusal
-        replace = {"replace_with": refusal_for(language)} if checked["blocked"] else {}
+        # tokens were already sent; tell the client what to show instead
+        shown = refusal_for(language) if checked["blocked"] else checked["text"]
+        replace = {"replace_with": shown} if shown != streamed else {}
         yield {
             "type": "done",
             **replace,
@@ -321,5 +331,6 @@ class RagPipeline:
             },
             "timings_ms": {**timings, "ttft": first_token_ms, "total": _ms(t0)},
             "prompt_version": served.version,
-            "_monitoring": seen,  # for events and traces; the API removes it before sending
+            # for metrics, events and traces; the API removes it before sending
+            "_monitoring": {**seen, "llm_cost_usd": sum(cost.values())},
         }

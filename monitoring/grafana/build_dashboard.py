@@ -193,8 +193,14 @@ def build() -> dict:
         ],
     )
     g.chart(
-        "Decider cost per hour (USD)",
-        [("sum(increase(rag_decider_cost_usd_total[1h]))", "Jev $/h")],
+        "Cost per hour (USD)",
+        [
+            (
+                'sum by (backend) (increase(rag_llm_cost_usd_total{backend=~"$backend"}[1h]))',
+                "LLM {{backend}}",
+            ),
+            ("sum(increase(rag_decider_cost_usd_total[1h]))", "decider"),
+        ],
         "currencyUSD",
     )
 

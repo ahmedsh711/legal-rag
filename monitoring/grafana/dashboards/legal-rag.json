@@ -654,7 +654,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Decider cost per hour (USD)",
+      "title": "Cost per hour (USD)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -668,8 +668,17 @@
       "targets": [
         {
           "refId": "A",
+          "expr": "sum by (backend) (increase(rag_llm_cost_usd_total{backend=~\"$backend\"}[1h]))",
+          "legendFormat": "LLM {{backend}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
           "expr": "sum(increase(rag_decider_cost_usd_total[1h]))",
-          "legendFormat": "Jev $/h",
+          "legendFormat": "decider",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

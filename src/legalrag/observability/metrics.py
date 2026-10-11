@@ -41,6 +41,9 @@ GUARDS = (
     "injection:role_play",
     "injection:delimiter",
     "gate:unanswerable",
+    "pii_out:national_id",
+    "pii_out:phone",
+    "pii_out:email",
     "citation:invalid",
     "citation:uncited",
 )
@@ -118,6 +121,9 @@ class RagMetrics:
             ["backend", "type"],
             registry=r,
         )
+        self.llm_cost = Counter(
+            "rag_llm_cost_usd_total", "Money spent on the LLM", ["backend"], registry=r
+        )
         self.decider_cost = Counter(
             "rag_decider_cost_usd_total", "Money spent on the decider", registry=r
         )
@@ -149,6 +155,7 @@ class RagMetrics:
         refused: bool,
         guardrails: Iterable[str],
         usage: Mapping[str, int],
+        cost_usd: float,
         backend: str,
         prompt_version: str | None,
     ) -> None:
@@ -160,6 +167,7 @@ class RagMetrics:
         for kind in ("prompt", "completion"):
             if tokens := usage.get(f"{kind}_tokens", 0):
                 self.tokens.labels(backend, kind).inc(tokens)
+        self.llm_cost.labels(backend).inc(cost_usd)
 
     def _stages(self, timings: Mapping[str, float | None]) -> None:
         for stage, ms in timings.items():
@@ -169,7 +177,12 @@ class RagMetrics:
     def observe_answer(self, answer: Any, backend: str) -> None:
         self._stages(answer.timings_ms)
         self._common(
-            answer.refused, answer.guardrails, answer.usage, backend, answer.prompt_version
+            answer.refused,
+            answer.guardrails,
+            answer.usage,
+            answer.llm_cost_usd,
+            backend,
+            answer.prompt_version,
         )
         if decision := answer.decision:
             outcome = "gated" if answer.gated else "pass"
@@ -185,6 +198,7 @@ class RagMetrics:
             event.get("refused", False),
             event.get("guardrails", []),
             event.get("usage", {}),
+            event.get("llm_cost_usd", 0.0),
             backend,
             event.get("prompt_version"),
         )

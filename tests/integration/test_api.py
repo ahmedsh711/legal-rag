@@ -331,6 +331,21 @@ def test_metrics_endpoint_counts_requests_stages_and_guards(client):
     assert "rag_info{" in text and "rag_inflight_requests" in text
 
 
+def test_llm_cost_is_counted_for_answers_and_streams(tmp_path, qdrant, embedder):
+    retriever = Retriever(qdrant, alias="articles", embedder=embedder, top_n=3)
+    pipeline = RagPipeline(
+        retriever, Generator(FakeLLM("Yes [Art. 147]."), "m", 100, 0.0), prices=(1.0, 2.0)
+    )
+    with make_client(tmp_path, pipeline) as c:
+        c.post("/ask", json={"question": "Is a contract binding?"})
+        c.post("/ask?stream=true", json={"question": "Is a contract binding?"})
+        backend = c.app.state.settings.llm_backend
+        cost = c.app.state.metrics_registry.get_sample_value(
+            "rag_llm_cost_usd_total", {"backend": backend}
+        )
+    assert cost == pytest.approx(2 * (120 * 1.0 + 30 * 2.0) / 1e6)
+
+
 def test_every_answer_leaves_a_prediction_event_without_the_text(client, tmp_path):
     question = "What is the prescription period of fifteen years?"
     client.post("/ask", json={"question": question})
