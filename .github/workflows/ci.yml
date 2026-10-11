@@ -6,6 +6,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch: # e.g. to re-measure the quality gate after the judge's daily quota resets
 
 permissions:
   contents: read
@@ -78,13 +79,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # the PR base commit is needed for the diff below
+          fetch-depth: 0 # the base commit is needed for the diff below
       - name: Did anything that changes answers change?
         id: changed
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" != "pull_request" ]; then
+          case "${{ github.event_name }}" in
+            pull_request) BASE="$PR_BASE" ;;
+            push) BASE="$PUSH_BEFORE" ;;
+            *) echo "run=true" >> "$GITHUB_OUTPUT"; exit 0 ;; # manual runs always measure
+          esac
+          # no usable previous commit (first push, force push): measure
+          if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           # files that can change an answer or its score
