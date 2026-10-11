@@ -317,7 +317,8 @@ def run(args: argparse.Namespace) -> int:
         "guard": why,
         **asdict(report),
     }
-    write_atomic(Path(args.out) / f"{now:%Y%m%dT%H%M%SZ}.json", json.dumps(out, indent=2) + "\n")
+    stem = f"{now:%Y%m%dT%H%M%SZ}"
+    write_atomic(Path(args.out) / f"{stem}.json", json.dumps(out, indent=2) + "\n")
     if args.textfile:
         last = max(history) if history else None
         write_atomic(Path(args.textfile), "\n".join(textfile_lines(report, alert, last)) + "\n")
@@ -328,6 +329,13 @@ def run(args: argparse.Namespace) -> int:
             store_run(args.db_url, out)
         except Exception:  # noqa: BLE001 - losing one history row must not block the alert
             log.exception("drift_store_failed")
+    if args.evidently and report.n_current >= args.min_samples:
+        from legalrag.monitoring.evidently_report import write_report
+
+        try:
+            write_report(reference, current, Path(args.out), stem)
+        except Exception:  # noqa: BLE001 - a report to browse must not block the alert
+            log.exception("evidently_report_failed")
     if alert:  # written last so a crash above does not use up the cooldown
         write_atomic(history_path, json.dumps([t.isoformat() for t in history][-20:]) + "\n")
     log.info(
@@ -433,6 +441,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--textfile", default="monitoring/textfile/drift.prom")
     p.add_argument("--db-url", default=s.monitoring_db_url.get_secret_value() or None)
     p.add_argument("--fail-on-drift", action="store_true")
+    p.add_argument("--evidently", action="store_true", help="also write an Evidently report")
     p.add_argument(
         "--from-runs",
         nargs="+",

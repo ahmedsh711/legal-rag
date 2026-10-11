@@ -6,6 +6,7 @@ import json
 import random
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -237,7 +238,8 @@ def test_textfile_counts_change_points_per_detector_even_when_there_are_none():
     assert 'rag_drift_change_points{feature="question_chars",detector="adwin"} 0' in lines
 
 
-def run_job(tmp_path, *flags: str) -> tuple[int, dict]:
+def run_job(tmp_path, *flags: str) -> tuple[int, Path]:
+    """Exit code and JSON report path of a drift job run over 200 steady events."""
     reference = tmp_path / "reference.jsonl"
     reference.write_text(
         "".join(e.model_dump_json() + "\n" for e in events(200, seed=1, cosine=(0.6, 0.05))),
@@ -253,13 +255,22 @@ def run_job(tmp_path, *flags: str) -> tuple[int, dict]:
     with pytest.raises(SystemExit) as done:
         main([*argv, "--db-url", "", *flags])
     [report] = [p for p in out.glob("*.json") if ".evidently." not in p.name]
-    return done.value.code, json.loads(report.read_text(encoding="utf-8"))
+    return done.value.code, report
 
 
 def test_a_run_reports_change_points_without_letting_them_decide_drift(tmp_path):
-    code, report = run_job(tmp_path)
+    code, path = run_job(tmp_path)
+    report = json.loads(path.read_text(encoding="utf-8"))
     assert code == 0 and not report["drift"]
     assert report["n_current"] == 200 and report["change_points"] == []
     assert any(r["feature"] == "query_cosine" for r in report["rows"])
+    assert not list(path.parent.glob("*.evidently.*"))  # only with --evidently
     prom = (tmp_path / "drift.prom").read_text(encoding="utf-8")
     assert 'rag_drift_change_points{feature="refused",detector="hddm_a"} 0' in prom
+
+
+def test_evidently_reports_go_next_to_the_json_report(tmp_path):
+    code, path = run_job(tmp_path, "--evidently")
+    summary = json.loads(path.with_suffix(".evidently.json").read_text(encoding="utf-8"))
+    assert code == 0 and path.with_suffix(".evidently.html").is_file()
+    assert summary["skipped"] == [] and "query_cosine" in summary["columns"]
