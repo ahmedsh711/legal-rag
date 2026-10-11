@@ -101,7 +101,9 @@ def test_book_filter(retriever):
     assert chunks and {c.article_number for c in chunks} <= {418, 558}
 
 
-def test_retrieve_merges_explicit_article_references_first(retriever):
-    chunks = retriever.retrieve("ماذا تقول المادة 558؟ وما مدة التقادم خمس عشرة سنة")
+def test_retrieve_merges_explicit_article_references_first(retriever, embedder):
+    question = "ماذا تقول المادة 558؟ وما مدة التقادم خمس عشرة سنة"
+    chunks, query = retriever.retrieve(question)
     assert chunks[0].article_number == 558
     assert 374 in [c.article_number for c in chunks]
+    assert query == embedder.encode([question])[0].dense  # what it searched with

@@ -11,6 +11,7 @@ from legalrag.monitoring.events import (
     EventLog,
     event_from_answer,
     event_from_prediction,
+    event_from_stream_done,
     read_events,
 )
 from legalrag.pipeline import Answer
@@ -89,9 +90,27 @@ def test_reference_events_come_from_an_evaluation_run():
         context_articles=[558, 559],
         answerable_score=0.9,
     )
-    event = event_from_prediction(pred, books={558: "الكتاب الثاني"}, serving=SERVING)
+    event = event_from_prediction(
+        pred, books={558: "الكتاب الثاني"}, serving=SERVING, query_cosine=0.58
+    )
     assert event.lang == "ar" and event.top_book == "الكتاب الثاني" and event.endpoint == "eval"
     assert json.loads(event.model_dump_json())["question_words"] == 3
+    assert event.query_cosine == 0.58
+
+
+def test_both_endpoints_record_the_query_cosine():
+    event = event_from_answer(answer(query_cosine=0.71), QUESTION, "req-1", "ask", SERVING)
+    assert event.query_cosine == 0.71
+    done = {"refused": False, "_monitoring": {"language": "en", "query_cosine": 0.64}}
+    assert event_from_stream_done(done, QUESTION, "req-2", SERVING).query_cosine == 0.64
+
+
+def test_events_written_before_the_query_cosine_existed_still_read(tmp_path):
+    line = event_from_answer(answer(), QUESTION, "req-old", "ask", SERVING).model_dump(mode="json")
+    del line["query_cosine"]
+    path = tmp_path / "events-2026-10-10.jsonl"
+    path.write_text(json.dumps(line) + "\n", encoding="utf-8")
+    assert [e.query_cosine for e in read_events(tmp_path)] == [None]
 
 
 def test_a_half_written_line_is_skipped_not_fatal(tmp_path):

@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     feedback_path: str = "data/feedback/feedback.jsonl"
     # one JSON line per answer for drift analysis, without question text; "" = off
     events_dir: str = "data/events"
+    # centroid of the reference questions (drift_job reference); each event records the
+    # question's cosine to it. "" or no file = not recorded
+    query_centroid_path: str = "data/monitoring/query_centroid.json"
     # Postgres for drift history; "" = files and metrics only
     monitoring_db_url: SecretStr = SecretStr("")
 

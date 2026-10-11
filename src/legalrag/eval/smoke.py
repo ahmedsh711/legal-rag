@@ -43,10 +43,10 @@ class FrozenRetriever:
 
     def retrieve(
         self, question: str, top_n: int | None = None, book: str | None = None
-    ) -> list[Chunk]:
+    ) -> tuple[list[Chunk], None]:
         if question not in self.contexts:  # e.g. a guard rewrote it (PII placeholder)
             raise KeyError(f"no frozen articles for {question!r}")
-        return list(self.contexts[question])
+        return list(self.contexts[question]), None
 
 
 def freeze(predictions: Path, articles: Path, golden: Path, pairs: int = 5) -> list[dict[str, Any]]:

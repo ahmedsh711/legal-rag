@@ -11,15 +11,14 @@ from tests.fakes import FakeLLM
 
 class StubRetriever:
     def retrieve(self, question, top_n=None, book=None):
-        return [
-            Chunk(
-                article_number=558,
-                citation="Egyptian Civil Code, Article 558",
-                citation_ar="القانون المدني المصري، المادة 558",
-                text_ar="الإيجار عقد",
-                text_en="A lease is a contract",
-            )
-        ]
+        lease = Chunk(
+            article_number=558,
+            citation="Egyptian Civil Code, Article 558",
+            citation_ar="القانون المدني المصري، المادة 558",
+            text_ar="الإيجار عقد",
+            text_en="A lease is a contract",
+        )
+        return [lease], None
 
 
 ITEMS = [

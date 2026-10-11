@@ -20,6 +20,7 @@ from legalrag.generation import (
 )
 from legalrag.guardrails import check_question
 from legalrag.logging_conf import get_logger
+from legalrag.monitoring.query_centroid import QueryCentroid
 from legalrag.observability.prompts import CodePrompt
 from legalrag.observability.tracing import NoopTracer
 from legalrag.retrieval import Chunk, article_numbers_in
@@ -30,7 +31,7 @@ log = get_logger(__name__)
 class SupportsRetrieve(Protocol):
     def retrieve(
         self, question: str, top_n: int | None = None, book: str | None = None
-    ) -> list[Chunk]: ...
+    ) -> tuple[list[Chunk], list[float] | None]: ...  # articles, dense query vector
 
 
 @dataclass
@@ -51,6 +52,7 @@ class Answer:
     # guards that fired, in order: "pii:phone", "injection:override", "gate:unanswerable",
     # "citation:invalid", "citation:uncited"
     guardrails: list[str] = field(default_factory=list)
+    query_cosine: float | None = None  # to the reference centroid, when one is configured
 
 
 @dataclass
@@ -59,6 +61,7 @@ class Context:
     decision: Decision | None
     gated: bool  # the decider said "not answerable from these articles"
     timings: dict[str, float]
+    query_cosine: float | None = None
 
 
 def _ms(start: float) -> float:
@@ -77,6 +80,7 @@ class RagPipeline:
         tracer: Any = None,
         prices: tuple[float, float] = (0.0, 0.0),  # USD per 1M prompt / completion tokens
         prompts: Any = None,  # CodePrompt or LangfusePrompt
+        query_centroid: QueryCentroid | None = None,  # for query drift; None = not recorded
     ):
         self.retriever, self.generator = retriever, generator
         self.context_size, self.top_n = context_size, top_n
@@ -84,6 +88,7 @@ class RagPipeline:
         self.tracer = tracer or NoopTracer()
         self.prices = prices
         self.prompts = prompts or CodePrompt()
+        self.query_centroid = query_centroid
 
     def _cost(self, prompt_tokens: int, completion_tokens: int) -> dict[str, float]:
         return {
@@ -98,9 +103,12 @@ class RagPipeline:
             "retrieve", as_type="retriever", input={"question": question, "top_n": self.top_n}
         ) as span:
             # embedding is CPU-bound, keep it off the event loop
-            chunks = await asyncio.to_thread(self.retriever.retrieve, question, self.top_n, book)
+            chunks, query = await asyncio.to_thread(
+                self.retriever.retrieve, question, self.top_n, book
+            )
             span.update(output={"articles": [c.article_number for c in chunks]})
         timings = {"retrieve": _ms(t0)}
+        cosine = self.query_centroid.cosine(query) if self.query_centroid and query else None
         named = article_numbers_in(question)
         t1 = time.perf_counter()
         if self.decider is None:
@@ -119,7 +127,7 @@ class RagPipeline:
         # a question that names an article is answerable by definition: no gate
         gated = decision is not None and not named and decision.answerable < self.gate_threshold
         keep = chunks[: max(self.context_size, len(named), 1)]
-        return Context(keep, decision, gated, timings)
+        return Context(keep, decision, gated, timings, cosine)
 
     async def _decide(self, question: str, chunks: list[Chunk]) -> Decision | None:
         if self.decider is None or not chunks:
@@ -193,6 +201,7 @@ class RagPipeline:
                 decision=ctx.decision if ctx else None,
                 gated=bool(ctx and ctx.gated),
                 guardrails=fired,
+                query_cosine=ctx.query_cosine if ctx else None,
             )
         context = ctx.chunks
 
@@ -242,6 +251,7 @@ class RagPipeline:
             timings_ms=timings,
             decision=ctx.decision,
             guardrails=fired,
+            query_cosine=ctx.query_cosine,
             **checked,
         )
 
@@ -259,6 +269,7 @@ class RagPipeline:
             "context_articles": [c.article_number for c in chunks],
             "top_book": chunks[0].book if chunks else "",
             "answerable_score": ctx.decision.answerable if ctx and ctx.decision else None,
+            "query_cosine": ctx.query_cosine if ctx else None,
         }
         if ctx is None or not ctx.chunks or ctx.gated:
             yield {"type": "token", "text": refusal_for(language)}

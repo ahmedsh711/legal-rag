@@ -95,7 +95,7 @@ class StubRetriever:
         self.chunks = chunks
 
     def retrieve(self, question, top_n=None, book=None):
-        return self.chunks
+        return self.chunks, None
 
 
 def make_pipe(decider, reply="Lease [Art. 558]."):
