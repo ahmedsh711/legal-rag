@@ -24,4 +24,4 @@ repos:
       - id: detect-secrets
         args: [--baseline, .secrets.baseline]
         # lock files, DVC pointers and the index manifest hold content hashes, not secrets
-        exclude: ^(uv\.lock|dvc\.lock|.*\.dvc|data/processed/index_manifest\.json)$
+        exclude: ^(uv\.lock|dvc\.lock|.*\.dvc|data/processed/index_manifest\.json|data/golden/smoke_waivers\.json)$

@@ -1,0 +1,8 @@
+[
+  {
+    "id": "p05-ar",
+    "answer_sha256": "53c32ddf24be6b13510f5feb737c42ccb3a728a37cfa43fcf53412bcc20afb82",
+    "reason": "The judge scores this answer 0.4 in every run, but it restates Articles 120 and 121 almost word for word (checked against the article text). Same model family as the generator; see the judge calibration.",
+    "reviewed": "2026-10-11"
+  }
+]

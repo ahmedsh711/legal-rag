@@ -5,7 +5,14 @@ from __future__ import annotations
 import json
 
 from legalrag.eval.metrics import Prediction
-from legalrag.eval.smoke import FrozenRetriever, freeze, load_smoke, smoke_predictions, verdict
+from legalrag.eval.smoke import (
+    FrozenRetriever,
+    answer_sha256,
+    freeze,
+    load_smoke,
+    smoke_predictions,
+    verdict,
+)
 from legalrag.generation import Generator
 from legalrag.pipeline import RagPipeline
 from tests.conftest import SAMPLE_ARTICLES
@@ -118,6 +125,20 @@ def test_one_unfaithful_answer_fails_the_gate_even_when_the_mean_passes():
     rows = [{"id": f"q{i}", "faithfulness": 0.2 if i == 0 else 0.95} for i in range(10)]
     v = verdict(preds, rows, min_faithfulness=0.75, min_cited=0.8, max_errors=1)
     assert v["faithfulness"] == 0.875  # the mean alone would pass
+    assert not v["passed"] and v["below_floor"] == ["q0"]
+
+
+def test_a_reviewed_judge_error_is_waived_only_for_that_exact_answer():
+    preds = [pred(i, [374], answer="faithful restatement" if i == 0 else "a") for i in range(10)]
+    rows = [{"id": f"q{i}", "faithfulness": 0.4 if i == 0 else 0.95} for i in range(10)]
+    waivers = {"q0": answer_sha256("faithful restatement")}
+    v = verdict(preds, rows, 0.75, 0.8, 1, waivers=waivers)
+    assert v["passed"] and v["below_floor"] == [] and v["waived"] == ["q0"]
+    assert v["faithfulness"] == 0.895  # still counted in the mean
+
+    # a new prompt or model changed the answer: the waiver no longer applies
+    preds[0] = pred(0, [374], answer="a different answer")
+    v = verdict(preds, rows, 0.75, 0.8, 1, waivers=waivers)
     assert not v["passed"] and v["below_floor"] == ["q0"]
 
 
