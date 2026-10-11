@@ -8,6 +8,8 @@ Question answering over the Egyptian Civil Code, in Arabic and English, with art
 
 You ask a legal question. The service finds the relevant articles, decides whether they actually answer the question, and only then asks an LLM to write an answer grounded in those articles. Every answer cites its sources as `[Art. N]`. Questions the Civil Code does not cover get a refusal instead of a guess.
 
+**Live demo:** [legal-rag-by-shobaki.streamlit.app](https://legal-rag-by-shobaki.streamlit.app). The UI is hosted on Streamlit Community Cloud; the API behind it runs on the author's machine, so the demo is only available while that machine is on.
+
 ```bash
 curl -s http://127.0.0.1:8000/ask -H 'content-type: application/json' \
   -d '{"question": "At what age does a person reach majority under the Civil Code?"}'

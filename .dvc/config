@@ -1,6 +1,9 @@
 [core]
-    remote = minio
+    remote = dagshub
     autostage = true
 ['remote "minio"']
     url = s3://dvc
     endpointurl = http://127.0.0.1:9000
+['remote "dagshub"']
+    url = s3://dvc
+    endpointurl = https://dagshub.com/ahmedsh711/legal-rag.s3
