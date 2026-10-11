@@ -1,0 +1,41 @@
+# Release setup: nginx in front of a stable and a canary API.
+#   docker compose --env-file .env -f docker/compose.yaml -f docker/compose.serving.yaml \
+#     --profile core --profile serving up -d
+#   uv run python -m legalrag.release set 5      # 5 % of traffic to the canary
+# Entry point: http://127.0.0.1:8088 (responses carry X-Release: stable | canary).
+
+x-behind-proxy: &behind-proxy
+  # client IPs from X-Forwarded-For when the peer is on a Docker network (rate limiting per user)
+  FORWARDED_ALLOW_IPS: 172.16.0.0/12
+
+services:
+  api:
+    environment:
+      <<: *behind-proxy
+      RELEASE: stable
+
+  api-canary:
+    extends:
+      file: compose.yaml
+      service: api
+    image: ${DOCKERHUB_USER:-ahmedshobaki}/legal-rag-api:${CANARY_TAG:-dev}
+    profiles: [serving]
+    ports: !reset []
+    environment:
+      <<: *behind-proxy
+      RELEASE: canary
+      LLM_BACKEND: ${CANARY_LLM_BACKEND:-${LLM_BACKEND:-openrouter}}
+      VLLM_BASE_URL: ${CANARY_VLLM_BASE_URL:-http://vllm:8000/v1}
+
+  nginx:
+    image: nginx:1.30.4-alpine
+    profiles: [serving]
+    ports: ["127.0.0.1:8088:8080"]
+    volumes:
+      - ../serving/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../serving/nginx/init-release.sh:/docker-entrypoint.d/40-init-release.sh:ro
+      - ../serving/nginx/release:/etc/nginx/release
+    depends_on:
+      - api
+      - api-canary
+    restart: unless-stopped

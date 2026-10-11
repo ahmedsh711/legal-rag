@@ -1,0 +1,5 @@
+# copy to terraform.tfvars (git-ignored) or export TF_VAR_postgres_password / TF_VAR_minio_root_password
+postgres_password   = "change-me"  # pragma: allowlist secret
+minio_root_password = "change-me-too"  # pragma: allowlist secret
+
+# Windows without WSL: docker_host = "npipe:////./pipe/docker_engine"

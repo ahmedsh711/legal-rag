@@ -15,7 +15,7 @@ stages:
       size: 319
     - path: src/legalrag/ingest
       hash: md5
-      md5: b3b734b1e0397859c50ea4ea5a935449.dir
+      md5: e93bea0d3697147094341b68b204c9db.dir
       size: 97986
       nfiles: 12
     - path: src/legalrag/logging_conf.py
@@ -82,7 +82,7 @@ stages:
       size: 1710653
     - path: src/legalrag/ingest
       hash: md5
-      md5: b3b734b1e0397859c50ea4ea5a935449.dir
+      md5: e93bea0d3697147094341b68b204c9db.dir
       size: 97986
       nfiles: 12
     - path: uv.lock
@@ -162,9 +162,9 @@ stages:
       size: 211
     - path: src/legalrag/index
       hash: md5
-      md5: b09b9a45b863bf75c01bd512a2ab7f37.dir
-      size: 49576
-      nfiles: 10
+      md5: 8030cf9499a558e6de57664ebffea450.dir
+      size: 56647
+      nfiles: 12
     - path: uv.lock
       hash: md5
       md5: dad5d59522963dc0e0abf6e28215bd4f

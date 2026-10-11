@@ -13,7 +13,7 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
-        args: [--allow-multiple-documents]
+        args: [--allow-multiple-documents, --unsafe]  # --unsafe: syntax only, accepts compose tags like !reset
       - id: check-merge-conflict
       - id: check-added-large-files
         args: [--maxkb=5000]

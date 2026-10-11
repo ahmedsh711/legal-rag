@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     langfuse_secret_key: SecretStr = SecretStr("")
     # Langfuse trace environment
     deploy_environment: str = "local"
+    release: Literal["stable", "canary", "shadow"] = "stable"  # which side of a rollout
     # Langfuse prompt label to serve (production / canary); falls back to the code prompt
     prompt_label: str = "production"
     # per client (API key, else IP): a burst of rate_limit_burst, then this many per minute.

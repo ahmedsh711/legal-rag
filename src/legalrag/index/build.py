@@ -79,8 +79,19 @@ def git_sha() -> str:
 
 
 def build_index(
-    articles: list[Article], embedder: Any, client: Any, params: IndexParams, articles_md5: str
+    articles: list[Article],
+    embedder: Any,
+    client: Any,
+    params: IndexParams,
+    articles_md5: str,
+    target_alias: str | None = None,
 ) -> dict[str, Any]:
+    """Build (or reuse) the collection for these inputs and point ``target_alias`` at it.
+
+    The alias defaults to ``params.alias`` (the serving one); a candidate alias lets a new
+    build be evaluated before production traffic moves to it.
+    """
+    alias = target_alias or params.alias
     items = [(a, lang) for a in articles for lang, _ in article_texts(a)]
     if not items:
         raise ValueError("no articles to index; refusing to publish an empty index")
@@ -88,12 +99,12 @@ def build_index(
     if done := finished_build(client, name):
         # same inputs as a finished build: reuse it, a rebuild would take the serving index down
         # for the whole embedding run (embedder is None here)
-        previous = swap_alias(client, params.alias, name)
-        log.info("index_reused", collection=name, previous=previous)
+        previous = swap_alias(client, alias, name)
+        log.info("index_reused", collection=name, alias=alias, previous=previous)
         return {
             **done,
             "collection": name,
-            "alias": params.alias,
+            "alias": alias,
             "previous_collection": previous,
             "embed_seconds": 0.0,
             "reused": True,
@@ -118,10 +129,11 @@ def build_index(
         "git_sha": git_sha(),
     }
     write_metadata(client, name, metadata)
-    previous = swap_alias(client, params.alias, name)
+    previous = swap_alias(client, alias, name)
     log.info(
         "index_built",
         collection=name,
+        alias=alias,
         previous=previous,
         points=points,
         embed_seconds=round(embed_s, 1),
@@ -129,7 +141,7 @@ def build_index(
     return {
         **metadata,
         "collection": name,
-        "alias": params.alias,
+        "alias": alias,
         "previous_collection": previous,
         "embed_seconds": round(embed_s, 1),
         "reused": False,
@@ -151,6 +163,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--params", default="params.yaml")
     parser.add_argument("--manifest", default="data/processed/index_manifest.json")
     parser.add_argument("--metrics", default="metrics/index.json")
+    parser.add_argument("--alias", default=None, help="alias to update (default: the serving one)")
     args = parser.parse_args(argv)
 
     from qdrant_client import QdrantClient
@@ -183,9 +196,11 @@ def main(argv: list[str] | None = None) -> None:
         if needed
         else None
     )
-    manifest = build_index(articles, embedder, client, params, md5)
-    if alias_target(client, params.alias) != manifest["collection"]:  # not assert: -O removes it
-        raise RuntimeError(f"alias {params.alias!r} does not point at {manifest['collection']}")
+    manifest = build_index(articles, embedder, client, params, md5, target_alias=args.alias)
+    if alias_target(client, manifest["alias"]) != manifest["collection"]:  # not assert: -O drops it
+        raise RuntimeError(
+            f"alias {manifest['alias']!r} does not point at {manifest['collection']}"
+        )
 
     Path(args.manifest).parent.mkdir(parents=True, exist_ok=True)
     stable = {

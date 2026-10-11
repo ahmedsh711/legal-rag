@@ -27,3 +27,8 @@ data/events/
 data/events-live/
 # generated outputs: evaluation runs, load tests, drift reports
 reports/
+*.tfvars
+!*.tfvars.example
+data/incoming/
+data/airflow/
+serving/nginx/release/

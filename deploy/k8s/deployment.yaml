@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legal-rag-api
+  labels:
+    app: legal-rag-api
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5  # what `kubectl rollout undo` can go back to
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0  # a new pod must be ready before an old one goes
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: legal-rag-api
+  template:
+    metadata:
+      labels:
+        app: legal-rag-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: api
+          image: legal-rag-api
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: legal-rag-api
+            - secretRef:
+                name: legal-rag-api  # kubectl create secret generic legal-rag-api --from-env-file=.env
+          resources:
+            requests:
+              cpu: 500m
+              memory: 3Gi  # bge-m3 in memory
+            limits:
+              memory: 4Gi
+          startupProbe:  # first start loads (or downloads) the embedding model
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:  # only route traffic once the index is reachable
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 20
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /home/app/.cache/huggingface
+      volumes:
+        - name: hf-cache
+          emptyDir: {}
