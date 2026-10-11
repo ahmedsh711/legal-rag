@@ -193,6 +193,18 @@ async def test_stream_tells_the_client_to_replace_an_answer_with_pii():
     assert done["guardrails"] == ["pii_out:email"] and not done["refused"]
 
 
+async def test_answers_carry_the_llm_cost():
+    pipe = RagPipeline(
+        StubRetriever([chunk(147)]),
+        Generator(FakeLLM("Yes [Art. 147]."), "m", 100, 0.0),
+        prices=(0.5, 2.0),
+    )
+    cost = (120 * 0.5 + 30 * 2.0) / 1e6  # the fake reports 120 prompt, 30 completion tokens
+    assert (await pipe.ask("Is a contract binding?")).llm_cost_usd == pytest.approx(cost)
+    done = [e async for e in pipe.ask_stream("Is a contract binding?")][-1]
+    assert done["_monitoring"]["llm_cost_usd"] == pytest.approx(cost)
+
+
 async def test_pipeline_marks_model_refusal():
     ans = await RagPipeline(
         StubRetriever([chunk(147)]), Generator(FakeLLM(REFUSAL_EN), "m", 100, 0.0)

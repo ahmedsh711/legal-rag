@@ -45,6 +45,7 @@ class Answer:
     prompt_version: str = PROMPT_VERSION
     model: str = ""
     usage: dict[str, int] = field(default_factory=dict)
+    llm_cost_usd: float = 0.0
     timings_ms: dict[str, float] = field(default_factory=dict)
     decision: Decision | None = None  # rerank + gate, when a decider ran
     gated: bool = False  # refused by the gate before any LLM call
@@ -214,11 +215,12 @@ class RagPipeline:
             completion = await self.generator.complete(messages)
             checked = self._finish(language, completion.text, context)
             pt, ct = completion.prompt_tokens, completion.completion_tokens
+            cost = self._cost(pt, ct)
             span.update(
                 output=checked["text"],
                 model=completion.model,
                 usage_details={"input": pt, "output": ct},
-                cost_details=self._cost(pt, ct),
+                cost_details=cost,
             )
         timings["generate"] = _ms(t1)
         timings["total"] = _ms(t0)
@@ -243,6 +245,7 @@ class RagPipeline:
                 "prompt_tokens": completion.prompt_tokens,
                 "completion_tokens": completion.completion_tokens,
             },
+            llm_cost_usd=sum(cost.values()),
             timings_ms=timings,
             decision=ctx.decision,
             guardrails=fired,
@@ -298,11 +301,12 @@ class RagPipeline:
             streamed = "".join(parts)
             checked = self._finish(language, streamed, context)
             pt, ct = stream.prompt_tokens, stream.completion_tokens
+            cost = self._cost(pt, ct)
             span.update(
                 output=checked["text"],
                 model=stream.model or self.generator.model,
                 usage_details={"input": pt, "output": ct},
-                cost_details=self._cost(pt, ct),
+                cost_details=cost,
             )
         # tokens were already sent; tell the client what to show instead
         shown = refusal_for(language) if checked["blocked"] else checked["text"]
@@ -327,5 +331,6 @@ class RagPipeline:
             },
             "timings_ms": {**timings, "ttft": first_token_ms, "total": _ms(t0)},
             "prompt_version": served.version,
-            "_monitoring": seen,  # for events and traces; the API removes it before sending
+            # for metrics, events and traces; the API removes it before sending
+            "_monitoring": {**seen, "llm_cost_usd": sum(cost.values())},
         }
