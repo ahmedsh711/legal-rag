@@ -41,6 +41,7 @@ class PredictionEvent(BaseModel):
     llm_model: str
     index_collection: str
     decider: str
+    query_cosine: float | None = None  # to the reference centroid; None = not recorded
 
 
 def _common(question: str, serving: Mapping[str, str]) -> dict[str, Any]:
@@ -67,6 +68,7 @@ def event_from_answer(
         refused=answer.refused,
         guardrails=list(answer.guardrails),
         timings_ms={k: v for k, v in answer.timings_ms.items() if k in STAGES},
+        query_cosine=answer.query_cosine,
         **{**_common(question, serving), "prompt_version": answer.prompt_version},
     )
 
@@ -74,7 +76,8 @@ def event_from_answer(
 def event_from_stream_done(
     done: Mapping[str, Any], question: str, request_id: str, serving: Mapping[str, str]
 ) -> PredictionEvent:
-    done = {**done, **done.get("_monitoring", {})}  # language, articles, book, decider score
+    # language, articles, book, decider score, query cosine
+    done = {**done, **done.get("_monitoring", {})}
     articles = done.get("context_articles", [])
     return PredictionEvent(
         request_id=request_id,
@@ -89,6 +92,7 @@ def event_from_stream_done(
         timings_ms={
             k: v for k, v in done.get("timings_ms", {}).items() if k in STAGES and v is not None
         },
+        query_cosine=done.get("query_cosine"),
         **{
             **_common(question, serving),
             "prompt_version": done.get("prompt_version", serving["prompt_version"]),
@@ -97,7 +101,10 @@ def event_from_stream_done(
 
 
 def event_from_prediction(
-    pred: Any, books: Mapping[int, str], serving: Mapping[str, str]
+    pred: Any,
+    books: Mapping[int, str],
+    serving: Mapping[str, str],
+    query_cosine: float | None = None,
 ) -> PredictionEvent:
     """Reference event from an evaluation prediction."""
     articles = list(pred.context_articles)
@@ -112,6 +119,7 @@ def event_from_prediction(
         refused=pred.refused,
         guardrails=list(pred.guardrails),
         timings_ms={"total": pred.latency_ms},
+        query_cosine=query_cosine,
         **_common(pred.question, serving),
     )
 

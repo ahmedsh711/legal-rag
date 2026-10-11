@@ -43,6 +43,7 @@ from legalrag.index.store import alias_target, read_metadata
 from legalrag.ingest.normalize import NORMALIZATION_VERSION
 from legalrag.logging_conf import configure_logging, get_logger, request_id_var
 from legalrag.monitoring.events import EventLog, event_from_answer, event_from_stream_done
+from legalrag.monitoring.query_centroid import load_centroid
 from legalrag.observability.metrics import RagMetrics, render
 from legalrag.observability.prompts import CodePrompt, LangfusePrompt
 from legalrag.observability.tracing import LangfuseTracer, NoopTracer, build_tracer
@@ -147,6 +148,9 @@ def build_components(settings: Settings) -> Components:
         prompts=LangfusePrompt(tracer.client, settings.prompt_label)
         if isinstance(tracer, LangfuseTracer)
         else CodePrompt(),
+        query_centroid=load_centroid(
+            settings.query_centroid_path, settings.embedding_model, settings.embedding_revision
+        ),
     )
     limiter = build_limiter(
         settings.redis_url, settings.rate_limit_per_minute, settings.rate_limit_burst

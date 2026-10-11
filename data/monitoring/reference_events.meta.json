@@ -1,10 +1,13 @@
 {
-  "built_at": "2026-10-10T15:07:16.879938+00:00",
+  "built_at": "2026-10-11T10:24:21.527110+00:00",
   "from_runs": [
     "reports\\eval\\e2e-dense-jev\\predictions.jsonl",
     "reports\\eval\\heldout-dense-jev\\predictions.jsonl"
   ],
   "events": 66,
+  "query_centroid": "data\\monitoring\\query_centroid.json",
+  "embedding_model": "BAAI/bge-m3",
+  "embedding_revision": "9a0624b896d81da7492a910ffa53731274b6cf3d",
   "llm_model": "gemini-3.1-flash-lite",
   "prompt_version": "v3",
   "decider": "jev",

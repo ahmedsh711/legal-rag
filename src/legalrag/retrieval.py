@@ -89,11 +89,15 @@ class Retriever:
         return models.Filter(must=must)
 
     def search(
-        self, question: str, top_n: int | None = None, book: str | None = None
+        self,
+        question: str,
+        top_n: int | None = None,
+        book: str | None = None,
+        emb: Embedding | None = None,  # the question's embedding, when the caller has it
     ) -> list[Chunk]:
         """Hybrid dense + sparse search fused by RRF; one chunk per article, best first."""
         top_n = top_n or self.top_n
-        emb = self.embedder.encode([question])[0]
+        emb = emb or self.embedder.encode([question])[0]
         indices, values = emb.sparse_indices_values()
         flt = self._filter(book)
         limit = top_n * PREFETCH_MULTIPLIER
@@ -150,16 +154,18 @@ class Retriever:
 
     def retrieve(
         self, question: str, top_n: int | None = None, book: str | None = None
-    ) -> list[Chunk]:
-        """Explicitly referenced articles first, then hybrid search results, without duplicates."""
+    ) -> tuple[list[Chunk], list[float]]:
+        """Explicitly referenced articles first, then hybrid search results, without duplicates;
+        plus the question's dense vector, which query drift monitoring reuses."""
         top_n = top_n or self.top_n
+        emb = self.embedder.encode([question])[0]
         chunks = self.by_numbers(article_numbers_in(question, self.max_article))
         limit = max(top_n, len(chunks))  # explicit references are always kept
         seen = {c.article_number for c in chunks}
-        for c in self.search(question, top_n=top_n, book=book):
+        for c in self.search(question, top_n=top_n, book=book, emb=emb):
             if len(chunks) >= limit:
                 break
             if c.article_number not in seen:
                 chunks.append(c)
                 seen.add(c.article_number)
-        return chunks
+        return chunks, emb.dense

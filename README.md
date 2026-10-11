@@ -169,11 +169,12 @@ With `CONFIG_SOURCE=mlflow`, the API loads the configuration registered under th
 - **Metrics.** The API exports request rates, latency histograms per endpoint and per pipeline stage, time to first token, refusals, guardrail hits, decider verdicts, token usage and cost. Label values come from fixed lists, so the number of series stays bounded.
 - **Dashboards and alerts.** Grafana dashboards and Prometheus rules are provisioned from `monitoring/`. User-facing symptoms (API down, p95 above the 5 s SLO, error-budget burn) page; causes (slow retrieval, vLLM queue, KV cache, token budget, drift, stale batch jobs) open tickets. The alert rules have promtool unit tests that run in CI.
 - **Logs and traces.** JSON logs are shipped to Loki. Each request is one Langfuse trace with a span per stage, token usage and cost, and every log line carries the trace id. The system prompt is served from Langfuse by label: a rollback reaches the API in about a minute without a redeploy, and promoting a new prompt requires a passing quality-gate result for that exact text.
-- **Drift.** Each answer writes a prediction event that contains no question text (language, length, retrieved book, refusal, scores). A scheduled job compares the last window with a reference using χ², Kolmogorov-Smirnov, MMD and a domain classifier, with a Bonferroni correction and a minimum effect size, and reports input, retrieval and behaviour drift separately.
+- **Drift.** Each answer writes a prediction event that contains no question text (language, length, retrieved book, refusal, scores, and the cosine between the question's bge-m3 embedding and the centroid of the reference questions). A scheduled job compares the last window with a reference using χ², Kolmogorov-Smirnov, MMD and a domain classifier, with a Bonferroni correction and a minimum effect size, and reports input, retrieval and behaviour drift separately. ADWIN (question length) and HDDM_A (refusals) mark where inside the window the traffic changed; they are reported but do not decide drift. `--evidently` adds an Evidently data-drift report next to the JSON report.
 
 ```bash
 docker compose --env-file .env -f docker/compose.yaml --profile core --profile monitoring --profile llm-observability up -d
-uv run --group monitoring python -m legalrag.monitoring.drift_job run --hours 24
+uv run --group monitoring python -m legalrag.monitoring.drift_job run --hours 24 --evidently
+uv run --group monitoring python -m legalrag.monitoring.drift_job reference   # reference events + query centroid
 ```
 
 ## Automation and releases

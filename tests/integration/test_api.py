@@ -362,6 +362,32 @@ def test_every_answer_leaves_a_prediction_event_without_the_text(client, tmp_pat
     assert "prescription" not in "".join(lines)  # counted, never stored
 
 
+def test_prediction_events_carry_the_query_cosine_but_clients_never_see_it(
+    tmp_path, qdrant, embedder
+):
+    from legalrag.monitoring.query_centroid import reference_centroid
+
+    known = embedder.encode(["fifteen years prescription", "a lease contract"])
+    centroid, _ = reference_centroid([e.dense for e in known], "fake", None)
+    retriever = Retriever(qdrant, alias="articles", embedder=embedder, top_n=3)
+    pipeline = RagPipeline(
+        retriever,
+        Generator(FakeLLM("Fifteen years [Art. 374]."), "m", 100, 0.0),
+        query_centroid=centroid,
+    )
+    with make_client(tmp_path, pipeline) as c:
+        c.post("/ask", json={"question": "What is the prescription period of fifteen years?"})
+        r = c.post("/ask?stream=true", json={"question": "fifteen years prescription?"})
+    assert "query_cosine" not in r.text
+    events = [
+        json.loads(ln)
+        for f in (tmp_path / "events").glob("*.jsonl")
+        for ln in f.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [e["endpoint"] for e in events] == ["ask", "ask_stream"]
+    assert all(0 < e["query_cosine"] <= 1 for e in events)
+
+
 def test_each_request_is_one_trace_with_scores_and_no_raw_pii(tmp_path, qdrant, embedder):
     from legalrag.observability.tracing import RecordingTracer
 

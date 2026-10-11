@@ -23,5 +23,6 @@ repos:
     hooks:
       - id: detect-secrets
         args: [--baseline, .secrets.baseline]
-        # lock files, DVC pointers and the index manifest hold content hashes, not secrets
-        exclude: ^(uv\.lock|dvc\.lock|.*\.dvc|data/processed/index_manifest\.json|data/golden/smoke_waivers\.json)$
+        # lock files, DVC pointers, the index manifest and the drift reference's model revision
+        # are content hashes, not secrets
+        exclude: ^(uv\.lock|dvc\.lock|.*\.dvc|data/processed/index_manifest\.json|data/golden/smoke_waivers\.json|data/monitoring/(query_centroid|reference_events\.meta)\.json)$
