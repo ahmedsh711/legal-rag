@@ -47,7 +47,7 @@ from legalrag.monitoring.query_centroid import load_centroid
 from legalrag.observability.metrics import RagMetrics, render
 from legalrag.observability.prompts import CodePrompt, LangfusePrompt
 from legalrag.observability.tracing import LangfuseTracer, NoopTracer, build_tracer
-from legalrag.pipeline import RagPipeline
+from legalrag.pipeline import Answer, RagPipeline
 from legalrag.ratelimit import (
     TokenBucket,
     build_limiter,
@@ -175,7 +175,7 @@ def build_decider(settings: Settings) -> Decider | None:
     return None
 
 
-def _llm_failure(exc: Exception) -> tuple[int, str, dict[str, str]]:
+def llm_failure(exc: Exception) -> tuple[int, str, dict[str, str]]:
     """Map an LLM error to (status, detail, headers): outage or 429 -> 503 with Retry-After,
     a rejected request (bad key, unknown model) -> 502."""
     code = getattr(exc, "status_code", None)
@@ -189,7 +189,7 @@ def _sse(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-async def _close(comp: Components) -> None:
+async def close_components(comp: Components) -> None:
     """Release connections on shutdown; one failing close must not leave the others open."""
     llm = getattr(getattr(comp.pipeline, "generator", None), "client", None)
     decider = getattr(comp.pipeline, "decider", None)  # Jev holds an HTTP client
@@ -264,6 +264,22 @@ def _source(c: Any) -> Source:
         citation_ar=c.citation_ar,
         is_repealed=c.is_repealed,
         quality_flags=list(c.quality_flags),
+    )
+
+
+def ask_response(result: Answer, request_id: str) -> AskResponse:
+    return AskResponse(
+        answer=result.answer,
+        language=result.language,
+        sources=[_source(c) for c in result.sources],
+        refused=result.refused,
+        invalid_citations=result.invalid_citations,
+        request_id=request_id,
+        prompt_version=result.prompt_version,
+        guardrails=result.guardrails,
+        model=result.model,
+        usage=result.usage,
+        timings_ms=result.timings_ms,
     )
 
 
@@ -369,7 +385,7 @@ def create_app(
         try:
             yield
         finally:
-            await _close(app.state.components)
+            await close_components(app.state.components)
 
     app = FastAPI(
         title="legal-rag: Egyptian Civil Code Q&A",
@@ -417,7 +433,7 @@ def create_app(
     @app.exception_handler(APIConnectionError)  # includes APITimeoutError
     @app.exception_handler(APIStatusError)
     async def _llm_error(request: Request, exc: Exception) -> JSONResponse:
-        status, detail, headers = _llm_failure(exc)
+        status, detail, headers = llm_failure(exc)
         return JSONResponse(
             {"detail": detail, "request_id": request_id_var.get()}, status, headers=headers
         )
@@ -513,7 +529,7 @@ def create_app(
                         yield _sse(
                             {
                                 "type": "error",
-                                "detail": _llm_failure(exc)[1],
+                                "detail": llm_failure(exc)[1],
                                 "request_id": request_id,
                             }
                         )
@@ -553,19 +569,7 @@ def create_app(
                 result, body.question, request_id, "ask", request.app.state.serving
             )
         )
-        return AskResponse(
-            answer=result.answer,
-            language=result.language,
-            sources=[_source(c) for c in result.sources],
-            refused=result.refused,
-            invalid_citations=result.invalid_citations,
-            request_id=request_id,
-            prompt_version=result.prompt_version,
-            guardrails=result.guardrails,
-            model=result.model,
-            usage=result.usage,
-            timings_ms=result.timings_ms,
-        )
+        return ask_response(result, request_id)
 
     # rate limited like /ask: an unlimited write endpoint can fill the disk
     @app.post(
